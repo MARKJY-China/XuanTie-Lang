@@ -1,0 +1,46 @@
+{
+    "name": "xuantie-syntax",
+    "displayName": "XuanTie Syntax Highlighting",
+    "description": "Syntax highlighting for XuanTie programming language",
+    "version": "0.3.2",
+    "publisher": "xuantie",
+    "icon": "icon.png",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "xuantie",
+                "aliases": [
+                    "XuanTie",
+                    "玄铁"
+                ],
+                "extensions": [
+                    ".xt"
+                ],
+                "configuration": "./language-configuration.json",
+                "icon": {
+                    "light": "./icon.png",
+                    "dark": "./icon.png"
+                }
+            }
+        ],
+        "grammars": [
+            {
+                "language": "xuantie",
+                "scopeName": "source.xt",
+                "path": "./syntaxes/xuantie.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "xuantie",
+                "path": "./snippets/pinyin.code-snippets"
+            }
+        ]
+    }
+}

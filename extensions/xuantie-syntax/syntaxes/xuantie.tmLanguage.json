@@ -1,0 +1,135 @@
+{
+	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+	"name": "XuanTie",
+	"scopeName": "source.xt",
+	"patterns": [
+		{
+			"include": "#comments"
+		},
+		{
+			"include": "#keywords"
+		},
+		{
+			"include": "#strings"
+		},
+		{
+			"include": "#numbers"
+		},
+		{
+			"include": "#constants"
+		},
+		{
+			"include": "#operators"
+		},
+		{
+			"include": "#functions"
+		},
+		{
+			"include": "#variables"
+		},
+		{
+			"include": "#brackets"
+		}
+	],
+	"repository": {
+		"comments": {
+			"patterns": [
+				{
+					"name": "comment.line.double-slash.xt",
+					"match": "//.*$"
+				}
+			]
+		},
+		"keywords": {
+			"patterns": [
+				{
+					"name": "keyword.control.xt",
+					"match": "\\b(如果|否则|当|返回|尝试|捕捉|接着|异步|等待|并行|引用)\\b"
+				},
+				{
+					"name": "storage.type.xt",
+					"match": "\\b(变量|常量|函数)\\b"
+				},
+				{
+					"name": "support.type.xt",
+					"match": "\\b(结果|字符串|整数|小数|逻辑|数组|字典)\\b"
+				},
+				{
+					"name": "support.function.xt",
+					"match": "\\b(打印|成功|失败)\\b"
+				}
+			]
+		},
+		"functions": {
+			"patterns": [
+				{
+					"name": "entity.name.function.xt",
+					"match": "([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(?=\\()"
+				}
+			]
+		},
+		"variables": {
+			"patterns": [
+				{
+					"name": "variable.other.readwrite.xt",
+					"match": "([\\p{L}_][\\p{L}\\p{N}_]*)"
+				}
+			]
+		},
+		"strings": {
+			"name": "string.quoted.double.xt",
+			"begin": "\"",
+			"end": "\"",
+			"patterns": [
+				{
+					"name": "constant.character.escape.xt",
+					"match": "\\\\."
+				}
+			]
+		},
+		"numbers": {
+			"name": "constant.numeric.xt",
+			"match": "\\b\\d+(\\.\\d+)?\\b"
+		},
+		"constants": {
+			"patterns": [
+				{
+					"name": "constant.language.xt",
+					"match": "\\b(真|假|空)\\b"
+				}
+			]
+		},
+		"operators": {
+			"patterns": [
+				{
+					"name": "keyword.operator.assignment.xt",
+					"match": "="
+				},
+				{
+					"name": "keyword.operator.comparison.xt",
+					"match": "(==|!=|<|>)"
+				},
+				{
+					"name": "keyword.operator.arithmetic.xt",
+					"match": "(\\+|\\-|\\*|/)"
+				},
+				{
+					"name": "keyword.operator.logical.xt",
+					"match": "(&|且|或|非)"
+				},
+				{
+					"name": "keyword.operator.other.xt",
+					"match": "(\\.)"
+				}
+			]
+		},
+		"brackets": {
+			"patterns": [
+				{
+					"name": "punctuation.bracket.xt",
+					"match": "(\\{|\\}|\\[|\\]|\\(|\\))"
+				}
+			]
+		}
+	}
+}
