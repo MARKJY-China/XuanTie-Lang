@@ -204,7 +204,7 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	path := ie.Path
 	content, err := ioutil.ReadFile(path)
 	if err != nil {
-		return newError(ie.GetLine(), "引用文件失败: %s", err)
+		return newError(ie.GetLine(), "引用文件失败: 找不到文件或无法读取 (%s)", path)
 	}
 
 	l := lexer.New(string(content))

@@ -29,7 +29,7 @@ func main() {
 	filename := arg
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
-		fmt.Printf("读取文件失败: %s\n", err)
+		fmt.Printf("读取文件失败: 找不到文件或无法打开 (%s)\n", filename)
 		return
 	}
 

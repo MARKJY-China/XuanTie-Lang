@@ -26,7 +26,7 @@ var Builtins = map[string]object.Object{
 					}
 					content, err := ioutil.ReadFile(path.Value)
 					if err != nil {
-						return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+						return &object.Result{IsSuccess: false, Error: &object.Error{Message: fmt.Sprintf("读取文件失败: 找不到文件或无法读取 (%s)", path.Value)}}
 					}
 					return &object.Result{IsSuccess: true, Value: &object.String{Value: string(content)}}
 				},
@@ -46,7 +46,7 @@ var Builtins = map[string]object.Object{
 					}
 					err := ioutil.WriteFile(path.Value, []byte(content.Value), 0644)
 					if err != nil {
-						return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+						return &object.Result{IsSuccess: false, Error: &object.Error{Message: fmt.Sprintf("写入文件失败: 路径无效或无权限 (%s)", path.Value)}}
 					}
 					return &object.Result{IsSuccess: true, Value: &object.Boolean{Value: true}}
 				},
