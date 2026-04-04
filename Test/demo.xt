@@ -1,4 +1,4 @@
-引用 "./test_features.xt"
+变量 test_features = 引用 "./test_features.xt"
 变量 数学 = 引用 "./math_utils.xt"
 变量 名字 = "玄铁"
 变量 版本 = 1
