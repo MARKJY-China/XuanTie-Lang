@@ -193,8 +193,9 @@ func (c *Class) Type() ObjectType { return CLASS_OBJ }
 func (c *Class) Inspect() string  { return fmt.Sprintf("型 %s { ... }", c.Name) }
 
 type Instance struct {
-	Class  *Class
-	Fields map[string]Object
+	Class    *Class
+	Fields   map[string]Object
+	Privates map[string]bool // 记录哪些字段是私有的
 }
 
 func (i *Instance) Type() ObjectType { return INSTANCE_OBJ }
@@ -202,7 +203,11 @@ func (i *Instance) Inspect() string {
 	var out strings.Builder
 	fields := []string{}
 	for k, v := range i.Fields {
-		fields = append(fields, fmt.Sprintf("%s: %s", k, v.Inspect()))
+		suffix := ""
+		if i.Privates[k] {
+			suffix = "(私)"
+		}
+		fields = append(fields, fmt.Sprintf("%s%s: %s", k, suffix, v.Inspect()))
 	}
 	out.WriteString("造 " + i.Class.Name + " {")
 	out.WriteString(strings.Join(fields, ", "))

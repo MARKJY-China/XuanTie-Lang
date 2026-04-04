@@ -70,10 +70,11 @@ func (ps *PrintStatement) String() string {
 
 // VarStatement 变量/常量声明语句
 type VarStatement struct {
-	Token    token.Token // TOKEN_VAR or TOKEN_CONST
-	Name     *Identifier
-	DataType string // 可选类型
-	Value    Expression
+	Token     token.Token // TOKEN_VAR or TOKEN_CONST
+	Name      *Identifier
+	DataType  string // 可选类型
+	Value     Expression
+	IsPrivate bool // 是否为私有属性
 }
 
 func (vs *VarStatement) statementNode()       {}
@@ -110,6 +111,27 @@ func (as *AssignStatement) String() string {
 	if as.Value != nil {
 		out.WriteString(as.Value.String())
 	}
+	return out.String()
+}
+
+// MemberAssignStatement 成员赋值语句 (obj.member = value)
+type MemberAssignStatement struct {
+	Token  token.Token // '='
+	Object Expression  // The object being accessed (e.g., Identifier or Call)
+	Member *Identifier // The field being assigned
+	Value  Expression  // The new value
+}
+
+func (mas *MemberAssignStatement) statementNode()       {}
+func (mas *MemberAssignStatement) TokenLiteral() string { return mas.Token.Literal }
+func (mas *MemberAssignStatement) GetLine() int         { return mas.Token.Line }
+func (mas *MemberAssignStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString(mas.Object.String())
+	out.WriteString(".")
+	out.WriteString(mas.Member.String())
+	out.WriteString(" = ")
+	out.WriteString(mas.Value.String())
 	return out.String()
 }
 

@@ -26,7 +26,6 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_AND:       LOGICAL_AND,
 	token.TOKEN_EQ:        EQUALS,
 	token.TOKEN_IS:        EQUALS,
-	token.TOKEN_ASSIGN:    EQUALS, // 允许 = 作为相等比较
 	token.TOKEN_NEQ:       EQUALS,
 	token.TOKEN_LT:        LESSGREATER,
 	token.TOKEN_GT:        LESSGREATER,
@@ -79,7 +78,7 @@ func (p *Parser) parseStatement() ast.Statement {
 	switch p.cur.Type {
 	case token.TOKEN_PRINT:
 		return p.parsePrintStatement()
-	case token.TOKEN_VAR, token.TOKEN_CONST:
+	case token.TOKEN_VAR, token.TOKEN_CONST, token.TOKEN_PRIVATE:
 		return p.parseVarStatement()
 	case token.TOKEN_IF:
 		return p.parseIfStatement()
@@ -144,6 +143,14 @@ func (p *Parser) parsePrintStatement() *ast.PrintStatement {
 
 func (p *Parser) parseVarStatement() *ast.VarStatement {
 	stmt := &ast.VarStatement{Token: p.cur}
+
+	if p.cur.Type == token.TOKEN_PRIVATE {
+		stmt.IsPrivate = true
+		if !p.expectPeek(token.TOKEN_VAR) && !p.expectPeek(token.TOKEN_CONST) {
+			return nil
+		}
+		stmt.Token = p.cur
+	}
 
 	if !p.expectPeek(token.TOKEN_IDENT) {
 		return nil
@@ -362,9 +369,22 @@ func (p *Parser) parseBlock() []ast.Statement {
 }
 
 func (p *Parser) parseExpressionStatement() ast.Statement {
-	stmt := &ast.ExpressionStatement{Token: p.cur}
-	stmt.Expression = p.parseExpression(LOWEST)
-	return stmt
+	exp := p.parseExpression(LOWEST)
+
+	// 处理成员赋值 (obj.member = value)
+	if mce, ok := exp.(*ast.MemberCallExpression); ok && p.peek.Type == token.TOKEN_ASSIGN {
+		stmt := &ast.MemberAssignStatement{
+			Token:  p.peek,
+			Object: mce.Object,
+			Member: mce.Member,
+		}
+		p.nextToken() // cur: =
+		p.nextToken() // cur: start of expression
+		stmt.Value = p.parseExpression(LOWEST)
+		return stmt
+	}
+
+	return &ast.ExpressionStatement{Token: p.cur, Expression: exp}
 }
 
 func (p *Parser) parseExpression(precedence int) ast.Expression {

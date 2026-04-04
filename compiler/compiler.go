@@ -268,6 +268,10 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.AssignStatement:
 		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value, true)))
+	case *ast.MemberAssignStatement:
+		c.output.WriteString(fmt.Sprintf("%sif m, ok := %s.(map[string]interface{}); ok {\n", indentStr, c.expressionCode(s.Object, true)))
+		c.output.WriteString(fmt.Sprintf("%s\tm[%q] = %s\n", indentStr, s.Member.Value, c.expressionCode(s.Value, true)))
+		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 	case *ast.PrintStatement:
 		c.output.WriteString(fmt.Sprintf("%sfmt.Println(inspect(%s))\n", indentStr, c.expressionCode(s.Value, false)))
 	case *ast.IfStatement:

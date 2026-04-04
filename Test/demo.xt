@@ -1,4 +1,4 @@
-设 test_features = 引 "./test_features.xt"
+引 "./test_features.xt"
 设 数学 = 引 "./math_utils.xt"
 设 名字 = "玄铁"
 设 版本 = 1
@@ -54,3 +54,9 @@
         示("字典A遍历完成")
     }
 }
+
+示("\n\n索引测试")
+引 "./test_index.xt"
+
+示("\n\nOOP测试")
+引 "./test_oop_assign.xt"

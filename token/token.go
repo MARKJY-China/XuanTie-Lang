@@ -63,6 +63,7 @@ const (
 	TOKEN_DESERIALIZE TokenType = "解"
 	TOKEN_TYPE_DEF    TokenType = "型"
 	TOKEN_NEW         TokenType = "造"
+	TOKEN_PRIVATE     TokenType = "私"
 
 	TOKEN_AND TokenType = "且"
 	TOKEN_OR  TokenType = "或"

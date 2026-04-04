@@ -237,6 +237,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_TYPE_DEF
 	case "造":
 		return token.TOKEN_NEW
+	case "私":
+		return token.TOKEN_PRIVATE
 	case "且":
 		return token.TOKEN_AND
 	case "或":

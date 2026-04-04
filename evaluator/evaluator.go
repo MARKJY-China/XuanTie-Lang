@@ -35,6 +35,15 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 			return newError(n.GetLine(), "未定义的变量: %s", n.Name)
 		}
 		env[n.Name] = val
+
+		// 如果在实例方法中，同步修改实例字段
+		if self, ok := env["__SELF__"]; ok {
+			if instance, ok := self.(*object.Instance); ok {
+				if _, ok := instance.Fields[n.Name]; ok {
+					instance.Fields[n.Name] = val
+				}
+			}
+		}
 		return val
 	case *ast.VarStatement:
 		val := EvalContext(n.Value, env, true)
@@ -147,6 +156,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalAwaitExpression(n, env)
 	case *ast.MemberCallExpression:
 		return evalMemberCallExpression(n, env)
+	case *ast.MemberAssignStatement:
+		return evalMemberAssignStatement(n, env)
 	case *ast.IndexExpression:
 		left := Eval(n.Left, env)
 		if isError(left) {
@@ -550,8 +561,9 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 	}
 
 	instance := &object.Instance{
-		Class:  class,
-		Fields: make(map[string]object.Object),
+		Class:    class,
+		Fields:   make(map[string]object.Object),
+		Privates: make(map[string]bool),
 	}
 
 	// 初始化默认值
@@ -563,6 +575,9 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 				return val
 			}
 			instance.Fields[varStmt.Name.Value] = val
+			if varStmt.IsPrivate {
+				instance.Privates[varStmt.Name.Value] = true
+			}
 			instanceEnv[varStmt.Name.Value] = val
 		} else {
 			Eval(stmt, instanceEnv)
@@ -781,10 +796,18 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 	// 处理实例的成员调用
 	if instance, ok := obj.(*object.Instance); ok {
+		// 检查私有权限
+		if instance.Privates[mce.Member.Value] {
+			if self, ok := env["__SELF__"]; !ok || self != instance {
+				return newError(mce.GetLine(), "禁止访问私有属性: %s", mce.Member.Value)
+			}
+		}
+
 		if val, ok := instance.Fields[mce.Member.Value]; ok {
 			// 如果是函数，尝试进行方法绑定
 			if fn, ok := val.(*object.Function); ok {
 				methodEnv := extendEnv(fn.Env)
+				methodEnv["__SELF__"] = instance // 标记当前上下文为该实例内部
 				for k, v := range instance.Fields {
 					methodEnv[k] = v
 				}
@@ -803,6 +826,33 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 	}
 
 	return newError(mce.GetLine(), "不支持的成员调用: %s.%s", obj.Type(), mce.Member.Value)
+}
+
+func evalMemberAssignStatement(mas *ast.MemberAssignStatement, env map[string]object.Object) object.Object {
+	obj := Eval(mas.Object, env)
+	if isError(obj) {
+		return obj
+	}
+
+	instance, ok := obj.(*object.Instance)
+	if !ok {
+		return newError(mas.GetLine(), "只有实例支持成员赋值，得到 %s", obj.Type())
+	}
+
+	// 检查私有权限
+	if instance.Privates[mas.Member.Value] {
+		if self, ok := env["__SELF__"]; !ok || self != instance {
+			return newError(mas.GetLine(), "禁止修改私有属性: %s", mas.Member.Value)
+		}
+	}
+
+	val := Eval(mas.Value, env)
+	if isError(val) {
+		return val
+	}
+
+	instance.Fields[mas.Member.Value] = val
+	return val
 }
 
 func evalIndexExpression(line int, left, index object.Object) object.Object {
