@@ -70,11 +70,11 @@ func (ps *PrintStatement) String() string {
 
 // VarStatement 变量/常量声明语句
 type VarStatement struct {
-	Token     token.Token // TOKEN_VAR or TOKEN_CONST
-	Name      *Identifier
-	DataType  string // 可选类型
-	Value     Expression
-	IsPrivate bool // 是否为私有属性
+	Token      token.Token // TOKEN_VAR or TOKEN_CONST
+	Name       *Identifier
+	DataType   string // 可选类型
+	Value      Expression
+	Visibility token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC, TOKEN_PROTECTED
 }
 
 func (vs *VarStatement) statementNode()       {}
@@ -298,9 +298,10 @@ func (tds *TypeDefinitionStatement) String() string {
 
 // NewExpression 实例化表达式
 type NewExpression struct {
-	Token token.Token // "造"
-	Type  Expression  // Identifier
-	Data  Expression  // DictLiteral for initial values
+	Token     token.Token  // "造"
+	Type      Expression   // Identifier
+	Data      Expression   // DictLiteral for initial values
+	Arguments []Expression // Constructor arguments
 }
 
 func (ne *NewExpression) expressionNode()      {}
@@ -312,6 +313,15 @@ func (ne *NewExpression) String() string {
 	out.WriteString(ne.Type.String())
 	if ne.Data != nil {
 		out.WriteString(ne.Data.String())
+	}
+	if len(ne.Arguments) > 0 {
+		out.WriteString("(")
+		args := []string{}
+		for _, a := range ne.Arguments {
+			args = append(args, a.String())
+		}
+		out.WriteString(strings.Join(args, ", "))
+		out.WriteString(")")
 	}
 	return out.String()
 }
@@ -620,6 +630,39 @@ func (fl *FunctionLiteral) String() string {
 	out.WriteString(strings.Join(params, ", "))
 	out.WriteString(") { ")
 	for _, s := range fl.Body {
+		out.WriteString(s.String())
+	}
+	out.WriteString(" }")
+	return out.String()
+}
+
+// FunctionStatement 具名函数定义
+type FunctionStatement struct {
+	Token      token.Token
+	Name       *Identifier
+	Parameters []*Identifier
+	Body       []Statement
+	Visibility token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC, TOKEN_PROTECTED
+}
+
+func (fs *FunctionStatement) statementNode()       {}
+func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
+func (fs *FunctionStatement) GetLine() int         { return fs.Token.Line }
+func (fs *FunctionStatement) String() string {
+	var out bytes.Buffer
+	params := []string{}
+	for _, p := range fs.Parameters {
+		params = append(params, p.String())
+	}
+	if fs.Visibility != "" {
+		out.WriteString(string(fs.Visibility) + " ")
+	}
+	out.WriteString("函 ")
+	out.WriteString(fs.Name.String())
+	out.WriteString("(")
+	out.WriteString(strings.Join(params, ", "))
+	out.WriteString(") { ")
+	for _, s := range fs.Body {
 		out.WriteString(s.String())
 	}
 	out.WriteString(" }")

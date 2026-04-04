@@ -10,6 +10,7 @@ import (
 	"xuantie/object"
 	"xuantie/parser"
 	"xuantie/stdlib"
+	"xuantie/token"
 )
 
 func RegisterStdLib(env map[string]object.Object) {
@@ -107,6 +108,10 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return &object.Continue{}
 	case *ast.TryCatchStatement:
 		return evalTryCatchStatement(n, env)
+	case *ast.FunctionStatement:
+		fn := &object.Function{Parameters: n.Parameters, Body: n.Body, Env: env}
+		env[n.Name.Value] = fn
+		return &object.Null{}
 	case *ast.TypeDefinitionStatement:
 		return evalTypeDefinitionStatement(n, env)
 	case *ast.AsyncExpression:
@@ -541,10 +546,36 @@ func evalTryCatchStatement(ts *ast.TryCatchStatement, env map[string]object.Obje
 
 func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[string]object.Object) object.Object {
 	class := &object.Class{
-		Name: tds.Name.Value,
-		Body: tds.Block,
-		Env:  env,
+		Name:         tds.Name.Value,
+		Fields:       make(map[string]object.Object),
+		Methods:      make(map[string]*object.Function),
+		Visibilities: make(map[string]token.TokenType),
+		Env:          env,
 	}
+
+	// 解析类体
+	classEnv := extendEnv(env)
+	for _, stmt := range tds.Block {
+		switch s := stmt.(type) {
+		case *ast.VarStatement:
+			val := EvalContext(s.Value, classEnv, true)
+			if isError(val) {
+				return val
+			}
+			class.Fields[s.Name.Value] = val
+			if s.Visibility != "" {
+				class.Visibilities[s.Name.Value] = s.Visibility
+			}
+			classEnv[s.Name.Value] = val
+		case *ast.FunctionStatement:
+			fn := &object.Function{Parameters: s.Parameters, Body: s.Body, Env: classEnv}
+			class.Methods[s.Name.Value] = fn
+			if s.Visibility != "" {
+				class.Visibilities[s.Name.Value] = s.Visibility
+			}
+		}
+	}
+
 	env[tds.Name.Value] = class
 	return &object.Null{}
 }
@@ -561,30 +592,16 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 	}
 
 	instance := &object.Instance{
-		Class:    class,
-		Fields:   make(map[string]object.Object),
-		Privates: make(map[string]bool),
+		Class:  class,
+		Fields: make(map[string]object.Object),
 	}
 
-	// 初始化默认值
-	instanceEnv := extendEnv(class.Env)
-	for _, stmt := range class.Body {
-		if varStmt, ok := stmt.(*ast.VarStatement); ok {
-			val := EvalContext(varStmt.Value, instanceEnv, true)
-			if isError(val) {
-				return val
-			}
-			instance.Fields[varStmt.Name.Value] = val
-			if varStmt.IsPrivate {
-				instance.Privates[varStmt.Name.Value] = true
-			}
-			instanceEnv[varStmt.Name.Value] = val
-		} else {
-			Eval(stmt, instanceEnv)
-		}
+	// 1. 初始化默认字段值
+	for k, v := range class.Fields {
+		instance.Fields[k] = v
 	}
 
-	// 覆盖初始化值
+	// 2. 如果提供了字典字面量，覆盖初始值
 	if ne.Data != nil {
 		data := Eval(ne.Data, env)
 		if isError(data) {
@@ -595,6 +612,27 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 				instance.Fields[k] = v
 			}
 		}
+	}
+
+	// 3. 如果定义了构造函数 "造"，执行它
+	if constructor, ok := class.Methods["造"]; ok {
+		args := evalExpressions(ne.Arguments, env)
+		if len(args) == 1 && isError(args[0]) {
+			return args[0]
+		}
+
+		// 绑定实例上下文
+		methodEnv := extendEnv(constructor.Env)
+		methodEnv["__SELF__"] = instance
+		for k, v := range instance.Fields {
+			methodEnv[k] = v
+		}
+
+		applyFunction(ne.GetLine(), &object.Function{
+			Parameters: constructor.Parameters,
+			Body:       constructor.Body,
+			Env:        methodEnv,
+		}, args)
 	}
 
 	return instance
@@ -796,18 +834,39 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 	// 处理实例的成员调用
 	if instance, ok := obj.(*object.Instance); ok {
-		// 检查私有权限
-		if instance.Privates[mce.Member.Value] {
-			if self, ok := env["__SELF__"]; !ok || self != instance {
-				return newError(mce.GetLine(), "禁止访问私有属性: %s", mce.Member.Value)
+		// 检查权限
+		if vis, ok := instance.Class.Visibilities[mce.Member.Value]; ok {
+			if vis == token.TOKEN_PRIVATE || vis == token.TOKEN_PROTECTED {
+				if self, ok := env["__SELF__"]; !ok || self != instance {
+					return newError(mce.GetLine(), "禁止访问%s属性: %s", vis, mce.Member.Value)
+				}
 			}
 		}
 
+		// 优先从方法中查找
+		if method, ok := instance.Class.Methods[mce.Member.Value]; ok {
+			methodEnv := extendEnv(method.Env)
+			methodEnv["__SELF__"] = instance
+			for k, v := range instance.Fields {
+				methodEnv[k] = v
+			}
+			boundFn := &object.Function{
+				Parameters: method.Parameters,
+				Body:       method.Body,
+				Env:        methodEnv,
+			}
+			if mce.Arguments != nil {
+				return applyFunction(mce.GetLine(), boundFn, args)
+			}
+			return boundFn
+		}
+
+		// 从字段中查找
 		if val, ok := instance.Fields[mce.Member.Value]; ok {
-			// 如果是函数，尝试进行方法绑定
+			// 如果字段本身是函数，也可以调用
 			if fn, ok := val.(*object.Function); ok {
 				methodEnv := extendEnv(fn.Env)
-				methodEnv["__SELF__"] = instance // 标记当前上下文为该实例内部
+				methodEnv["__SELF__"] = instance
 				for k, v := range instance.Fields {
 					methodEnv[k] = v
 				}
@@ -839,10 +898,12 @@ func evalMemberAssignStatement(mas *ast.MemberAssignStatement, env map[string]ob
 		return newError(mas.GetLine(), "只有实例支持成员赋值，得到 %s", obj.Type())
 	}
 
-	// 检查私有权限
-	if instance.Privates[mas.Member.Value] {
-		if self, ok := env["__SELF__"]; !ok || self != instance {
-			return newError(mas.GetLine(), "禁止修改私有属性: %s", mas.Member.Value)
+	// 检查权限
+	if vis, ok := instance.Class.Visibilities[mas.Member.Value]; ok {
+		if vis == token.TOKEN_PRIVATE || vis == token.TOKEN_PROTECTED {
+			if self, ok := env["__SELF__"]; !ok || self != instance {
+				return newError(mas.GetLine(), "禁止修改%s属性: %s", vis, mas.Member.Value)
+			}
 		}
 	}
 

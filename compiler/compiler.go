@@ -333,14 +333,66 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 			c.writeStatement(stmt, indent+1)
 		}
 		c.output.WriteString(fmt.Sprintf("%s}()\n", indentStr))
+	case *ast.FunctionStatement:
+		params := []string{}
+		for _, p := range s.Parameters {
+			params = append(params, p.Value)
+		}
+		c.output.WriteString(fmt.Sprintf("%svar %s interface{} = func(args []interface{}) interface{} {\n", indentStr, s.Name.Value))
+		// 绑定参数
+		for i, p := range params {
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{}\n", indentStr, p))
+			c.output.WriteString(fmt.Sprintf("%s\tif len(args) > %d { %s = args[%d] }\n", indentStr, i, p, i))
+		}
+		for _, stmt := range s.Body {
+			c.writeStatement(stmt, indent+1)
+		}
+		c.output.WriteString(fmt.Sprintf("%s\treturn nil\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.TypeDefinitionStatement:
-		c.output.WriteString(fmt.Sprintf("%svar %s = func() map[string]interface{} {\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%svar %s = func(args []interface{}) map[string]interface{} {\n", indentStr, s.Name.Value))
 		c.output.WriteString(fmt.Sprintf("%s\tres := make(map[string]interface{})\n", indentStr))
+		// 1. 初始化属性
 		for _, stmt := range s.Block {
 			if varStmt, ok := stmt.(*ast.VarStatement); ok {
 				c.output.WriteString(fmt.Sprintf("%s\tres[%q] = %s\n", indentStr, varStmt.Name.Value, c.expressionCode(varStmt.Value, false)))
 			}
 		}
+		// 2. 初始化方法 (注入 res 自身模拟 __SELF__)
+		for _, stmt := range s.Block {
+			if fnStmt, ok := stmt.(*ast.FunctionStatement); ok {
+				c.output.WriteString(fmt.Sprintf("%s\tres[%q] = func(m_args []interface{}) interface{} {\n", indentStr, fnStmt.Name.Value))
+				// 注入属性到作用域
+				for _, m := range s.Block {
+					if vs, ok := m.(*ast.VarStatement); ok {
+						c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, vs.Name.Value, vs.Name.Value))
+						c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, vs.Name.Value))
+					}
+				}
+				// 绑定参数
+				for i, p := range fnStmt.Parameters {
+					c.output.WriteString(fmt.Sprintf("%s\t\t%s := interface{}(nil)\n", indentStr, p.Value))
+					c.output.WriteString(fmt.Sprintf("%s\t\tif len(m_args) > %d { %s = m_args[%d] }\n", indentStr, i, p.Value, i))
+				}
+				for _, b := range fnStmt.Body {
+					c.writeStatement(b, indent+2)
+				}
+				// 同步属性回 res
+				for _, m := range s.Block {
+					if vs, ok := m.(*ast.VarStatement); ok {
+						c.output.WriteString(fmt.Sprintf("%s\t\tres[%q] = %s\n", indentStr, vs.Name.Value, vs.Name.Value))
+					}
+				}
+				c.output.WriteString(fmt.Sprintf("%s\t\treturn nil\n", indentStr))
+				c.output.WriteString(fmt.Sprintf("%s\t}\n", indentStr))
+			}
+		}
+		// 3. 执行构造函数 "造"
+		c.output.WriteString(fmt.Sprintf("%s\tif constructor, ok := res[\"造\"].(func([]interface{}) interface{}); ok {\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%s\t\tconstructor(args)\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%s\t}\n", indentStr))
+
 		c.output.WriteString(fmt.Sprintf("%s\treturn res\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
@@ -392,10 +444,16 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 		return c.importExpressionCode(e, isAssignment)
 	case *ast.NewExpression:
 		typeCode := c.expressionCode(e.Type, false)
-		if e.Data != nil {
-			return fmt.Sprintf("merge(%s(), %s)", typeCode, c.expressionCode(e.Data, false))
+		args := []string{}
+		for _, a := range e.Arguments {
+			args = append(args, c.expressionCode(a, false))
 		}
-		return fmt.Sprintf("%s()", typeCode)
+		argsStr := fmt.Sprintf("[]interface{}{%s}", strings.Join(args, ", "))
+
+		if e.Data != nil {
+			return fmt.Sprintf("merge(%s(%s), %s)", typeCode, argsStr, c.expressionCode(e.Data, false))
+		}
+		return fmt.Sprintf("%s(%s)", typeCode, argsStr)
 	case *ast.SerializeExpression:
 		return fmt.Sprintf("serialize(%s)", c.expressionCode(e.Value, false))
 	case *ast.DeserializeExpression:
@@ -494,7 +552,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 		// 如果是赋值引用，且语句是打印语句或非定义性质的表达式语句，则跳过
 		if isAssignment {
 			switch stmt.(type) {
-			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.LoopStatement, *ast.ForStatement, *ast.TryCatchStatement, *ast.TypeDefinitionStatement:
+			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.LoopStatement, *ast.ForStatement, *ast.TryCatchStatement, *ast.TypeDefinitionStatement, *ast.FunctionStatement:
 				continue
 			case *ast.ReturnStatement:
 				continue

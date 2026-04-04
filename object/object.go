@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"xuantie/ast"
+	"xuantie/token"
 )
 
 type ObjectType string
@@ -184,18 +185,19 @@ func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
 func (c *Continue) Inspect() string  { return "继续" }
 
 type Class struct {
-	Name string
-	Body []ast.Statement
-	Env  map[string]Object
+	Name         string
+	Fields       map[string]Object
+	Methods      map[string]*Function
+	Visibilities map[string]token.TokenType
+	Env          map[string]Object
 }
 
 func (c *Class) Type() ObjectType { return CLASS_OBJ }
 func (c *Class) Inspect() string  { return fmt.Sprintf("型 %s { ... }", c.Name) }
 
 type Instance struct {
-	Class    *Class
-	Fields   map[string]Object
-	Privates map[string]bool // 记录哪些字段是私有的
+	Class  *Class
+	Fields map[string]Object
 }
 
 func (i *Instance) Type() ObjectType { return INSTANCE_OBJ }
@@ -204,8 +206,10 @@ func (i *Instance) Inspect() string {
 	fields := []string{}
 	for k, v := range i.Fields {
 		suffix := ""
-		if i.Privates[k] {
+		if vis, ok := i.Class.Visibilities[k]; ok && vis == token.TOKEN_PRIVATE {
 			suffix = "(私)"
+		} else if vis, ok := i.Class.Visibilities[k]; ok && vis == token.TOKEN_PROTECTED {
+			suffix = "(护)"
 		}
 		fields = append(fields, fmt.Sprintf("%s%s: %s", k, suffix, v.Inspect()))
 	}

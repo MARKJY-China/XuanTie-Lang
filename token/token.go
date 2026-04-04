@@ -64,6 +64,8 @@ const (
 	TOKEN_TYPE_DEF    TokenType = "型"
 	TOKEN_NEW         TokenType = "造"
 	TOKEN_PRIVATE     TokenType = "私"
+	TOKEN_PUBLIC      TokenType = "公"
+	TOKEN_PROTECTED   TokenType = "护"
 
 	TOKEN_AND TokenType = "且"
 	TOKEN_OR  TokenType = "或"

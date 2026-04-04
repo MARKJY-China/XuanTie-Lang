@@ -78,8 +78,8 @@ func (p *Parser) parseStatement() ast.Statement {
 	switch p.cur.Type {
 	case token.TOKEN_PRINT:
 		return p.parsePrintStatement()
-	case token.TOKEN_VAR, token.TOKEN_CONST, token.TOKEN_PRIVATE:
-		return p.parseVarStatement()
+	case token.TOKEN_VAR, token.TOKEN_CONST, token.TOKEN_PRIVATE, token.TOKEN_PUBLIC, token.TOKEN_PROTECTED:
+		return p.parseMemberStatement()
 	case token.TOKEN_IF:
 		return p.parseIfStatement()
 	case token.TOKEN_WHILE:
@@ -100,6 +100,11 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseExpressionStatement()
 	case token.TOKEN_TYPE_DEF:
 		return p.parseTypeDefinitionStatement()
+	case token.TOKEN_FUNCTION:
+		if p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_NEW {
+			return p.parseFunctionStatement("")
+		}
+		return p.parseExpressionStatement()
 	case token.TOKEN_IDENT:
 		if p.peek.Type == token.TOKEN_ASSIGN {
 			return p.parseAssignStatement()
@@ -141,16 +146,22 @@ func (p *Parser) parsePrintStatement() *ast.PrintStatement {
 	return stmt
 }
 
-func (p *Parser) parseVarStatement() *ast.VarStatement {
-	stmt := &ast.VarStatement{Token: p.cur}
-
-	if p.cur.Type == token.TOKEN_PRIVATE {
-		stmt.IsPrivate = true
-		if !p.expectPeek(token.TOKEN_VAR) && !p.expectPeek(token.TOKEN_CONST) {
-			return nil
-		}
-		stmt.Token = p.cur
+func (p *Parser) parseMemberStatement() ast.Statement {
+	visibility := token.TokenType("")
+	if p.cur.Type == token.TOKEN_PRIVATE || p.cur.Type == token.TOKEN_PUBLIC || p.cur.Type == token.TOKEN_PROTECTED {
+		visibility = p.cur.Type
+		p.nextToken()
 	}
+
+	if p.cur.Type == token.TOKEN_FUNCTION {
+		return p.parseFunctionStatement(visibility)
+	}
+
+	return p.parseVarStatement(visibility)
+}
+
+func (p *Parser) parseVarStatement(visibility token.TokenType) *ast.VarStatement {
+	stmt := &ast.VarStatement{Token: p.cur, Visibility: visibility}
 
 	if !p.expectPeek(token.TOKEN_IDENT) {
 		return nil
@@ -534,15 +545,45 @@ func (p *Parser) parseTypeDefinitionStatement() *ast.TypeDefinitionStatement {
 	return stmt
 }
 
+func (p *Parser) parseFunctionStatement(visibility token.TokenType) *ast.FunctionStatement {
+	stmt := &ast.FunctionStatement{Token: p.cur, Visibility: visibility}
+	p.nextToken() // skip 函
+
+	if p.cur.Type != token.TOKEN_IDENT && p.cur.Type != token.TOKEN_NEW {
+		p.errors = append(p.errors, fmt.Sprintf("预期函数名，得到 %s", p.cur.Type))
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+
+	stmt.Parameters = p.parseFunctionParameters()
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+
+	stmt.Body = p.parseBlock()
+
+	return stmt
+}
+
 func (p *Parser) parseNewExpression() ast.Expression {
 	exp := &ast.NewExpression{Token: p.cur}
 	p.nextToken() // cur: type identifier
 
-	exp.Type = p.parseExpression(PRODUCT)
+	// 限制类型部分只解析标识符或成员访问，不解析调用
+	exp.Type = p.parseExpression(CALL)
 
 	if p.peek.Type == token.TOKEN_LBRACE {
 		p.nextToken() // cur: {
 		exp.Data = p.parseDictLiteral()
+	} else if p.peek.Type == token.TOKEN_LPAREN {
+		p.nextToken() // cur: (
+		exp.Arguments = p.parseCallArguments()
 	}
 
 	return exp
