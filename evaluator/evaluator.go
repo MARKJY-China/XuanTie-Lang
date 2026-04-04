@@ -364,7 +364,19 @@ func evalIfExpression(ie *ast.IfStatement, env map[string]object.Object) object.
 	}
 	if isTruthy(condition) {
 		return evalBlock(ie.ThenBlock, env)
-	} else if len(ie.ElseBlock) > 0 {
+	}
+
+	for _, eif := range ie.ElseIfs {
+		eifCondition := Eval(eif.Condition, env)
+		if isError(eifCondition) {
+			return eifCondition
+		}
+		if isTruthy(eifCondition) {
+			return evalBlock(eif.Block, env)
+		}
+	}
+
+	if len(ie.ElseBlock) > 0 {
 		return evalBlock(ie.ElseBlock, env)
 	}
 	return &object.Null{}

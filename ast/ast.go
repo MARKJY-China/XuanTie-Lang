@@ -114,10 +114,16 @@ func (as *AssignStatement) String() string {
 }
 
 // IfStatement 条件语句
+type ElseIfBranch struct {
+	Condition Expression
+	Block     []Statement
+}
+
 type IfStatement struct {
 	Token     token.Token
 	Condition Expression
 	ThenBlock []Statement
+	ElseIfs   []*ElseIfBranch
 	ElseBlock []Statement
 }
 
@@ -126,7 +132,7 @@ func (is *IfStatement) TokenLiteral() string { return is.Token.Literal }
 func (is *IfStatement) GetLine() int         { return is.Token.Line }
 func (is *IfStatement) String() string {
 	var out bytes.Buffer
-	out.WriteString("如果 ")
+	out.WriteString("若 ")
 	if is.Condition != nil {
 		out.WriteString(is.Condition.String())
 	}
@@ -136,8 +142,20 @@ func (is *IfStatement) String() string {
 		out.WriteString(" ")
 	}
 	out.WriteString("}")
+
+	for _, eif := range is.ElseIfs {
+		out.WriteString(" 抑 ")
+		out.WriteString(eif.Condition.String())
+		out.WriteString(" { ")
+		for _, stmt := range eif.Block {
+			out.WriteString(stmt.String())
+			out.WriteString(" ")
+		}
+		out.WriteString("}")
+	}
+
 	if len(is.ElseBlock) > 0 {
-		out.WriteString(" 否则 { ")
+		out.WriteString(" 否 { ")
 		for _, stmt := range is.ElseBlock {
 			out.WriteString(stmt.String())
 			out.WriteString(" ")

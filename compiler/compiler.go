@@ -248,6 +248,12 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		for _, stmt := range s.ThenBlock {
 			c.writeStatement(stmt, indent+1)
 		}
+		for _, eif := range s.ElseIfs {
+			c.output.WriteString(fmt.Sprintf("%s} else if isTruthy(%s) {\n", indentStr, c.expressionCode(eif.Condition, false)))
+			for _, stmt := range eif.Block {
+				c.writeStatement(stmt, indent+1)
+			}
+		}
 		if len(s.ElseBlock) > 0 {
 			c.output.WriteString(fmt.Sprintf("%s} else {\n", indentStr))
 			for _, stmt := range s.ElseBlock {

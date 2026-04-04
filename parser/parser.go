@@ -187,8 +187,21 @@ func (p *Parser) parseIfStatement() *ast.IfStatement {
 	}
 	stmt.ThenBlock = p.parseBlock()
 
+	for p.peek.Type == token.TOKEN_ELSE_IF {
+		p.nextToken() // cur: 抑
+		p.nextToken() // cur: condition
+		eif := &ast.ElseIfBranch{
+			Condition: p.parseExpression(LOWEST),
+		}
+		if !p.expectPeek(token.TOKEN_LBRACE) {
+			return nil
+		}
+		eif.Block = p.parseBlock()
+		stmt.ElseIfs = append(stmt.ElseIfs, eif)
+	}
+
 	if p.peek.Type == token.TOKEN_ELSE {
-		p.nextToken() // cur: else
+		p.nextToken() // cur: 否
 		if !p.expectPeek(token.TOKEN_LBRACE) {
 			return nil
 		}

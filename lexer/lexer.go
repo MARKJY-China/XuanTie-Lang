@@ -183,9 +183,11 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_VAR
 	case "常量":
 		return token.TOKEN_CONST
-	case "如果":
+	case "若":
 		return token.TOKEN_IF
-	case "否则":
+	case "抑":
+		return token.TOKEN_ELSE_IF
+	case "否":
 		return token.TOKEN_ELSE
 	case "当":
 		return token.TOKEN_WHILE
