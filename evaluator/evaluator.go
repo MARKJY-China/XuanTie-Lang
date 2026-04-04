@@ -3,6 +3,7 @@ package evaluator
 import (
 	"fmt"
 	"io/ioutil"
+	"path/filepath"
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/object"
@@ -202,6 +203,15 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 
 func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object) object.Object {
 	path := ie.Path
+	// 如果是相对路径，且环境中有当前目录信息，则进行路径拼接
+	if !filepath.IsAbs(path) {
+		if baseDirObj, ok := env["__DIR__"]; ok {
+			if baseDir, ok := baseDirObj.(*object.String); ok {
+				path = filepath.Join(baseDir.Value, path)
+			}
+		}
+	}
+
 	content, err := ioutil.ReadFile(path)
 	if err != nil {
 		return newError(ie.GetLine(), "引用文件失败: 找不到文件或无法读取 (%s)", path)
@@ -210,6 +220,7 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	l := lexer.New(string(content))
 	p := parser.New(l)
 	program := p.ParseProgram()
+	program.FilePath = path // 设置新程序的路径，以便它也能正确处理它的引用
 
 	if len(p.Errors()) != 0 {
 		return newError(ie.GetLine(), "引用文件解析错误: %s", p.Errors()[0])
@@ -228,8 +239,8 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	// 收集所有顶层变量作为模块导出
 	dict := &object.Dict{Pairs: make(map[string]object.Object)}
 	for k, v := range moduleEnv {
-		// 过滤掉内置函数，只导出模块定义的变量
-		if _, isBuiltin := stdlib.Builtins[k]; !isBuiltin {
+		// 过滤掉内置函数和内部保留变量，只导出模块定义的变量
+		if _, isBuiltin := stdlib.Builtins[k]; !isBuiltin && k != "__DIR__" {
 			dict.Pairs[k] = v
 		}
 	}
@@ -238,6 +249,11 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 }
 
 func evalProgram(prog *ast.Program, env map[string]object.Object) object.Object {
+	// 设置当前程序所在的目录到环境，用于后续的相对路径引用
+	if prog.FilePath != "" {
+		env["__DIR__"] = &object.String{Value: filepath.Dir(prog.FilePath)}
+	}
+
 	var result object.Object
 	for _, stmt := range prog.Statements {
 		result = Eval(stmt, env)

@@ -13,7 +13,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.3.4.1"
+var version = "0.3.5"
 
 const (
 	colorReset = "\033[0m"
@@ -88,6 +88,7 @@ func main() {
 	l := lexer.New(string(data))
 	p := parser.New(l)
 	program := p.ParseProgram()
+	program.FilePath = filename // 设置主程序路径
 
 	if len(p.Errors()) > 0 {
 		if useColor {

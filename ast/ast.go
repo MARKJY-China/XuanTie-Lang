@@ -26,6 +26,7 @@ type Expression interface {
 // Program 根节点
 type Program struct {
 	Statements []Statement
+	FilePath   string // 源文件路径
 }
 
 func (p *Program) TokenLiteral() string {
