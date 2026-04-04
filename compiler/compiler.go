@@ -49,7 +49,9 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("import (\n")
 	c.output.WriteString("\t\"fmt\"\n")
 	c.output.WriteString("\t\"reflect\"\n")
+	c.output.WriteString("\t\"encoding/json\"\n")
 	c.output.WriteString(")\n\n")
+	c.output.WriteString("var _ = reflect.TypeOf\n\n")
 
 	// 辅助函数：将 XuanTie 的 interface{} 值转为字符串用于打印
 	c.output.WriteString("// inspect 模拟玄铁 object.Inspect() 功能\n")
@@ -131,6 +133,9 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\tif dict, ok := obj.(map[string]interface{}); ok {\n")
 	c.output.WriteString("\t\tif s, ok := attr.(string); ok { return dict[s] }\n")
 	c.output.WriteString("\t}\n")
+	c.output.WriteString("\tif str, ok := obj.(string); ok {\n")
+	c.output.WriteString("\t\tif attr == \"长度\" { return int64(len(str)) }\n")
+	c.output.WriteString("\t}\n")
 	c.output.WriteString("\tif res, ok := obj.(*Result); ok {\n")
 	c.output.WriteString("\t\tswitch attr {\n")
 	c.output.WriteString("\t\tcase \"接着\":\n")
@@ -177,6 +182,28 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t\treturn t.Value\n")
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("\treturn v\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func serialize(v interface{}) string {\n")
+	c.output.WriteString("\tb, _ := json.Marshal(v)\n")
+	c.output.WriteString("\treturn string(b)\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func deserialize(s interface{}) interface{} {\n")
+	c.output.WriteString("\tstr, ok := s.(string)\n")
+	c.output.WriteString("\tif !ok { return nil }\n")
+	c.output.WriteString("\tvar res interface{}\n")
+	c.output.WriteString("\tjson.Unmarshal([]byte(str), &res)\n")
+	c.output.WriteString("\treturn res\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func merge(base map[string]interface{}, override interface{}) map[string]interface{} {\n")
+	c.output.WriteString("\tif o, ok := override.(map[string]interface{}); ok {\n")
+	c.output.WriteString("\t\tfor k, v := range o {\n")
+	c.output.WriteString("\t\t\tbase[k] = v\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn base\n")
 	c.output.WriteString("}\n\n")
 
 	c.output.WriteString("func main() {\n")
@@ -302,6 +329,17 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 			c.writeStatement(stmt, indent+1)
 		}
 		c.output.WriteString(fmt.Sprintf("%s}()\n", indentStr))
+	case *ast.TypeDefinitionStatement:
+		c.output.WriteString(fmt.Sprintf("%svar %s = func() map[string]interface{} {\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%s\tres := make(map[string]interface{})\n", indentStr))
+		for _, stmt := range s.Block {
+			if varStmt, ok := stmt.(*ast.VarStatement); ok {
+				c.output.WriteString(fmt.Sprintf("%s\tres[%q] = %s\n", indentStr, varStmt.Name.Value, c.expressionCode(varStmt.Value, false)))
+			}
+		}
+		c.output.WriteString(fmt.Sprintf("%s\treturn res\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.ReturnStatement:
 		c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, c.expressionCode(s.ReturnValue, false)))
 	case *ast.ExpressionStatement:
@@ -348,6 +386,16 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 		return c.functionLiteralCode(e, isAssignment)
 	case *ast.ImportExpression:
 		return c.importExpressionCode(e, isAssignment)
+	case *ast.NewExpression:
+		typeCode := c.expressionCode(e.Type, false)
+		if e.Data != nil {
+			return fmt.Sprintf("merge(%s(), %s)", typeCode, c.expressionCode(e.Data, false))
+		}
+		return fmt.Sprintf("%s()", typeCode)
+	case *ast.SerializeExpression:
+		return fmt.Sprintf("serialize(%s)", c.expressionCode(e.Value, false))
+	case *ast.DeserializeExpression:
+		return fmt.Sprintf("deserialize(%s)", c.expressionCode(e.Value, false))
 	}
 	return "nil"
 }
@@ -375,12 +423,15 @@ func (c *GoCompiler) indexExpressionCode(e *ast.IndexExpression, isAssignment bo
 }
 
 func (c *GoCompiler) memberCallExpressionCode(e *ast.MemberCallExpression, isAssignment bool) string {
-	args := []string{}
-	for _, a := range e.Arguments {
-		args = append(args, c.expressionCode(a, isAssignment))
+	if e.Arguments != nil {
+		args := []string{}
+		for _, a := range e.Arguments {
+			args = append(args, c.expressionCode(a, isAssignment))
+		}
+		// 转译为 getAttr(obj, "member") 然后调用
+		return fmt.Sprintf("call(getAttr(%s, %q), []interface{}{%s})", c.expressionCode(e.Object, isAssignment), e.Member.Value, strings.Join(args, ", "))
 	}
-	// 转译为 getAttr(obj, "member") 然后调用
-	return fmt.Sprintf("call(getAttr(%s, %q), []interface{}{%s})", c.expressionCode(e.Object, isAssignment), e.Member.Value, strings.Join(args, ", "))
+	return fmt.Sprintf("getAttr(%s, %q)", c.expressionCode(e.Object, isAssignment), e.Member.Value)
 }
 
 func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment bool) string {
@@ -439,7 +490,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 		// 如果是赋值引用，且语句是打印语句或非定义性质的表达式语句，则跳过
 		if isAssignment {
 			switch stmt.(type) {
-			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.LoopStatement, *ast.ForStatement, *ast.TryCatchStatement:
+			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.LoopStatement, *ast.ForStatement, *ast.TryCatchStatement, *ast.TypeDefinitionStatement:
 				continue
 			case *ast.ReturnStatement:
 				continue

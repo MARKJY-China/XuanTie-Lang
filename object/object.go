@@ -24,6 +24,8 @@ const (
 	BUILTIN_OBJ      ObjectType = "BUILTIN"
 	BREAK_OBJ        ObjectType = "BREAK"
 	CONTINUE_OBJ     ObjectType = "CONTINUE"
+	CLASS_OBJ        ObjectType = "CLASS"
+	INSTANCE_OBJ     ObjectType = "INSTANCE"
 )
 
 type Object interface {
@@ -180,3 +182,30 @@ type Continue struct{}
 
 func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
 func (c *Continue) Inspect() string  { return "继续" }
+
+type Class struct {
+	Name string
+	Body []ast.Statement
+	Env  map[string]Object
+}
+
+func (c *Class) Type() ObjectType { return CLASS_OBJ }
+func (c *Class) Inspect() string  { return fmt.Sprintf("型 %s { ... }", c.Name) }
+
+type Instance struct {
+	Class  *Class
+	Fields map[string]Object
+}
+
+func (i *Instance) Type() ObjectType { return INSTANCE_OBJ }
+func (i *Instance) Inspect() string {
+	var out strings.Builder
+	fields := []string{}
+	for k, v := range i.Fields {
+		fields = append(fields, fmt.Sprintf("%s: %s", k, v.Inspect()))
+	}
+	out.WriteString("造 " + i.Class.Name + " {")
+	out.WriteString(strings.Join(fields, ", "))
+	out.WriteString("}")
+	return out.String()
+}

@@ -251,6 +251,75 @@ func (tl *TypeLiteral) TokenLiteral() string { return tl.Token.Literal }
 func (tl *TypeLiteral) GetLine() int         { return tl.Token.Line }
 func (tl *TypeLiteral) String() string       { return tl.Value }
 
+// TypeDefinitionStatement 类型定义语句
+type TypeDefinitionStatement struct {
+	Token token.Token // "型"
+	Name  *Identifier
+	Block []Statement
+}
+
+func (tds *TypeDefinitionStatement) statementNode()       {}
+func (tds *TypeDefinitionStatement) TokenLiteral() string { return tds.Token.Literal }
+func (tds *TypeDefinitionStatement) GetLine() int         { return tds.Token.Line }
+func (tds *TypeDefinitionStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("型 ")
+	out.WriteString(tds.Name.String())
+	out.WriteString(" { ")
+	for _, stmt := range tds.Block {
+		out.WriteString(stmt.String())
+		out.WriteString(" ")
+	}
+	out.WriteString("}")
+	return out.String()
+}
+
+// NewExpression 实例化表达式
+type NewExpression struct {
+	Token token.Token // "造"
+	Type  Expression  // Identifier
+	Data  Expression  // DictLiteral for initial values
+}
+
+func (ne *NewExpression) expressionNode()      {}
+func (ne *NewExpression) TokenLiteral() string { return ne.Token.Literal }
+func (ne *NewExpression) GetLine() int         { return ne.Token.Line }
+func (ne *NewExpression) String() string {
+	var out bytes.Buffer
+	out.WriteString("造 ")
+	out.WriteString(ne.Type.String())
+	if ne.Data != nil {
+		out.WriteString(ne.Data.String())
+	}
+	return out.String()
+}
+
+// SerializeExpression 序列化表达式
+type SerializeExpression struct {
+	Token token.Token // "化"
+	Value Expression
+}
+
+func (se *SerializeExpression) expressionNode()      {}
+func (se *SerializeExpression) TokenLiteral() string { return se.Token.Literal }
+func (se *SerializeExpression) GetLine() int         { return se.Token.Line }
+func (se *SerializeExpression) String() string {
+	return "化(" + se.Value.String() + ")"
+}
+
+// DeserializeExpression 反序列化表达式
+type DeserializeExpression struct {
+	Token token.Token // "解"
+	Value Expression
+}
+
+func (de *DeserializeExpression) expressionNode()      {}
+func (de *DeserializeExpression) TokenLiteral() string { return de.Token.Literal }
+func (de *DeserializeExpression) GetLine() int         { return de.Token.Line }
+func (de *DeserializeExpression) String() string {
+	return "解(" + de.Value.String() + ")"
+}
+
 // AsyncExpression 异步执行表达式
 type AsyncExpression struct {
 	Token token.Token // "异步"

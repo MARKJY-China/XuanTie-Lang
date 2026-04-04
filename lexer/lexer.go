@@ -229,6 +229,14 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_PARALLEL
 	case "引", "引用":
 		return token.TOKEN_IMPORT
+	case "化":
+		return token.TOKEN_SERIALIZE
+	case "解":
+		return token.TOKEN_DESERIALIZE
+	case "型":
+		return token.TOKEN_TYPE_DEF
+	case "造":
+		return token.TOKEN_NEW
 	case "且":
 		return token.TOKEN_AND
 	case "或":

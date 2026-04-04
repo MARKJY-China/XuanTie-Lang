@@ -1,6 +1,7 @@
 package evaluator
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"path/filepath"
@@ -97,6 +98,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return &object.Continue{}
 	case *ast.TryCatchStatement:
 		return evalTryCatchStatement(n, env)
+	case *ast.TypeDefinitionStatement:
+		return evalTypeDefinitionStatement(n, env)
 	case *ast.AsyncExpression:
 		return evalAsyncExpression(n, env)
 	case *ast.ParallelExpression:
@@ -109,6 +112,12 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return &object.ReturnValue{Value: val}
 	case *ast.ImportExpression:
 		return evalImportExpression(n, env, isAssignment)
+	case *ast.NewExpression:
+		return evalNewExpression(n, env)
+	case *ast.SerializeExpression:
+		return evalSerializeExpression(n, env)
+	case *ast.DeserializeExpression:
+		return evalDeserializeExpression(n, env)
 	case *ast.FunctionLiteral:
 		return &object.Function{Parameters: n.Parameters, Body: n.Body, Env: env}
 	case *ast.CallExpression:
@@ -519,6 +528,159 @@ func evalTryCatchStatement(ts *ast.TryCatchStatement, env map[string]object.Obje
 	return result
 }
 
+func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[string]object.Object) object.Object {
+	class := &object.Class{
+		Name: tds.Name.Value,
+		Body: tds.Block,
+		Env:  env,
+	}
+	env[tds.Name.Value] = class
+	return &object.Null{}
+}
+
+func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) object.Object {
+	obj := Eval(ne.Type, env)
+	if isError(obj) {
+		return obj
+	}
+
+	class, ok := obj.(*object.Class)
+	if !ok {
+		return newError(ne.GetLine(), "不是类型: %s", obj.Type())
+	}
+
+	instance := &object.Instance{
+		Class:  class,
+		Fields: make(map[string]object.Object),
+	}
+
+	// 初始化默认值
+	instanceEnv := extendEnv(class.Env)
+	for _, stmt := range class.Body {
+		if varStmt, ok := stmt.(*ast.VarStatement); ok {
+			val := EvalContext(varStmt.Value, instanceEnv, true)
+			if isError(val) {
+				return val
+			}
+			instance.Fields[varStmt.Name.Value] = val
+			instanceEnv[varStmt.Name.Value] = val
+		} else {
+			Eval(stmt, instanceEnv)
+		}
+	}
+
+	// 覆盖初始化值
+	if ne.Data != nil {
+		data := Eval(ne.Data, env)
+		if isError(data) {
+			return data
+		}
+		if dict, ok := data.(*object.Dict); ok {
+			for k, v := range dict.Pairs {
+				instance.Fields[k] = v
+			}
+		}
+	}
+
+	return instance
+}
+
+func evalSerializeExpression(se *ast.SerializeExpression, env map[string]object.Object) object.Object {
+	val := Eval(se.Value, env)
+	if isError(val) {
+		return val
+	}
+
+	raw := objectToInterface(val)
+	bytes, err := json.Marshal(raw)
+	if err != nil {
+		return newError(se.GetLine(), "序列化失败: %s", err.Error())
+	}
+
+	return &object.String{Value: string(bytes)}
+}
+
+func evalDeserializeExpression(de *ast.DeserializeExpression, env map[string]object.Object) object.Object {
+	val := Eval(de.Value, env)
+	if isError(val) {
+		return val
+	}
+
+	str, ok := val.(*object.String)
+	if !ok {
+		return newError(de.GetLine(), "解期望字符串，得到 %s", val.Type())
+	}
+
+	var raw interface{}
+	err := json.Unmarshal([]byte(str.Value), &raw)
+	if err != nil {
+		return newError(de.GetLine(), "反序列化失败: %s", err.Error())
+	}
+
+	return interfaceToObject(raw)
+}
+
+func objectToInterface(obj object.Object) interface{} {
+	switch o := obj.(type) {
+	case *object.Integer:
+		return o.Value
+	case *object.Float:
+		return o.Value
+	case *object.String:
+		return o.Value
+	case *object.Boolean:
+		return o.Value
+	case *object.Array:
+		res := make([]interface{}, len(o.Elements))
+		for i, e := range o.Elements {
+			res[i] = objectToInterface(e)
+		}
+		return res
+	case *object.Dict:
+		res := make(map[string]interface{})
+		for k, v := range o.Pairs {
+			res[k] = objectToInterface(v)
+		}
+		return res
+	case *object.Instance:
+		res := make(map[string]interface{})
+		for k, v := range o.Fields {
+			res[k] = objectToInterface(v)
+		}
+		return res
+	default:
+		return nil
+	}
+}
+
+func interfaceToObject(raw interface{}) object.Object {
+	switch v := raw.(type) {
+	case bool:
+		return &object.Boolean{Value: v}
+	case float64:
+		if v == float64(int64(v)) {
+			return &object.Integer{Value: int64(v)}
+		}
+		return &object.Float{Value: v}
+	case string:
+		return &object.String{Value: v}
+	case []interface{}:
+		elements := make([]object.Object, len(v))
+		for i, e := range v {
+			elements[i] = interfaceToObject(e)
+		}
+		return &object.Array{Elements: elements}
+	case map[string]interface{}:
+		pairs := make(map[string]object.Object)
+		for k, val := range v {
+			pairs[k] = interfaceToObject(val)
+		}
+		return &object.Dict{Pairs: pairs}
+	default:
+		return &object.Null{}
+	}
+}
+
 func evalAsyncExpression(ae *ast.AsyncExpression, env map[string]object.Object) object.Object {
 	task := &object.Task{
 		Channel: make(chan object.Object, 1),
@@ -614,6 +776,29 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 	if dict, ok := obj.(*object.Dict); ok {
 		if val, ok := dict.Pairs[mce.Member.Value]; ok {
 			return applyFunction(mce.GetLine(), val, args)
+		}
+	}
+
+	// 处理实例的成员调用
+	if instance, ok := obj.(*object.Instance); ok {
+		if val, ok := instance.Fields[mce.Member.Value]; ok {
+			// 如果是函数，尝试进行方法绑定
+			if fn, ok := val.(*object.Function); ok {
+				methodEnv := extendEnv(fn.Env)
+				for k, v := range instance.Fields {
+					methodEnv[k] = v
+				}
+				boundFn := &object.Function{
+					Parameters: fn.Parameters,
+					Body:       fn.Body,
+					Env:        methodEnv,
+				}
+				if mce.Arguments != nil {
+					return applyFunction(mce.GetLine(), boundFn, args)
+				}
+				return boundFn
+			}
+			return val
 		}
 	}
 

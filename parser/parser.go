@@ -99,6 +99,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseReturnStatement()
 	case token.TOKEN_IMPORT:
 		return p.parseExpressionStatement()
+	case token.TOKEN_TYPE_DEF:
+		return p.parseTypeDefinitionStatement()
 	case token.TOKEN_IDENT:
 		if p.peek.Type == token.TOKEN_ASSIGN {
 			return p.parseAssignStatement()
@@ -393,6 +395,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseAwaitExpression()
 	case token.TOKEN_IMPORT:
 		leftExp = p.parseImportExpression()
+	case token.TOKEN_NEW:
+		leftExp = p.parseNewExpression()
+	case token.TOKEN_SERIALIZE:
+		leftExp = p.parseSerializeExpression()
+	case token.TOKEN_DESERIALIZE:
+		leftExp = p.parseDeserializeExpression()
 	case token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
 		leftExp = p.parseResultLiteral()
 	case token.TOKEN_NOT, token.TOKEN_MINUS:
@@ -485,6 +493,64 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	precedence := p.curPrecedence()
 	p.nextToken()
 	exp.Right = p.parseExpression(precedence)
+	return exp
+}
+
+func (p *Parser) parseTypeDefinitionStatement() *ast.TypeDefinitionStatement {
+	stmt := &ast.TypeDefinitionStatement{Token: p.cur}
+
+	if !p.expectPeek(token.TOKEN_IDENT) {
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+
+	stmt.Block = p.parseBlock()
+
+	return stmt
+}
+
+func (p *Parser) parseNewExpression() ast.Expression {
+	exp := &ast.NewExpression{Token: p.cur}
+	p.nextToken() // cur: type identifier
+
+	exp.Type = p.parseExpression(PRODUCT)
+
+	if p.peek.Type == token.TOKEN_LBRACE {
+		p.nextToken() // cur: {
+		exp.Data = p.parseDictLiteral()
+	}
+
+	return exp
+}
+
+func (p *Parser) parseSerializeExpression() ast.Expression {
+	exp := &ast.SerializeExpression{Token: p.cur}
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	exp.Value = p.parseExpression(LOWEST)
+	if !p.expectPeek(token.TOKEN_RPAREN) {
+		return nil
+	}
+	return exp
+}
+
+func (p *Parser) parseDeserializeExpression() ast.Expression {
+	exp := &ast.DeserializeExpression{Token: p.cur}
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	exp.Value = p.parseExpression(LOWEST)
+	if !p.expectPeek(token.TOKEN_RPAREN) {
+		return nil
+	}
 	return exp
 }
 
@@ -607,10 +673,11 @@ func (p *Parser) parseMemberCallExpression(left ast.Expression) ast.Expression {
 	}
 	p.nextToken()
 	exp.Member = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
-	if !p.expectPeek(token.TOKEN_LPAREN) {
-		return nil
+
+	if p.peek.Type == token.TOKEN_LPAREN {
+		p.nextToken() // cur: (
+		exp.Arguments = p.parseCallArguments()
 	}
-	exp.Arguments = p.parseCallArguments()
 	return exp
 }
 
