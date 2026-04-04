@@ -258,15 +258,39 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 		}
 	}
 
-	content, err := ioutil.ReadFile(path)
+	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return newError(ie.GetLine(), "引用文件失败: 找不到文件或无法读取 (%s)", path)
+		return newError(ie.GetLine(), "引用文件失败: 无法获取绝对路径 (%s)", path)
+	}
+
+	// 循环引用检测
+	stack := []string{}
+	if stackObj, ok := env["__STACK__"]; ok {
+		if s, ok := stackObj.(*object.Array); ok {
+			for _, item := range s.Elements {
+				if item.Inspect() == absPath {
+					// 发现循环引用
+					var trace string
+					for _, p := range s.Elements {
+						trace += p.Inspect() + " -> "
+					}
+					trace += absPath
+					return newError(ie.GetLine(), "检测到循环引用: %s", trace)
+				}
+				stack = append(stack, item.Inspect())
+			}
+		}
+	}
+
+	content, err := ioutil.ReadFile(absPath)
+	if err != nil {
+		return newError(ie.GetLine(), "引用文件失败: 找不到文件或无法读取 (%s)", absPath)
 	}
 
 	l := lexer.New(string(content))
 	p := parser.New(l)
 	program := p.ParseProgram()
-	program.FilePath = path // 设置新程序的路径，以便它也能正确处理它的引用
+	program.FilePath = absPath
 
 	if len(p.Errors()) != 0 {
 		return newError(ie.GetLine(), "引用文件解析错误: %s", p.Errors()[0])
@@ -279,6 +303,18 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 		moduleEnv["__PURE__"] = &object.Boolean{Value: true}
 	}
 
+	// 更新引用栈
+	newStack := &object.Array{Elements: []object.Object{}}
+	for _, s := range stack {
+		newStack.Elements = append(newStack.Elements, &object.String{Value: s})
+	}
+	// 将当前主文件（如果有）加入栈
+	if progPath, ok := env["__FILE__"]; ok {
+		newStack.Elements = append(newStack.Elements, progPath)
+	}
+	moduleEnv["__STACK__"] = newStack
+	moduleEnv["__FILE__"] = &object.String{Value: absPath}
+
 	// 执行模块代码
 	result := Eval(program, moduleEnv)
 	if isError(result) {
@@ -289,7 +325,7 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	dict := &object.Dict{Pairs: make(map[string]object.Object)}
 	for k, v := range moduleEnv {
 		// 过滤掉内置函数和内部保留变量，只导出模块定义的变量
-		if _, isBuiltin := stdlib.Builtins[k]; !isBuiltin && k != "__DIR__" && k != "__PURE__" {
+		if _, isBuiltin := stdlib.Builtins[k]; !isBuiltin && k != "__DIR__" && k != "__PURE__" && k != "__STACK__" && k != "__FILE__" {
 			dict.Pairs[k] = v
 		}
 	}
@@ -300,7 +336,9 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 func evalProgram(prog *ast.Program, env map[string]object.Object) object.Object {
 	// 设置当前程序所在的目录到环境，用于后续的相对路径引用
 	if prog.FilePath != "" {
-		env["__DIR__"] = &object.String{Value: filepath.Dir(prog.FilePath)}
+		absPath, _ := filepath.Abs(prog.FilePath)
+		env["__DIR__"] = &object.String{Value: filepath.Dir(absPath)}
+		env["__FILE__"] = &object.String{Value: absPath}
 	}
 
 	var result object.Object

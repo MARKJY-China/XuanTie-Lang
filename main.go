@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.4.0"
+var version = "0.4.1"
 
 const (
 	colorReset = "\033[0m"
@@ -136,6 +136,22 @@ func main() {
 	if isBuild {
 		c := compiler.New(program)
 		goCode := c.Compile()
+
+		if len(c.Errors()) > 0 {
+			if useColor {
+				fmt.Printf("%s%s编译转译错误:%s\n", colorBold, colorRed, colorReset)
+			} else {
+				fmt.Println("编译转译错误:")
+			}
+			for _, msg := range c.Errors() {
+				if useColor {
+					fmt.Printf("\t%s%s%s\n", colorRed, msg, colorReset)
+				} else {
+					fmt.Printf("\t%s\n", msg)
+				}
+			}
+			return
+		}
 
 		// 使用系统临时目录存储中间文件，隐藏 Go 字眼
 		tmpDir := os.TempDir()

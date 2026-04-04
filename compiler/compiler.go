@@ -12,10 +12,16 @@ import (
 )
 
 type GoCompiler struct {
-	program    *ast.Program
-	output     bytes.Buffer
-	modules    map[string]string // 缓存已转译的模块路径和生成的函数名
-	moduleCode bytes.Buffer      // 存储所有模块生成的 Go 代码
+	program     *ast.Program
+	output      bytes.Buffer
+	modules     map[string]string // 缓存已转译的模块路径和生成的函数名
+	moduleCode  bytes.Buffer      // 存储所有模块生成的 Go 代码
+	importStack []string          // 用于循环引用检测
+	errors      []string
+}
+
+func (c *GoCompiler) Errors() []string {
+	return c.errors
 }
 
 func New(program *ast.Program) *GoCompiler {
@@ -26,6 +32,10 @@ func New(program *ast.Program) *GoCompiler {
 }
 
 func (c *GoCompiler) Compile() string {
+	if c.program.FilePath != "" {
+		absPath, _ := filepath.Abs(c.program.FilePath)
+		c.importStack = append(c.importStack, absPath)
+	}
 	c.writeHeader()
 	c.writeBody()
 	c.writeFooter()
@@ -369,6 +379,15 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 		return "nil"
 	}
 
+	// 循环引用检测
+	for _, p := range c.importStack {
+		if p == absPath {
+			// 发现循环引用
+			c.errors = append(c.errors, fmt.Sprintf("[行:%d] 检测到循环引用: %s", e.GetLine(), strings.Join(c.importStack, " -> ")+" -> "+absPath))
+			return "nil"
+		}
+	}
+
 	// 缓存模块函数名，但要区分 assignment 模式
 	cacheKey := absPath
 	if isAssignment {
@@ -401,6 +420,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 	// 保存主程序的 program 指针，转译子程序
 	oldProg := c.program
 	c.program = subProg
+	c.importStack = append(c.importStack, absPath)
 	for _, stmt := range subProg.Statements {
 		// 如果是赋值引用，且语句是打印语句或非定义性质的表达式语句，则跳过
 		if isAssignment {
@@ -418,6 +438,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 			c.writeStatementToBuffer(stmt, 1, &c.moduleCode)
 		}
 	}
+	c.importStack = c.importStack[:len(c.importStack)-1]
 	c.program = oldProg
 
 	c.moduleCode.WriteString("\treturn exports\n")
