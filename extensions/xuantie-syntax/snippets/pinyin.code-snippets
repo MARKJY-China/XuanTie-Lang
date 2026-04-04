@@ -5,9 +5,28 @@
         "description": "打印 (dayin -> 打印)"
     },
     "Variable": {
-        "prefix": ["bl", "bianl", "bianliang"],
+        "prefix": ["bianliang"],
         "body": "变量 ${1:名字} = ${2:值}",
         "description": "变量 (bianliang -> 变量)"
+    },
+    "For": {
+        "prefix": ["bl", "bianli"],
+        "body": [
+            "遍历 ${1:元素} 于 ${2:列表} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "遍历 (bianli -> 遍历)"
+    },
+    "Break": {
+        "prefix": ["tc", "tiaochu"],
+        "body": "跳出",
+        "description": "跳出 (tiaochu -> 跳出)"
+    },
+    "Continue": {
+        "prefix": ["jx", "jixu"],
+        "body": "继续",
+        "description": "继续 (jixu -> 继续)"
     },
     "Constant": {
         "prefix": ["cl", "changl", "changliang"],
