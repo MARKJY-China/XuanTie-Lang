@@ -18,11 +18,15 @@ func RegisterStdLib(env map[string]object.Object) {
 }
 
 func Eval(node ast.Node, env map[string]object.Object) object.Object {
+	return EvalContext(node, env, false)
+}
+
+func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool) object.Object {
 	switch n := node.(type) {
 	case *ast.Program:
 		return evalProgram(n, env)
 	case *ast.AssignStatement:
-		val := Eval(n.Value, env)
+		val := EvalContext(n.Value, env, true)
 		if isError(val) {
 			return val
 		}
@@ -32,7 +36,7 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 		env[n.Name] = val
 		return val
 	case *ast.VarStatement:
-		val := Eval(n.Value, env)
+		val := EvalContext(n.Value, env, true)
 		if isError(val) {
 			return val
 		}
@@ -68,9 +72,12 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 		env[n.Name.Value] = val
 		return val
 	case *ast.ExpressionStatement:
-		return Eval(n.Expression, env)
+		return EvalContext(n.Expression, env, false)
 	case *ast.PrintStatement:
-		val := Eval(n.Value, env)
+		if pure, ok := env["__PURE__"]; ok && pure.(*object.Boolean).Value {
+			return &object.Null{}
+		}
+		val := EvalContext(n.Value, env, isAssignment)
 		if isError(val) {
 			return val
 		}
@@ -93,13 +100,13 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 	case *ast.ParallelExpression:
 		return evalParallelExpression(n, env)
 	case *ast.ReturnStatement:
-		val := Eval(n.ReturnValue, env)
+		val := EvalContext(n.ReturnValue, env, isAssignment)
 		if isError(val) {
 			return val
 		}
 		return &object.ReturnValue{Value: val}
 	case *ast.ImportExpression:
-		return evalImportExpression(n, env)
+		return evalImportExpression(n, env, isAssignment)
 	case *ast.FunctionLiteral:
 		return &object.Function{Parameters: n.Parameters, Body: n.Body, Env: env}
 	case *ast.CallExpression:
@@ -197,7 +204,7 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 		}
 		return evalInfixExpression(n.GetLine(), n.Operator, left, right)
 	case *ast.PrefixExpression:
-		right := Eval(n.Right, env)
+		right := EvalContext(n.Right, env, isAssignment)
 		if isError(right) {
 			return right
 		}
@@ -207,7 +214,40 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 	}
 }
 
-func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object) object.Object {
+func evalExpressionsContext(exps []ast.Expression, env map[string]object.Object, isAssignment bool) []object.Object {
+	var result []object.Object
+	for _, e := range exps {
+		evaluated := EvalContext(e, env, isAssignment)
+		if isError(evaluated) {
+			return []object.Object{evaluated}
+		}
+		result = append(result, evaluated)
+	}
+	return result
+}
+
+func evalDictLiteralContext(dl *ast.DictLiteral, env map[string]object.Object, isAssignment bool) object.Object {
+	dict := &object.Dict{Pairs: make(map[string]object.Object)}
+
+	for keyNode, valueNode := range dl.Pairs {
+		key := EvalContext(keyNode, env, isAssignment)
+		if isError(key) {
+			return key
+		}
+
+		k := key.Inspect()
+		v := EvalContext(valueNode, env, isAssignment)
+		if isError(v) {
+			return v
+		}
+
+		dict.Pairs[k] = v
+	}
+
+	return dict
+}
+
+func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object, isAssignment bool) object.Object {
 	path := ie.Path
 	// 如果是相对路径，且环境中有当前目录信息，则进行路径拼接
 	if !filepath.IsAbs(path) {
@@ -235,6 +275,9 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	// 模块有自己的独立环境
 	moduleEnv := make(map[string]object.Object)
 	RegisterStdLib(moduleEnv)
+	if isAssignment {
+		moduleEnv["__PURE__"] = &object.Boolean{Value: true}
+	}
 
 	// 执行模块代码
 	result := Eval(program, moduleEnv)
@@ -246,7 +289,7 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	dict := &object.Dict{Pairs: make(map[string]object.Object)}
 	for k, v := range moduleEnv {
 		// 过滤掉内置函数和内部保留变量，只导出模块定义的变量
-		if _, isBuiltin := stdlib.Builtins[k]; !isBuiltin && k != "__DIR__" {
+		if _, isBuiltin := stdlib.Builtins[k]; !isBuiltin && k != "__DIR__" && k != "__PURE__" {
 			dict.Pairs[k] = v
 		}
 	}

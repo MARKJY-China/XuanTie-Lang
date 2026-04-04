@@ -227,14 +227,14 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	indentStr := strings.Repeat("\t", indent)
 	switch s := stmt.(type) {
 	case *ast.VarStatement:
-		c.output.WriteString(fmt.Sprintf("%svar %s interface{} = %s\n", indentStr, s.Name.Value, c.expressionCode(s.Value)))
+		c.output.WriteString(fmt.Sprintf("%svar %s interface{} = %s\n", indentStr, s.Name.Value, c.expressionCode(s.Value, true)))
 		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.AssignStatement:
-		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value)))
+		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value, true)))
 	case *ast.PrintStatement:
-		c.output.WriteString(fmt.Sprintf("%sfmt.Println(inspect(%s))\n", indentStr, c.expressionCode(s.Value)))
+		c.output.WriteString(fmt.Sprintf("%sfmt.Println(inspect(%s))\n", indentStr, c.expressionCode(s.Value, false)))
 	case *ast.IfStatement:
-		c.output.WriteString(fmt.Sprintf("%sif isTruthy(%s) {\n", indentStr, c.expressionCode(s.Condition)))
+		c.output.WriteString(fmt.Sprintf("%sif isTruthy(%s) {\n", indentStr, c.expressionCode(s.Condition, false)))
 		for _, stmt := range s.ThenBlock {
 			c.writeStatement(stmt, indent+1)
 		}
@@ -246,14 +246,14 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		}
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 	case *ast.WhileStatement:
-		c.output.WriteString(fmt.Sprintf("%sfor isTruthy(%s) {\n", indentStr, c.expressionCode(s.Condition)))
+		c.output.WriteString(fmt.Sprintf("%sfor isTruthy(%s) {\n", indentStr, c.expressionCode(s.Condition, false)))
 		for _, stmt := range s.Block {
 			c.writeStatement(stmt, indent+1)
 		}
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 	case *ast.ForStatement:
 		// 基础遍历实现
-		c.output.WriteString(fmt.Sprintf("%sfor _, _val := range toSlice(%s) {\n", indentStr, c.expressionCode(s.Iterable)))
+		c.output.WriteString(fmt.Sprintf("%sfor _, _val := range toSlice(%s) {\n", indentStr, c.expressionCode(s.Iterable, false)))
 		c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _val\n", indentStr, s.Variable.Value))
 		for _, stmt := range s.Block {
 			c.writeStatement(stmt, indent+1)
@@ -281,16 +281,16 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		}
 		c.output.WriteString(fmt.Sprintf("%s}()\n", indentStr))
 	case *ast.ReturnStatement:
-		c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, c.expressionCode(s.ReturnValue)))
+		c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, c.expressionCode(s.ReturnValue, false)))
 	case *ast.ExpressionStatement:
-		exprCode := c.expressionCode(s.Expression)
+		exprCode := c.expressionCode(s.Expression, false)
 		if exprCode != "nil" {
 			c.output.WriteString(fmt.Sprintf("%s%s\n", indentStr, exprCode))
 		}
 	}
 }
 
-func (c *GoCompiler) expressionCode(exp ast.Expression) string {
+func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) string {
 	switch e := exp.(type) {
 	case *ast.IntegerLiteral:
 		return fmt.Sprintf("int64(%d)", e.Value)
@@ -303,41 +303,63 @@ func (c *GoCompiler) expressionCode(exp ast.Expression) string {
 	case *ast.Identifier:
 		return e.Value
 	case *ast.InfixExpression:
-		return c.infixExpressionCode(e)
+		return c.infixExpressionCode(e, isAssignment)
 	case *ast.CallExpression:
-		return c.callExpressionCode(e)
+		return c.callExpressionCode(e, isAssignment)
 	case *ast.MemberCallExpression:
-		return c.memberCallExpressionCode(e)
+		return c.memberCallExpressionCode(e, isAssignment)
 	case *ast.ArrayLiteral:
-		return c.arrayLiteralCode(e)
+		return c.arrayLiteralCode(e, isAssignment)
 	case *ast.DictLiteral:
-		return c.dictLiteralCode(e)
+		return c.dictLiteralCode(e, isAssignment)
 	case *ast.IndexExpression:
-		return c.indexExpressionCode(e)
+		return c.indexExpressionCode(e, isAssignment)
 	case *ast.AsyncExpression:
-		return c.asyncExpressionCode(e)
+		return c.asyncExpressionCode(e, isAssignment)
 	case *ast.ParallelExpression:
-		return c.parallelExpressionCode(e)
+		return c.parallelExpressionCode(e, isAssignment)
 	case *ast.AwaitExpression:
-		return c.awaitExpressionCode(e)
+		return c.awaitExpressionCode(e, isAssignment)
 	case *ast.FunctionLiteral:
-		return c.functionLiteralCode(e)
+		return c.functionLiteralCode(e, isAssignment)
 	case *ast.ImportExpression:
-		return c.importExpressionCode(e)
+		return c.importExpressionCode(e, isAssignment)
 	}
 	return "nil"
 }
 
-func (c *GoCompiler) memberCallExpressionCode(e *ast.MemberCallExpression) string {
-	args := []string{}
-	for _, a := range e.Arguments {
-		args = append(args, c.expressionCode(a))
+func (c *GoCompiler) arrayLiteralCode(e *ast.ArrayLiteral, isAssignment bool) string {
+	elements := []string{}
+	for _, el := range e.Elements {
+		elements = append(elements, c.expressionCode(el, isAssignment))
 	}
-	// 转译为 getAttr(obj, "member") 然后调用
-	return fmt.Sprintf("call(getAttr(%s, %q), []interface{}{%s})", c.expressionCode(e.Object), e.Member.Value, strings.Join(args, ", "))
+	return fmt.Sprintf("[]interface{}{%s}", strings.Join(elements, ", "))
 }
 
-func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression) string {
+func (c *GoCompiler) dictLiteralCode(e *ast.DictLiteral, isAssignment bool) string {
+	pairs := []string{}
+	for k, v := range e.Pairs {
+		pairs = append(pairs, fmt.Sprintf("%s: %s", c.expressionCode(k, isAssignment), c.expressionCode(v, isAssignment)))
+	}
+	// 注意：Go 的 map[interface{}]interface{} 或者是特定的结构
+	// 这里简单化，我们转为 map[string]interface{}
+	return fmt.Sprintf("map[string]interface{}{%s}", strings.Join(pairs, ", "))
+}
+
+func (c *GoCompiler) indexExpressionCode(e *ast.IndexExpression, isAssignment bool) string {
+	return fmt.Sprintf("index(%s, %s)", c.expressionCode(e.Left, isAssignment), c.expressionCode(e.Index, isAssignment))
+}
+
+func (c *GoCompiler) memberCallExpressionCode(e *ast.MemberCallExpression, isAssignment bool) string {
+	args := []string{}
+	for _, a := range e.Arguments {
+		args = append(args, c.expressionCode(a, isAssignment))
+	}
+	// 转译为 getAttr(obj, "member") 然后调用
+	return fmt.Sprintf("call(getAttr(%s, %q), []interface{}{%s})", c.expressionCode(e.Object, isAssignment), e.Member.Value, strings.Join(args, ", "))
+}
+
+func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment bool) string {
 	path := e.Path
 	if !filepath.IsAbs(path) && c.program.FilePath != "" {
 		path = filepath.Join(filepath.Dir(c.program.FilePath), path)
@@ -347,7 +369,13 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression) string {
 		return "nil"
 	}
 
-	if funcName, ok := c.modules[absPath]; ok {
+	// 缓存模块函数名，但要区分 assignment 模式
+	cacheKey := absPath
+	if isAssignment {
+		cacheKey += "_pure"
+	}
+
+	if funcName, ok := c.modules[cacheKey]; ok {
 		return fmt.Sprintf("%s()", funcName)
 	}
 
@@ -364,7 +392,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression) string {
 
 	// 生成唯一函数名
 	funcName := fmt.Sprintf("_import_%d", len(c.modules))
-	c.modules[absPath] = funcName
+	c.modules[cacheKey] = funcName
 
 	// 在 moduleCode 中写入该模块的转译函数
 	c.moduleCode.WriteString(fmt.Sprintf("\nfunc %s() map[string]interface{} {\n", funcName))
@@ -374,6 +402,14 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression) string {
 	oldProg := c.program
 	c.program = subProg
 	for _, stmt := range subProg.Statements {
+		// 如果是赋值引用，且语句是打印语句或非定义性质的表达式语句，则跳过
+		if isAssignment {
+			switch stmt.(type) {
+			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.ForStatement, *ast.TryCatchStatement:
+				continue
+			}
+		}
+
 		// 如果是变量定义，记录到 exports
 		if varStmt, ok := stmt.(*ast.VarStatement); ok {
 			c.writeStatementToBuffer(varStmt, 1, &c.moduleCode)
@@ -390,7 +426,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression) string {
 	return fmt.Sprintf("%s()", funcName)
 }
 
-func (c *GoCompiler) functionLiteralCode(e *ast.FunctionLiteral) string {
+func (c *GoCompiler) functionLiteralCode(e *ast.FunctionLiteral, isAssignment bool) string {
 	var out bytes.Buffer
 	out.WriteString("func(args []interface{}) interface{} {\n")
 	for i, p := range e.Parameters {
@@ -415,7 +451,7 @@ func (c *GoCompiler) writeStatementToBuffer(stmt ast.Statement, indent int, buf 
 	c.output = oldOutput
 }
 
-func (c *GoCompiler) asyncExpressionCode(e *ast.AsyncExpression) string {
+func (c *GoCompiler) asyncExpressionCode(e *ast.AsyncExpression, isAssignment bool) string {
 	var out bytes.Buffer
 	out.WriteString("func() *Task {\n")
 	out.WriteString("\t\tch := make(chan interface{}, 1)\n")
@@ -423,7 +459,7 @@ func (c *GoCompiler) asyncExpressionCode(e *ast.AsyncExpression) string {
 	out.WriteString("\t\t\tvar last interface{}\n")
 	for _, stmt := range e.Block {
 		if es, ok := stmt.(*ast.ExpressionStatement); ok {
-			out.WriteString(fmt.Sprintf("\t\t\tlast = %s\n", c.expressionCode(es.Expression)))
+			out.WriteString(fmt.Sprintf("\t\t\tlast = %s\n", c.expressionCode(es.Expression, isAssignment)))
 		} else {
 			c.writeStatementToBuffer(stmt, 3, &out)
 		}
@@ -435,11 +471,11 @@ func (c *GoCompiler) asyncExpressionCode(e *ast.AsyncExpression) string {
 	return out.String()
 }
 
-func (c *GoCompiler) awaitExpressionCode(e *ast.AwaitExpression) string {
-	return fmt.Sprintf("await(%s)", c.expressionCode(e.Value))
+func (c *GoCompiler) awaitExpressionCode(e *ast.AwaitExpression, isAssignment bool) string {
+	return fmt.Sprintf("await(%s)", c.expressionCode(e.Value, isAssignment))
 }
 
-func (c *GoCompiler) parallelExpressionCode(e *ast.ParallelExpression) string {
+func (c *GoCompiler) parallelExpressionCode(e *ast.ParallelExpression, isAssignment bool) string {
 	var out bytes.Buffer
 	out.WriteString("func() []interface{} {\n")
 	out.WriteString(fmt.Sprintf("\t\tchs := make([]chan interface{}, %d)\n", len(e.Blocks)))
@@ -449,7 +485,7 @@ func (c *GoCompiler) parallelExpressionCode(e *ast.ParallelExpression) string {
 		out.WriteString("\t\t\tvar last interface{}\n")
 		for _, stmt := range block {
 			if es, ok := stmt.(*ast.ExpressionStatement); ok {
-				out.WriteString(fmt.Sprintf("\t\t\t\tlast = %s\n", c.expressionCode(es.Expression)))
+				out.WriteString(fmt.Sprintf("\t\t\t\tlast = %s\n", c.expressionCode(es.Expression, isAssignment)))
 			} else {
 				c.writeStatementToBuffer(stmt, 4, &out)
 			}
@@ -466,20 +502,20 @@ func (c *GoCompiler) parallelExpressionCode(e *ast.ParallelExpression) string {
 	return out.String()
 }
 
-func (c *GoCompiler) callExpressionCode(e *ast.CallExpression) string {
+func (c *GoCompiler) callExpressionCode(e *ast.CallExpression, isAssignment bool) string {
 	// 特殊处理内置关键字：成功、失败
 	if ident, ok := e.Function.(*ast.Identifier); ok {
 		if ident.Value == "成功" {
 			val := "nil"
 			if len(e.Arguments) > 0 {
-				val = c.expressionCode(e.Arguments[0])
+				val = c.expressionCode(e.Arguments[0], isAssignment)
 			}
 			return fmt.Sprintf("&Result{IsSuccess: true, Value: %s}", val)
 		}
 		if ident.Value == "失败" {
 			val := "nil"
 			if len(e.Arguments) > 0 {
-				val = c.expressionCode(e.Arguments[0])
+				val = c.expressionCode(e.Arguments[0], isAssignment)
 			}
 			return fmt.Sprintf("&Result{IsSuccess: false, Error: %s}", val)
 		}
@@ -487,40 +523,18 @@ func (c *GoCompiler) callExpressionCode(e *ast.CallExpression) string {
 
 	args := []string{}
 	for _, a := range e.Arguments {
-		args = append(args, c.expressionCode(a))
+		args = append(args, c.expressionCode(a, isAssignment))
 	}
 	// 特殊处理内置函数调用，如 数学.平方(64)
 	if infix, ok := e.Function.(*ast.InfixExpression); ok && infix.Operator == "." {
-		return fmt.Sprintf("call(%s, []interface{}{%s})", c.infixExpressionCode(infix), strings.Join(args, ", "))
+		return fmt.Sprintf("call(%s, []interface{}{%s})", c.infixExpressionCode(infix, isAssignment), strings.Join(args, ", "))
 	}
-	return fmt.Sprintf("call(%s, []interface{}{%s})", c.expressionCode(e.Function), strings.Join(args, ", "))
+	return fmt.Sprintf("call(%s, []interface{}{%s})", c.expressionCode(e.Function, isAssignment), strings.Join(args, ", "))
 }
 
-func (c *GoCompiler) arrayLiteralCode(e *ast.ArrayLiteral) string {
-	elements := []string{}
-	for _, el := range e.Elements {
-		elements = append(elements, c.expressionCode(el))
-	}
-	return fmt.Sprintf("[]interface{}{%s}", strings.Join(elements, ", "))
-}
-
-func (c *GoCompiler) dictLiteralCode(e *ast.DictLiteral) string {
-	pairs := []string{}
-	for k, v := range e.Pairs {
-		pairs = append(pairs, fmt.Sprintf("%s: %s", c.expressionCode(k), c.expressionCode(v)))
-	}
-	// 注意：Go 的 map[interface{}]interface{} 或者是特定的结构
-	// 这里简单化，我们转为 map[string]interface{}
-	return fmt.Sprintf("map[string]interface{}{%s}", strings.Join(pairs, ", "))
-}
-
-func (c *GoCompiler) indexExpressionCode(e *ast.IndexExpression) string {
-	return fmt.Sprintf("index(%s, %s)", c.expressionCode(e.Left), c.expressionCode(e.Index))
-}
-
-func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression) string {
-	left := c.expressionCode(e.Left)
-	right := c.expressionCode(e.Right)
+func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression, isAssignment bool) string {
+	left := c.expressionCode(e.Left, isAssignment)
+	right := c.expressionCode(e.Right, isAssignment)
 	switch e.Operator {
 	case ".":
 		// 如果右侧是标识符，将其转为字符串字面量作为属性名
