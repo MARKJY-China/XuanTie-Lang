@@ -92,6 +92,8 @@ type Function struct {
 	Parameters []*ast.Identifier
 	Body       []ast.Statement
 	Env        map[string]Object
+	OwnerClass *Class    // 所属类（用于权限校验）
+	Receiver   *Instance // 绑定的实例（如果是方法）
 }
 
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
@@ -186,6 +188,7 @@ func (c *Continue) Inspect() string  { return "继续" }
 
 type Class struct {
 	Name         string
+	Parent       *Class
 	Fields       map[string]Object
 	Methods      map[string]*Function
 	Visibilities map[string]token.TokenType

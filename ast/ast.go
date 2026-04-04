@@ -275,9 +275,10 @@ func (tl *TypeLiteral) String() string       { return tl.Value }
 
 // TypeDefinitionStatement 类型定义语句
 type TypeDefinitionStatement struct {
-	Token token.Token // "型"
-	Name  *Identifier
-	Block []Statement
+	Token  token.Token // "型"
+	Name   *Identifier
+	Parent *Identifier // 继承的父类名
+	Block  []Statement
 }
 
 func (tds *TypeDefinitionStatement) statementNode()       {}
@@ -287,6 +288,9 @@ func (tds *TypeDefinitionStatement) String() string {
 	var out bytes.Buffer
 	out.WriteString("型 ")
 	out.WriteString(tds.Name.String())
+	if tds.Parent != nil {
+		out.WriteString(" 承 " + tds.Parent.String())
+	}
 	out.WriteString(" { ")
 	for _, stmt := range tds.Block {
 		out.WriteString(stmt.String())

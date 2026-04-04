@@ -536,6 +536,15 @@ func (p *Parser) parseTypeDefinitionStatement() *ast.TypeDefinitionStatement {
 
 	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 
+	// 检查是否有 "承" (继承)
+	if p.peek.Type == token.TOKEN_INHERIT {
+		p.nextToken() // cur: 承
+		if !p.expectPeek(token.TOKEN_IDENT) {
+			return nil
+		}
+		stmt.Parent = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+	}
+
 	if !p.expectPeek(token.TOKEN_LBRACE) {
 		return nil
 	}

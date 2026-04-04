@@ -553,8 +553,42 @@ func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[strin
 		Env:          env,
 	}
 
-	// 解析类体
+	// 1. 绑定父类
+	if tds.Parent != nil {
+		parentObj, ok := env[tds.Parent.Value]
+		if !ok {
+			return newError(tds.GetLine(), "未定义的父类: %s", tds.Parent.Value)
+		}
+		parentClass, ok := parentObj.(*object.Class)
+		if !ok {
+			return newError(tds.GetLine(), "%s 不是一个有效的类", tds.Parent.Value)
+		}
+		class.Parent = parentClass
+	}
+
+	// 2. 解析类体（仅存储本类定义的字段和方法）
 	classEnv := extendEnv(env)
+	// 如果有父类，子类方法在解析时可以看见父类的非私有成员（作为语法参考）
+	if class.Parent != nil {
+		var injectAncestorMembers func(*object.Class)
+		injectAncestorMembers = func(c *object.Class) {
+			if c.Parent != nil {
+				injectAncestorMembers(c.Parent)
+			}
+			for k, v := range c.Fields {
+				if vis := c.Visibilities[k]; vis != token.TOKEN_PRIVATE {
+					classEnv[k] = v
+				}
+			}
+			for k, v := range c.Methods {
+				if vis := c.Visibilities[k]; vis != token.TOKEN_PRIVATE {
+					classEnv[k] = v
+				}
+			}
+		}
+		injectAncestorMembers(class.Parent)
+	}
+
 	for _, stmt := range tds.Block {
 		switch s := stmt.(type) {
 		case *ast.VarStatement:
@@ -568,7 +602,7 @@ func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[strin
 			}
 			classEnv[s.Name.Value] = val
 		case *ast.FunctionStatement:
-			fn := &object.Function{Parameters: s.Parameters, Body: s.Body, Env: classEnv}
+			fn := &object.Function{Parameters: s.Parameters, Body: s.Body, Env: classEnv, OwnerClass: class}
 			class.Methods[s.Name.Value] = fn
 			if s.Visibility != "" {
 				class.Visibilities[s.Name.Value] = s.Visibility
@@ -596,10 +630,17 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 		Fields: make(map[string]object.Object),
 	}
 
-	// 1. 初始化默认字段值
-	for k, v := range class.Fields {
-		instance.Fields[k] = v
+	// 1. 初始化所有字段（包括私有字段，从继承链最顶端开始向下覆盖）
+	var collectFields func(*object.Class)
+	collectFields = func(c *object.Class) {
+		if c.Parent != nil {
+			collectFields(c.Parent)
+		}
+		for k, v := range c.Fields {
+			instance.Fields[k] = v
+		}
 	}
+	collectFields(class)
 
 	// 2. 如果提供了字典字面量，覆盖初始值
 	if ne.Data != nil {
@@ -621,18 +662,8 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 			return args[0]
 		}
 
-		// 绑定实例上下文
-		methodEnv := extendEnv(constructor.Env)
-		methodEnv["__SELF__"] = instance
-		for k, v := range instance.Fields {
-			methodEnv[k] = v
-		}
-
-		applyFunction(ne.GetLine(), &object.Function{
-			Parameters: constructor.Parameters,
-			Body:       constructor.Body,
-			Env:        methodEnv,
-		}, args)
+		boundConstructor := bindInstance(instance, constructor)
+		applyFunction(ne.GetLine(), boundConstructor, args)
 	}
 
 	return instance
@@ -790,6 +821,16 @@ func evalAwaitExpression(ae *ast.AwaitExpression, env map[string]object.Object) 
 	return val // 如果不是任务，直接返回原值
 }
 
+func bindInstance(instance *object.Instance, fn *object.Function) *object.Function {
+	return &object.Function{
+		Parameters: fn.Parameters,
+		Body:       fn.Body,
+		Env:        fn.Env,
+		OwnerClass: fn.OwnerClass,
+		Receiver:   instance,
+	}
+}
+
 func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]object.Object) object.Object {
 	obj := Eval(mce.Object, env)
 	if isError(obj) {
@@ -834,47 +875,73 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 	// 处理实例的成员调用
 	if instance, ok := obj.(*object.Instance); ok {
-		// 检查权限
-		if vis, ok := instance.Class.Visibilities[mce.Member.Value]; ok {
-			if vis == token.TOKEN_PRIVATE || vis == token.TOKEN_PROTECTED {
-				if self, ok := env["__SELF__"]; !ok || self != instance {
-					return newError(mce.GetLine(), "禁止访问%s属性: %s", vis, mce.Member.Value)
+		// 查找成员定义及其可见性
+		var findMemberDef func(*object.Class, string) (token.TokenType, *object.Class, bool)
+		findMemberDef = func(c *object.Class, name string) (token.TokenType, *object.Class, bool) {
+			if vis, ok := c.Visibilities[name]; ok {
+				return vis, c, true
+			}
+			if c.Parent != nil {
+				return findMemberDef(c.Parent, name)
+			}
+			return "", nil, false
+		}
+
+		vis, owner, defined := findMemberDef(instance.Class, mce.Member.Value)
+		if defined {
+			if vis == token.TOKEN_PRIVATE {
+				// 私有属性：必须是定义该属性的类内部方法访问
+				canAccess := false
+				if self, ok := env["__SELF__"]; ok && self == instance {
+					// 还需要检查当前执行的方法所属类是否就是 owner
+					if currentOwner, ok := env["__OWNER__"]; ok && currentOwner == owner {
+						canAccess = true
+					}
+				}
+				if !canAccess {
+					return newError(mce.GetLine(), "禁止访问私有属性: %s", mce.Member.Value)
+				}
+			} else if vis == token.TOKEN_PROTECTED {
+				// 保护属性：允许本类或子类访问
+				canAccess := false
+				if self, ok := env["__SELF__"]; ok {
+					if selfInstance, ok := self.(*object.Instance); ok {
+						if isSubclassOf(selfInstance.Class, instance.Class) {
+							canAccess = true
+						}
+					}
+				}
+				if !canAccess {
+					return newError(mce.GetLine(), "禁止访问受保护属性: %s", mce.Member.Value)
 				}
 			}
 		}
 
-		// 优先从方法中查找
-		if method, ok := instance.Class.Methods[mce.Member.Value]; ok {
-			methodEnv := extendEnv(method.Env)
-			methodEnv["__SELF__"] = instance
-			for k, v := range instance.Fields {
-				methodEnv[k] = v
+		// 查找方法（沿继承链向上）
+		var findMethod func(*object.Class, string) (*object.Function, bool)
+		findMethod = func(c *object.Class, name string) (*object.Function, bool) {
+			if m, ok := c.Methods[name]; ok {
+				return m, true
 			}
-			boundFn := &object.Function{
-				Parameters: method.Parameters,
-				Body:       method.Body,
-				Env:        methodEnv,
+			if c.Parent != nil {
+				return findMethod(c.Parent, name)
 			}
+			return nil, false
+		}
+
+		if method, ok := findMethod(instance.Class, mce.Member.Value); ok {
+			boundFn := bindInstance(instance, method)
 			if mce.Arguments != nil {
 				return applyFunction(mce.GetLine(), boundFn, args)
 			}
 			return boundFn
 		}
 
-		// 从字段中查找
+		// 查找字段
 		if val, ok := instance.Fields[mce.Member.Value]; ok {
 			// 如果字段本身是函数，也可以调用
 			if fn, ok := val.(*object.Function); ok {
-				methodEnv := extendEnv(fn.Env)
-				methodEnv["__SELF__"] = instance
-				for k, v := range instance.Fields {
-					methodEnv[k] = v
-				}
-				boundFn := &object.Function{
-					Parameters: fn.Parameters,
-					Body:       fn.Body,
-					Env:        methodEnv,
-				}
+				boundFn := bindInstance(instance, fn)
 				if mce.Arguments != nil {
 					return applyFunction(mce.GetLine(), boundFn, args)
 				}
@@ -885,6 +952,17 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 	}
 
 	return newError(mce.GetLine(), "不支持的成员调用: %s.%s", obj.Type(), mce.Member.Value)
+}
+
+func isSubclassOf(child, parent *object.Class) bool {
+	curr := child
+	for curr != nil {
+		if curr == parent {
+			return true
+		}
+		curr = curr.Parent
+	}
+	return false
 }
 
 func evalMemberAssignStatement(mas *ast.MemberAssignStatement, env map[string]object.Object) object.Object {
@@ -898,11 +976,41 @@ func evalMemberAssignStatement(mas *ast.MemberAssignStatement, env map[string]ob
 		return newError(mas.GetLine(), "只有实例支持成员赋值，得到 %s", obj.Type())
 	}
 
-	// 检查权限
-	if vis, ok := instance.Class.Visibilities[mas.Member.Value]; ok {
-		if vis == token.TOKEN_PRIVATE || vis == token.TOKEN_PROTECTED {
-			if self, ok := env["__SELF__"]; !ok || self != instance {
-				return newError(mas.GetLine(), "禁止修改%s属性: %s", vis, mas.Member.Value)
+	// 查找成员定义及其可见性
+	var findMemberDef func(*object.Class, string) (token.TokenType, *object.Class, bool)
+	findMemberDef = func(c *object.Class, name string) (token.TokenType, *object.Class, bool) {
+		if vis, ok := c.Visibilities[name]; ok {
+			return vis, c, true
+		}
+		if c.Parent != nil {
+			return findMemberDef(c.Parent, name)
+		}
+		return "", nil, false
+	}
+
+	vis, owner, defined := findMemberDef(instance.Class, mas.Member.Value)
+	if defined {
+		if vis == token.TOKEN_PRIVATE {
+			canAccess := false
+			if self, ok := env["__SELF__"]; ok && self == instance {
+				if currentOwner, ok := env["__OWNER__"]; ok && currentOwner == owner {
+					canAccess = true
+				}
+			}
+			if !canAccess {
+				return newError(mas.GetLine(), "禁止修改私有属性: %s", mas.Member.Value)
+			}
+		} else if vis == token.TOKEN_PROTECTED {
+			canAccess := false
+			if self, ok := env["__SELF__"]; ok {
+				if selfInstance, ok := self.(*object.Instance); ok {
+					if isSubclassOf(selfInstance.Class, instance.Class) {
+						canAccess = true
+					}
+				}
+			}
+			if !canAccess {
+				return newError(mas.GetLine(), "禁止修改受保护属性: %s", mas.Member.Value)
 			}
 		}
 	}
@@ -1063,6 +1171,52 @@ func applyFunction(line int, fn object.Object, args []object.Object) object.Obje
 	switch function := fn.(type) {
 	case *object.Function:
 		extendedEnv := extendFunctionEnv(function, args)
+
+		// 如果绑定了实例，注入实例上下文
+		if function.Receiver != nil {
+			instance := function.Receiver
+			extendedEnv["__SELF__"] = instance
+			if function.OwnerClass != nil {
+				extendedEnv["__OWNER__"] = function.OwnerClass
+			}
+
+			// 注入可见成员
+			// 1. 本类定义的成员
+			if function.OwnerClass != nil {
+				for k, v := range function.OwnerClass.Methods {
+					extendedEnv[k] = bindInstance(instance, v)
+				}
+				for k := range function.OwnerClass.Fields {
+					if val, ok := instance.Fields[k]; ok {
+						extendedEnv[k] = val
+					}
+				}
+
+				// 2. 祖先类定义的成员
+				var injectVisibleAncestors func(*object.Class)
+				injectVisibleAncestors = func(c *object.Class) {
+					if c.Parent != nil {
+						injectVisibleAncestors(c.Parent)
+					}
+					for k, v := range c.Methods {
+						if vis := c.Visibilities[k]; vis == token.TOKEN_PROTECTED || vis == token.TOKEN_PUBLIC || vis == "" {
+							extendedEnv[k] = bindInstance(instance, v)
+						}
+					}
+					for k := range c.Fields {
+						if vis := c.Visibilities[k]; vis == token.TOKEN_PROTECTED || vis == token.TOKEN_PUBLIC || vis == "" {
+							if val, ok := instance.Fields[k]; ok {
+								extendedEnv[k] = val
+							}
+						}
+					}
+				}
+				if function.OwnerClass.Parent != nil {
+					injectVisibleAncestors(function.OwnerClass.Parent)
+				}
+			}
+		}
+
 		evaluated := evalBlock(function.Body, extendedEnv)
 		return unwrapReturnValue(evaluated)
 	case *object.Builtin:

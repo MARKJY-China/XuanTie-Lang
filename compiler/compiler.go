@@ -16,7 +16,8 @@ type GoCompiler struct {
 	output      bytes.Buffer
 	modules     map[string]string // 缓存已转译的模块路径和生成的函数名
 	moduleCode  bytes.Buffer      // 存储所有模块生成的 Go 代码
-	importStack []string          // 用于循环引用检测
+	classes     map[string]*ast.TypeDefinitionStatement
+	importStack []string // 用于循环引用检测
 	errors      []string
 }
 
@@ -28,6 +29,7 @@ func New(program *ast.Program) *GoCompiler {
 	return &GoCompiler{
 		program: program,
 		modules: make(map[string]string),
+		classes: make(map[string]*ast.TypeDefinitionStatement),
 	}
 }
 
@@ -131,7 +133,14 @@ func (c *GoCompiler) writeHeader() {
 
 	c.output.WriteString("func getAttr(obj, attr interface{}) interface{} {\n")
 	c.output.WriteString("\tif dict, ok := obj.(map[string]interface{}); ok {\n")
-	c.output.WriteString("\t\tif s, ok := attr.(string); ok { return dict[s] }\n")
+	c.output.WriteString("\t\tif s, ok := attr.(string); ok {\n")
+	c.output.WriteString("\t\t\tif visMap, ok := dict[\"__VIS__\"].(map[string]string); ok {\n")
+	c.output.WriteString("\t\t\t\tif vis, ok := visMap[s]; ok && vis != \"公\" {\n")
+	c.output.WriteString("\t\t\t\t\tpanic(fmt.Sprintf(\"禁止访问%s属性: %s\", vis, s))\n")
+	c.output.WriteString("\t\t\t\t}\n")
+	c.output.WriteString("\t\t\t}\n")
+	c.output.WriteString("\t\t\treturn dict[s]\n")
+	c.output.WriteString("\t\t}\n")
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("\tif str, ok := obj.(string); ok {\n")
 	c.output.WriteString("\t\tif attr == \"长度\" { return int64(len(str)) }\n")
@@ -206,6 +215,21 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\treturn base\n")
 	c.output.WriteString("}\n\n")
 
+	c.output.WriteString("func setAttr(obj, attr, val interface{}) interface{} {\n")
+	c.output.WriteString("\tif dict, ok := obj.(map[string]interface{}); ok {\n")
+	c.output.WriteString("\t\tif s, ok := attr.(string); ok {\n")
+	c.output.WriteString("\t\t\tif visMap, ok := dict[\"__VIS__\"].(map[string]string); ok {\n")
+	c.output.WriteString("\t\t\t\tif vis, ok := visMap[s]; ok && vis != \"公\" {\n")
+	c.output.WriteString("\t\t\t\t\tpanic(fmt.Sprintf(\"禁止修改%s属性: %s\", vis, s))\n")
+	c.output.WriteString("\t\t\t\t}\n")
+	c.output.WriteString("\t\t\t}\n")
+	c.output.WriteString("\t\t\tdict[s] = val\n")
+	c.output.WriteString("\t\t\treturn val\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn nil\n")
+	c.output.WriteString("}\n\n")
+
 	c.output.WriteString("func main() {\n")
 }
 
@@ -269,9 +293,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	case *ast.AssignStatement:
 		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value, true)))
 	case *ast.MemberAssignStatement:
-		c.output.WriteString(fmt.Sprintf("%sif m, ok := %s.(map[string]interface{}); ok {\n", indentStr, c.expressionCode(s.Object, true)))
-		c.output.WriteString(fmt.Sprintf("%s\tm[%q] = %s\n", indentStr, s.Member.Value, c.expressionCode(s.Value, true)))
-		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
+		c.output.WriteString(fmt.Sprintf("%ssetAttr(%s, %q, %s)\n", indentStr, c.expressionCode(s.Object, true), s.Member.Value, c.expressionCode(s.Value, true)))
 	case *ast.PrintStatement:
 		c.output.WriteString(fmt.Sprintf("%sfmt.Println(inspect(%s))\n", indentStr, c.expressionCode(s.Value, false)))
 	case *ast.IfStatement:
@@ -351,25 +373,65 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.TypeDefinitionStatement:
+		c.classes[s.Name.Value] = s
 		c.output.WriteString(fmt.Sprintf("%svar %s = func(args []interface{}) map[string]interface{} {\n", indentStr, s.Name.Value))
-		c.output.WriteString(fmt.Sprintf("%s\tres := make(map[string]interface{})\n", indentStr))
-		// 1. 初始化属性
+		if s.Parent != nil {
+			// 如果有父类，先调用父类构造逻辑
+			c.output.WriteString(fmt.Sprintf("%s\tres := %s([]interface{}{})\n", indentStr, s.Parent.Value))
+		} else {
+			c.output.WriteString(fmt.Sprintf("%s\tres := make(map[string]interface{})\n", indentStr))
+			c.output.WriteString(fmt.Sprintf("%s\tres[\"__VIS__\"] = make(map[string]string)\n", indentStr))
+		}
+
+		// 记录可见性
 		for _, stmt := range s.Block {
 			if varStmt, ok := stmt.(*ast.VarStatement); ok {
+				vis := "公"
+				if varStmt.Visibility != "" {
+					vis = string(varStmt.Visibility)
+				}
+				c.output.WriteString(fmt.Sprintf("%s\tres[\"__VIS__\"].(map[string]string)[%q] = %q\n", indentStr, varStmt.Name.Value, vis))
 				c.output.WriteString(fmt.Sprintf("%s\tres[%q] = %s\n", indentStr, varStmt.Name.Value, c.expressionCode(varStmt.Value, false)))
+			}
+			if fnStmt, ok := stmt.(*ast.FunctionStatement); ok {
+				vis := "公"
+				if fnStmt.Visibility != "" {
+					vis = string(fnStmt.Visibility)
+				}
+				c.output.WriteString(fmt.Sprintf("%s\tres[\"__VIS__\"].(map[string]string)[%q] = %q\n", indentStr, fnStmt.Name.Value, vis))
 			}
 		}
 		// 2. 初始化方法 (注入 res 自身模拟 __SELF__)
 		for _, stmt := range s.Block {
 			if fnStmt, ok := stmt.(*ast.FunctionStatement); ok {
 				c.output.WriteString(fmt.Sprintf("%s\tres[%q] = func(m_args []interface{}) interface{} {\n", indentStr, fnStmt.Name.Value))
-				// 注入属性到作用域
-				for _, m := range s.Block {
-					if vs, ok := m.(*ast.VarStatement); ok {
-						c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, vs.Name.Value, vs.Name.Value))
-						c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, vs.Name.Value))
+				// 注入属性和方法到作用域（包括继承来的）
+				c.output.WriteString(fmt.Sprintf("%s\t\tfor _k, _v := range res {\n", indentStr))
+				c.output.WriteString(fmt.Sprintf("%s\t\t\t_ = _k; _ = _v\n", indentStr))
+				c.output.WriteString(fmt.Sprintf("%s\t\t}\n", indentStr))
+
+				var injectHierarchy func(cls *ast.TypeDefinitionStatement)
+				injectHierarchy = func(cls *ast.TypeDefinitionStatement) {
+					if cls.Parent != nil {
+						if parentCls, ok := c.classes[cls.Parent.Value]; ok {
+							injectHierarchy(parentCls)
+						}
+					}
+					for _, m := range cls.Block {
+						if vs, ok := m.(*ast.VarStatement); ok {
+							// 只有本类私有或祖先非私有才注入（简化版全注入）
+							c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, vs.Name.Value, vs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, vs.Name.Value))
+						}
+						if fs, ok := m.(*ast.FunctionStatement); ok {
+							c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, fs.Name.Value, fs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, fs.Name.Value))
+						}
 					}
 				}
+
+				injectHierarchy(s)
+
 				// 绑定参数
 				for i, p := range fnStmt.Parameters {
 					c.output.WriteString(fmt.Sprintf("%s\t\t%s := interface{}(nil)\n", indentStr, p.Value))
@@ -379,11 +441,22 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 					c.writeStatement(b, indent+2)
 				}
 				// 同步属性回 res
-				for _, m := range s.Block {
-					if vs, ok := m.(*ast.VarStatement); ok {
-						c.output.WriteString(fmt.Sprintf("%s\t\tres[%q] = %s\n", indentStr, vs.Name.Value, vs.Name.Value))
+				// 同样需要同步整个继承链的属性
+				var syncHierarchy func(cls *ast.TypeDefinitionStatement)
+				syncHierarchy = func(cls *ast.TypeDefinitionStatement) {
+					if cls.Parent != nil {
+						if parentCls, ok := c.classes[cls.Parent.Value]; ok {
+							syncHierarchy(parentCls)
+						}
+					}
+					for _, m := range cls.Block {
+						if vs, ok := m.(*ast.VarStatement); ok {
+							c.output.WriteString(fmt.Sprintf("%s\t\tres[%q] = %s\n", indentStr, vs.Name.Value, vs.Name.Value))
+						}
 					}
 				}
+				syncHierarchy(s)
+
 				c.output.WriteString(fmt.Sprintf("%s\t\treturn nil\n", indentStr))
 				c.output.WriteString(fmt.Sprintf("%s\t}\n", indentStr))
 			}
