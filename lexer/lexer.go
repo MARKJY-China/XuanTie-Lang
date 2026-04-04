@@ -177,7 +177,7 @@ func isLetter(ch rune) bool {
 
 func lookupKeyword(ident string) token.TokenType {
 	switch ident {
-	case "打印":
+	case "示", "打印":
 		return token.TOKEN_PRINT
 	case "设", "变量":
 		return token.TOKEN_VAR

@@ -32,7 +32,7 @@ const (
 	TOKEN_AMPERSAND TokenType = "&"
 	TOKEN_DOT       TokenType = "."
 
-	TOKEN_PRINT    TokenType = "打印"
+	TOKEN_PRINT    TokenType = "示"
 	TOKEN_VAR      TokenType = "设"
 	TOKEN_CONST    TokenType = "常"
 	TOKEN_IF       TokenType = "若"

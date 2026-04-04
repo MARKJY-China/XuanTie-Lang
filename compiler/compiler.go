@@ -322,6 +322,8 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 		return fmt.Sprintf("%q", e.Value)
 	case *ast.BooleanLiteral:
 		return fmt.Sprintf("%t", e.Value)
+	case *ast.TypeLiteral:
+		return fmt.Sprintf("%q", e.Value)
 	case *ast.Identifier:
 		return e.Value
 	case *ast.InfixExpression:
@@ -438,6 +440,8 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 		if isAssignment {
 			switch stmt.(type) {
 			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.LoopStatement, *ast.ForStatement, *ast.TryCatchStatement:
+				continue
+			case *ast.ReturnStatement:
 				continue
 			}
 		}

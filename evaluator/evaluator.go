@@ -164,6 +164,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalDictLiteral(n, env)
 	case *ast.BooleanLiteral:
 		return &object.Boolean{Value: n.Value}
+	case *ast.TypeLiteral:
+		return &object.String{Value: n.Value}
 	case *ast.Identifier:
 		return evalIdentifier(n, env)
 	case *ast.InfixExpression:

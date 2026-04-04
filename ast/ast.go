@@ -240,6 +240,17 @@ func (ts *TryCatchStatement) String() string {
 	return out.String()
 }
 
+// TypeLiteral 类型字面量（用于“是”判断）
+type TypeLiteral struct {
+	Token token.Token // "整", "字", "逻", "小数", "数组", "字典", "空"
+	Value string
+}
+
+func (tl *TypeLiteral) expressionNode()      {}
+func (tl *TypeLiteral) TokenLiteral() string { return tl.Token.Literal }
+func (tl *TypeLiteral) GetLine() int         { return tl.Token.Line }
+func (tl *TypeLiteral) String() string       { return tl.Value }
+
 // AsyncExpression 异步执行表达式
 type AsyncExpression struct {
 	Token token.Token // "异步"

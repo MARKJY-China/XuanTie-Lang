@@ -25,6 +25,7 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_OR:        LOGICAL_OR,
 	token.TOKEN_AND:       LOGICAL_AND,
 	token.TOKEN_EQ:        EQUALS,
+	token.TOKEN_IS:        EQUALS,
 	token.TOKEN_ASSIGN:    EQUALS, // 允许 = 作为相等比较
 	token.TOKEN_NEQ:       EQUALS,
 	token.TOKEN_LT:        LESSGREATER,
@@ -368,8 +369,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	var leftExp ast.Expression
 
 	switch p.cur.Type {
-	case token.TOKEN_IDENT, token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE:
+	case token.TOKEN_IDENT:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+	case token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE:
+		leftExp = &ast.TypeLiteral{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_NUMBER:
 		leftExp = p.parseIntegerLiteral()
 	case token.TOKEN_FLOAT:
@@ -412,7 +415,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	for p.peek.Type != token.TOKEN_EOF && precedence < p.peekPrecedence() {
 		switch p.peek.Type {
-		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_LT, token.TOKEN_GT, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR:
+		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_LT, token.TOKEN_GT, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS:
 			p.nextToken()
 			leftExp = p.parseInfixExpression(leftExp)
 		case token.TOKEN_DOT:
