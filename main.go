@@ -4,16 +4,19 @@ import (
 	"fmt"
 	"io/ioutil"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
+	"xuantie/compiler"
 	"xuantie/evaluator"
 	"xuantie/lexer"
 	"xuantie/object"
 	"xuantie/parser"
 )
 
-var version = "0.3.6"
+var version = "0.3.7"
 
 const (
 	colorReset = "\033[0m"
@@ -64,17 +67,28 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("用法: xuantie <源文件>")
+		fmt.Println("用法: xuantie build <源文件> (编译为独立可执行文件)")
 		fmt.Println("其他选项: -V, --version 打印版本号")
 		return
 	}
 
-	arg := os.Args[1]
-	if arg == "-V" || arg == "--version" {
+	isBuild := false
+	filename := os.Args[1]
+
+	if filename == "build" {
+		if len(os.Args) < 3 {
+			fmt.Println("用法: xuantie build <源文件>")
+			return
+		}
+		isBuild = true
+		filename = os.Args[2]
+	}
+
+	if filename == "-V" || filename == "--version" {
 		fmt.Printf("玄铁(XuanTie) %s\n", version)
 		return
 	}
 
-	filename := arg
 	data, err := ioutil.ReadFile(filename)
 	if err != nil {
 		if useColor {
@@ -89,6 +103,38 @@ func main() {
 	p := parser.New(l)
 	program := p.ParseProgram()
 	program.FilePath = filename // 设置主程序路径
+
+	if isBuild {
+		c := compiler.New(program)
+		goCode := c.Compile()
+
+		// 使用当前目录作为基础，生成临时文件名
+		tmpFile := "xuantie_build_tmp.go"
+		err := ioutil.WriteFile(tmpFile, []byte(goCode), 0644)
+		if err != nil {
+			fmt.Printf("创建临时编译文件失败: %v\n", err)
+			return
+		}
+		defer os.Remove(tmpFile)
+
+		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
+		if runtime.GOOS == "windows" {
+			outputName += ".exe"
+		}
+
+		fmt.Printf("正在编译 %s -> %s ...\n", filename, outputName)
+		// 在当前目录下执行编译，明确指定临时文件
+		cmd := exec.Command("go", "build", "-o", outputName, tmpFile)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			fmt.Printf("编译失败: %v\n", err)
+			return
+		}
+		fmt.Printf("编译完成: %s\n", outputName)
+		return
+	}
 
 	if len(p.Errors()) > 0 {
 		if useColor {
