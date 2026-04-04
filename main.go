@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.3.7"
+var version = "0.3.8"
 
 const (
 	colorReset = "\033[0m"
@@ -104,38 +104,6 @@ func main() {
 	program := p.ParseProgram()
 	program.FilePath = filename // 设置主程序路径
 
-	if isBuild {
-		c := compiler.New(program)
-		goCode := c.Compile()
-
-		// 使用当前目录作为基础，生成临时文件名
-		tmpFile := "xuantie_build_tmp.go"
-		err := ioutil.WriteFile(tmpFile, []byte(goCode), 0644)
-		if err != nil {
-			fmt.Printf("创建临时编译文件失败: %v\n", err)
-			return
-		}
-		defer os.Remove(tmpFile)
-
-		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
-		if runtime.GOOS == "windows" {
-			outputName += ".exe"
-		}
-
-		fmt.Printf("正在编译 %s -> %s ...\n", filename, outputName)
-		// 在当前目录下执行编译，明确指定临时文件
-		cmd := exec.Command("go", "build", "-o", outputName, tmpFile)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		err = cmd.Run()
-		if err != nil {
-			fmt.Printf("编译失败: %v\n", err)
-			return
-		}
-		fmt.Printf("编译完成: %s\n", outputName)
-		return
-	}
-
 	if len(p.Errors()) > 0 {
 		if useColor {
 			fmt.Printf("%s%s解析错误:%s\n", colorBold, colorRed, colorReset)
@@ -162,6 +130,39 @@ func main() {
 				}
 			}
 		}
+		return
+	}
+
+	if isBuild {
+		c := compiler.New(program)
+		goCode := c.Compile()
+
+		// 使用系统临时目录存储中间文件，隐藏 Go 字眼
+		tmpDir := os.TempDir()
+		tmpFile := filepath.Join(tmpDir, fmt.Sprintf("xt_boot_%d.go", os.Getpid()))
+		err := ioutil.WriteFile(tmpFile, []byte(goCode), 0644)
+		if err != nil {
+			fmt.Printf("创建临时编译文件失败: %v\n", err)
+			return
+		}
+		defer os.Remove(tmpFile)
+
+		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
+		if runtime.GOOS == "windows" {
+			outputName += ".exe"
+		}
+
+		fmt.Printf("正在编译 %s -> %s ...\n", filename, outputName)
+		// 在当前目录下执行编译，明确指定临时文件
+		cmd := exec.Command("go", "build", "-o", outputName, tmpFile)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		err = cmd.Run()
+		if err != nil {
+			fmt.Printf("编译失败: %v\n", err)
+			return
+		}
+		fmt.Printf("编译完成: %s\n", outputName)
 		return
 	}
 

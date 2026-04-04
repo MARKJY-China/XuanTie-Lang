@@ -81,6 +81,33 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\treturn []interface{}{}\n")
 	c.output.WriteString("}\n\n")
 
+	c.output.WriteString("func call(fn interface{}, args []interface{}) interface{} {\n")
+	c.output.WriteString("\tif fn == nil { return nil }\n")
+	c.output.WriteString("\tif f, ok := fn.(func([]interface{}) interface{}); ok { return f(args) }\n")
+	c.output.WriteString("\treturn nil\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func index(left, idx interface{}) interface{} {\n")
+	c.output.WriteString("\tif arr, ok := left.([]interface{}); ok {\n")
+	c.output.WriteString("\t\tif i, ok := idx.(int64); ok && i >= 0 && i < int64(len(arr)) {\n")
+	c.output.WriteString("\t\t\treturn arr[i]\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\tif dict, ok := left.(map[string]interface{}); ok {\n")
+	c.output.WriteString("\t\tif s, ok := idx.(string); ok {\n")
+	c.output.WriteString("\t\t\treturn dict[s]\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn nil\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func getAttr(obj, attr interface{}) interface{} {\n")
+	c.output.WriteString("\tif dict, ok := obj.(map[string]interface{}); ok {\n")
+	c.output.WriteString("\t\tif s, ok := attr.(string); ok { return dict[s] }\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn nil\n")
+	c.output.WriteString("}\n\n")
+
 	c.output.WriteString("func main() {\n")
 }
 
@@ -95,7 +122,7 @@ func (c *GoCompiler) writeFooter() {
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("\treturn 0\n")
 	c.output.WriteString("}\n")
-	
+
 	c.output.WriteString("func mul(l, r interface{}) interface{} {\n")
 	c.output.WriteString("\tif li, ok := l.(int64); ok {\n")
 	c.output.WriteString("\t\tif ri, ok := r.(int64); ok { return li * ri }\n")
@@ -122,6 +149,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	switch s := stmt.(type) {
 	case *ast.VarStatement:
 		c.output.WriteString(fmt.Sprintf("%svar %s interface{} = %s\n", indentStr, s.Name.Value, c.expressionCode(s.Value)))
+		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.AssignStatement:
 		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value)))
 	case *ast.PrintStatement:
@@ -156,8 +184,13 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%sbreak\n", indentStr))
 	case *ast.ContinueStatement:
 		c.output.WriteString(fmt.Sprintf("%scontinue\n", indentStr))
+	case *ast.ReturnStatement:
+		c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, c.expressionCode(s.ReturnValue)))
 	case *ast.ExpressionStatement:
-		c.output.WriteString(fmt.Sprintf("%s%s\n", indentStr, c.expressionCode(s.Expression)))
+		exprCode := c.expressionCode(s.Expression)
+		if exprCode != "nil" {
+			c.output.WriteString(fmt.Sprintf("%s%s\n", indentStr, exprCode))
+		}
 	}
 }
 
@@ -168,21 +201,95 @@ func (c *GoCompiler) expressionCode(exp ast.Expression) string {
 	case *ast.FloatLiteral:
 		return fmt.Sprintf("float64(%g)", e.Value)
 	case *ast.StringLiteral:
-		return fmt.Sprintf("\"%s\"", e.Value)
+		return fmt.Sprintf("%q", e.Value)
 	case *ast.BooleanLiteral:
 		return fmt.Sprintf("%t", e.Value)
 	case *ast.Identifier:
 		return e.Value
 	case *ast.InfixExpression:
 		return c.infixExpressionCode(e)
+	case *ast.CallExpression:
+		return c.callExpressionCode(e)
+	case *ast.ArrayLiteral:
+		return c.arrayLiteralCode(e)
+	case *ast.DictLiteral:
+		return c.dictLiteralCode(e)
+	case *ast.IndexExpression:
+		return c.indexExpressionCode(e)
+	case *ast.FunctionLiteral:
+		return c.functionLiteralCode(e)
+	case *ast.ImportExpression:
+		return "nil" // 目前不支持转译引用，返回 nil
 	}
 	return "nil"
+}
+
+func (c *GoCompiler) functionLiteralCode(e *ast.FunctionLiteral) string {
+	var out bytes.Buffer
+	out.WriteString("func(args []interface{}) interface{} {\n")
+	for i, p := range e.Parameters {
+		out.WriteString(fmt.Sprintf("\t\t%s := args[%d]\n", p.Value, i))
+		out.WriteString(fmt.Sprintf("\t\t_ = %s\n", p.Value))
+	}
+	for _, stmt := range e.Body {
+		// 这里有个问题：FunctionLiteral 内部的 indent
+		// 为了简单，我们先不处理复杂的缩进
+		c.writeStatementToBuffer(stmt, 2, &out)
+	}
+	out.WriteString("\t\treturn nil\n")
+	out.WriteString("\t}")
+	return out.String()
+}
+
+func (c *GoCompiler) writeStatementToBuffer(stmt ast.Statement, indent int, buf *bytes.Buffer) {
+	// 保存当前的 output，替换为传入的 buffer
+	oldOutput := c.output
+	c.output = *buf
+	c.writeStatement(stmt, indent)
+	*buf = c.output
+	c.output = oldOutput
+}
+
+func (c *GoCompiler) callExpressionCode(e *ast.CallExpression) string {
+	args := []string{}
+	for _, a := range e.Arguments {
+		args = append(args, c.expressionCode(a))
+	}
+	return fmt.Sprintf("call(%s, []interface{}{%s})", c.expressionCode(e.Function), strings.Join(args, ", "))
+}
+
+func (c *GoCompiler) arrayLiteralCode(e *ast.ArrayLiteral) string {
+	elements := []string{}
+	for _, el := range e.Elements {
+		elements = append(elements, c.expressionCode(el))
+	}
+	return fmt.Sprintf("[]interface{}{%s}", strings.Join(elements, ", "))
+}
+
+func (c *GoCompiler) dictLiteralCode(e *ast.DictLiteral) string {
+	pairs := []string{}
+	for k, v := range e.Pairs {
+		pairs = append(pairs, fmt.Sprintf("%s: %s", c.expressionCode(k), c.expressionCode(v)))
+	}
+	// 注意：Go 的 map[interface{}]interface{} 或者是特定的结构
+	// 这里简单化，我们转为 map[string]interface{}
+	return fmt.Sprintf("map[string]interface{}{%s}", strings.Join(pairs, ", "))
+}
+
+func (c *GoCompiler) indexExpressionCode(e *ast.IndexExpression) string {
+	return fmt.Sprintf("index(%s, %s)", c.expressionCode(e.Left), c.expressionCode(e.Index))
 }
 
 func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression) string {
 	left := c.expressionCode(e.Left)
 	right := c.expressionCode(e.Right)
 	switch e.Operator {
+	case ".":
+		// 如果右侧是标识符，将其转为字符串字面量作为属性名
+		if ident, ok := e.Right.(*ast.Identifier); ok {
+			return fmt.Sprintf("getAttr(%s, %q)", left, ident.Value)
+		}
+		return fmt.Sprintf("getAttr(%s, %s)", left, right)
 	case "+":
 		return fmt.Sprintf("add(%s, %s)", left, right)
 	case "-":
