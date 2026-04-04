@@ -84,6 +84,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseIfStatement()
 	case token.TOKEN_WHILE:
 		return p.parseWhileStatement()
+	case token.TOKEN_FOR:
+		return p.parseForStatement()
+	case token.TOKEN_BREAK:
+		return &ast.BreakStatement{Token: p.cur}
+	case token.TOKEN_CONTINUE:
+		return &ast.ContinueStatement{Token: p.cur}
 	case token.TOKEN_TRY:
 		return p.parseTryCatchStatement()
 	case token.TOKEN_RETURN:
@@ -200,6 +206,29 @@ func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 		return nil
 	}
 	stmt.Block = p.parseBlock()
+	return stmt
+}
+
+func (p *Parser) parseForStatement() *ast.ForStatement {
+	stmt := &ast.ForStatement{Token: p.cur}
+
+	if !p.expectPeek(token.TOKEN_IDENT) {
+		return nil
+	}
+	stmt.Variable = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+
+	if !p.expectPeek(token.TOKEN_IN) {
+		return nil
+	}
+
+	p.nextToken() // skip 于
+	stmt.Iterable = p.parseExpression(LOWEST)
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+	stmt.Block = p.parseBlock()
+
 	return stmt
 }
 

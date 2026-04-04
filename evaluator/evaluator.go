@@ -80,6 +80,12 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 		return evalIfExpression(n, env)
 	case *ast.WhileStatement:
 		return evalWhileExpression(n, env)
+	case *ast.ForStatement:
+		return evalForStatement(n, env)
+	case *ast.BreakStatement:
+		return &object.Break{}
+	case *ast.ContinueStatement:
+		return &object.Continue{}
 	case *ast.TryCatchStatement:
 		return evalTryCatchStatement(n, env)
 	case *ast.AsyncExpression:
@@ -298,8 +304,86 @@ func evalWhileExpression(we *ast.WhileStatement, env map[string]object.Object) o
 			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
 				return result
 			}
+			if rt == object.BREAK_OBJ {
+				break
+			}
+			if rt == object.CONTINUE_OBJ {
+				continue
+			}
 		}
 	}
+	return &object.Null{}
+}
+
+func evalForStatement(fs *ast.ForStatement, env map[string]object.Object) object.Object {
+	iterable := Eval(fs.Iterable, env)
+	if isError(iterable) {
+		return iterable
+	}
+
+	switch obj := iterable.(type) {
+	case *object.Array:
+		for _, element := range obj.Elements {
+			// 为每个迭代创建新的局部作用域
+			loopEnv := extendEnv(env)
+			loopEnv[fs.Variable.Value] = element
+
+			result := evalBlock(fs.Block, loopEnv)
+			if result != nil {
+				rt := result.Type()
+				if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+					return result
+				}
+				if rt == object.BREAK_OBJ {
+					break
+				}
+				if rt == object.CONTINUE_OBJ {
+					continue
+				}
+			}
+		}
+	case *object.Dict:
+		for key := range obj.Pairs {
+			loopEnv := extendEnv(env)
+			loopEnv[fs.Variable.Value] = &object.String{Value: key}
+
+			result := evalBlock(fs.Block, loopEnv)
+			if result != nil {
+				rt := result.Type()
+				if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+					return result
+				}
+				if rt == object.BREAK_OBJ {
+					break
+				}
+				if rt == object.CONTINUE_OBJ {
+					continue
+				}
+			}
+		}
+	case *object.String:
+		for _, r := range obj.Value {
+			loopEnv := extendEnv(env)
+			loopEnv[fs.Variable.Value] = &object.String{Value: string(r)}
+
+			result := evalBlock(fs.Block, loopEnv)
+			if result != nil {
+				rt := result.Type()
+				if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+					return result
+				}
+				if rt == object.BREAK_OBJ {
+					break
+				}
+				if rt == object.CONTINUE_OBJ {
+					continue
+				}
+			}
+		}
+	default:
+		return newError(fs.GetLine(), "不可遍历的类型: %s", iterable.Type())
+	}
+
 	return &object.Null{}
 }
 
@@ -504,7 +588,7 @@ func evalBlock(block []ast.Statement, env map[string]object.Object) object.Objec
 		result = Eval(stmt, env)
 		if result != nil {
 			rt := result.Type()
-			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ || rt == object.BREAK_OBJ || rt == object.CONTINUE_OBJ {
 				return result
 			}
 		}

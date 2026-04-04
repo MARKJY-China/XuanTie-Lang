@@ -22,6 +22,8 @@ const (
 	RESULT_OBJ       ObjectType = "RESULT"
 	TASK_OBJ         ObjectType = "TASK"
 	BUILTIN_OBJ      ObjectType = "BUILTIN"
+	BREAK_OBJ        ObjectType = "BREAK"
+	CONTINUE_OBJ     ObjectType = "CONTINUE"
 )
 
 type Object interface {
@@ -168,3 +170,13 @@ func (t *Task) Inspect() string {
 	}
 	return "任务(进行中)"
 }
+
+type Break struct{}
+
+func (b *Break) Type() ObjectType { return BREAK_OBJ }
+func (b *Break) Inspect() string  { return "跳出" }
+
+type Continue struct{}
+
+func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
+func (c *Continue) Inspect() string  { return "继续" }

@@ -189,6 +189,14 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_ELSE
 	case "当":
 		return token.TOKEN_WHILE
+	case "遍历":
+		return token.TOKEN_FOR
+	case "于":
+		return token.TOKEN_IN
+	case "跳出":
+		return token.TOKEN_BREAK
+	case "继续":
+		return token.TOKEN_CONTINUE
 	case "函数":
 		return token.TOKEN_FUNCTION
 	case "返回":

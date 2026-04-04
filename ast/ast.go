@@ -555,3 +555,48 @@ func (ie *ImportExpression) GetLine() int         { return ie.Token.Line }
 func (ie *ImportExpression) String() string {
 	return "引用 \"" + ie.Path + "\""
 }
+
+// ForStatement 遍历语句
+type ForStatement struct {
+	Token    token.Token // "遍历"
+	Variable *Identifier
+	Iterable Expression
+	Block    []Statement
+}
+
+func (fs *ForStatement) statementNode()       {}
+func (fs *ForStatement) TokenLiteral() string { return fs.Token.Literal }
+func (fs *ForStatement) GetLine() int         { return fs.Token.Line }
+func (fs *ForStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("遍历 ")
+	out.WriteString(fs.Variable.String())
+	out.WriteString(" 于 ")
+	out.WriteString(fs.Iterable.String())
+	out.WriteString(" { ")
+	for _, s := range fs.Block {
+		out.WriteString(s.String())
+	}
+	out.WriteString(" }")
+	return out.String()
+}
+
+// BreakStatement 跳出语句
+type BreakStatement struct {
+	Token token.Token // "跳出"
+}
+
+func (bs *BreakStatement) statementNode()       {}
+func (bs *BreakStatement) TokenLiteral() string { return bs.Token.Literal }
+func (bs *BreakStatement) GetLine() int         { return bs.Token.Line }
+func (bs *BreakStatement) String() string       { return "跳出" }
+
+// ContinueStatement 继续语句
+type ContinueStatement struct {
+	Token token.Token // "继续"
+}
+
+func (cs *ContinueStatement) statementNode()       {}
+func (cs *ContinueStatement) TokenLiteral() string { return cs.Token.Literal }
+func (cs *ContinueStatement) GetLine() int         { return cs.Token.Line }
+func (cs *ContinueStatement) String() string       { return "继续" }
