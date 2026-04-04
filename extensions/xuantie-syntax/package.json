@@ -2,7 +2,7 @@
     "name": "xuantie-syntax",
     "displayName": "XuanTie Syntax Highlighting",
     "description": "Syntax highlighting for XuanTie programming language",
-    "version": "0.3.2.1",
+    "version": "0.3.3",
     "publisher": "xuantie",
     "icon": "icon.ico",
     "engines": {
