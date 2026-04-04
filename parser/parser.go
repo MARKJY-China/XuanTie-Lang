@@ -84,6 +84,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseIfStatement()
 	case token.TOKEN_WHILE:
 		return p.parseWhileStatement()
+	case token.TOKEN_LOOP:
+		return p.parseLoopStatement()
 	case token.TOKEN_FOR:
 		return p.parseForStatement()
 	case token.TOKEN_BREAK:
@@ -180,7 +182,14 @@ func (p *Parser) parseAssignStatement() *ast.AssignStatement {
 func (p *Parser) parseIfStatement() *ast.IfStatement {
 	stmt := &ast.IfStatement{Token: p.cur}
 	p.nextToken() // cur: condition
-	stmt.Condition = p.parseExpression(LOWEST)
+
+	// 条件表达式不允许使用 '='
+	cond := p.parseExpression(LOWEST)
+	if p.isAssignmentExpression(cond) {
+		p.errors = append(p.errors, fmt.Sprintf("[行:%d] 条件表达式中不允许使用 '=' 赋值，请使用 '==' 或 '等于'", stmt.GetLine()))
+		return nil
+	}
+	stmt.Condition = cond
 
 	if !p.expectPeek(token.TOKEN_LBRACE) {
 		return nil
@@ -190,8 +199,13 @@ func (p *Parser) parseIfStatement() *ast.IfStatement {
 	for p.peek.Type == token.TOKEN_ELSE_IF {
 		p.nextToken() // cur: 抑
 		p.nextToken() // cur: condition
+		cond := p.parseExpression(LOWEST)
+		if p.isAssignmentExpression(cond) {
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d] 条件表达式中不允许使用 '=' 赋值，请使用 '==' 或 '等于'", p.cur.Line))
+			return nil
+		}
 		eif := &ast.ElseIfBranch{
-			Condition: p.parseExpression(LOWEST),
+			Condition: cond,
 		}
 		if !p.expectPeek(token.TOKEN_LBRACE) {
 			return nil
@@ -210,11 +224,35 @@ func (p *Parser) parseIfStatement() *ast.IfStatement {
 	return stmt
 }
 
+func (p *Parser) isAssignmentExpression(exp ast.Expression) bool {
+	// 检查是否是赋值表达式。在我们的 AST 中，AssignStatement 是 Statement 不是 Expression。
+	// 但如果是 Identifier = Expression，Lexer 会将其解析为 InfixExpression (Operator: "=") 如果我们没特殊处理。
+	// 让我们检查 InfixExpression
+	if infix, ok := exp.(*ast.InfixExpression); ok {
+		return infix.Operator == "="
+	}
+	return false
+}
+
 func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	stmt := &ast.WhileStatement{Token: p.cur}
 	p.nextToken() // cur: condition
-	stmt.Condition = p.parseExpression(LOWEST)
+	cond := p.parseExpression(LOWEST)
+	if p.isAssignmentExpression(cond) {
+		p.errors = append(p.errors, fmt.Sprintf("[行:%d] 条件表达式中不允许使用 '=' 赋值，请使用 '==' 或 '等于'", stmt.GetLine()))
+		return nil
+	}
+	stmt.Condition = cond
 
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+	stmt.Block = p.parseBlock()
+	return stmt
+}
+
+func (p *Parser) parseLoopStatement() *ast.LoopStatement {
+	stmt := &ast.LoopStatement{Token: p.cur}
 	if !p.expectPeek(token.TOKEN_LBRACE) {
 		return nil
 	}

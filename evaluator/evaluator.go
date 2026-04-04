@@ -87,6 +87,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalIfExpression(n, env)
 	case *ast.WhileStatement:
 		return evalWhileExpression(n, env)
+	case *ast.LoopStatement:
+		return evalLoopExpression(n, env)
 	case *ast.ForStatement:
 		return evalForStatement(n, env)
 	case *ast.BreakStatement:
@@ -392,6 +394,25 @@ func evalWhileExpression(we *ast.WhileStatement, env map[string]object.Object) o
 			break
 		}
 		result := evalBlock(we.Block, env)
+		if result != nil {
+			rt := result.Type()
+			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
+				return result
+			}
+			if rt == object.BREAK_OBJ {
+				break
+			}
+			if rt == object.CONTINUE_OBJ {
+				continue
+			}
+		}
+	}
+	return &object.Null{}
+}
+
+func evalLoopExpression(le *ast.LoopStatement, env map[string]object.Object) object.Object {
+	for {
+		result := evalBlock(le.Block, env)
 		if result != nil {
 			rt := result.Type()
 			if rt == object.RETURN_VALUE_OBJ || rt == object.ERROR_OBJ {
@@ -791,8 +812,30 @@ func evalInfixExpression(line int, op string, left, right object.Object) object.
 		return evalFloatInfixExpression(line, op, left, right)
 	case left.Type() == object.STRING_OBJ && right.Type() == object.STRING_OBJ:
 		return evalStringInfixExpression(line, op, left, right)
-	case op == "==" || op == "=": // 支持 = 作为相等
-		return &object.Boolean{Value: left.Inspect() == right.Inspect()} // 简单比较
+	case op == "==" || op == "等于":
+		return &object.Boolean{Value: left.Inspect() == right.Inspect()}
+	case op == "是":
+		// 支持 a 是 1 (逻辑相等) 或 a 是 "整" (类型判断)
+		if right.Type() == object.STRING_OBJ {
+			rVal := right.(*object.String).Value
+			switch rVal {
+			case "整", "整数":
+				return &object.Boolean{Value: left.Type() == object.INTEGER_OBJ}
+			case "字", "字符串":
+				return &object.Boolean{Value: left.Type() == object.STRING_OBJ}
+			case "逻", "逻辑":
+				return &object.Boolean{Value: left.Type() == object.BOOLEAN_OBJ}
+			case "小数":
+				return &object.Boolean{Value: left.Type() == object.FLOAT_OBJ}
+			case "数组":
+				return &object.Boolean{Value: left.Type() == object.ARRAY_OBJ}
+			case "字典":
+				return &object.Boolean{Value: left.Type() == object.DICT_OBJ}
+			case "空":
+				return &object.Boolean{Value: left.Type() == object.NULL_OBJ}
+			}
+		}
+		return &object.Boolean{Value: left.Inspect() == right.Inspect()}
 	case op == "!=":
 		return &object.Boolean{Value: left.Inspect() != right.Inspect()}
 	default:
@@ -819,7 +862,9 @@ func evalIntegerInfixExpression(line int, op string, left, right object.Object) 
 		return &object.Boolean{Value: leftVal < rightVal}
 	case ">":
 		return &object.Boolean{Value: leftVal > rightVal}
-	case "==", "=": // 支持 = 作为相等
+	case "==", "等于":
+		return &object.Boolean{Value: leftVal == rightVal}
+	case "是":
 		return &object.Boolean{Value: leftVal == rightVal}
 	case "!=":
 		return &object.Boolean{Value: leftVal != rightVal}
@@ -858,7 +903,9 @@ func evalFloatInfixExpression(line int, op string, left, right object.Object) ob
 		return &object.Boolean{Value: leftVal < rightVal}
 	case ">":
 		return &object.Boolean{Value: leftVal > rightVal}
-	case "==", "=":
+	case "==", "等于":
+		return &object.Boolean{Value: leftVal == rightVal}
+	case "是":
 		return &object.Boolean{Value: leftVal == rightVal}
 	case "!=":
 		return &object.Boolean{Value: leftVal != rightVal}
@@ -873,7 +920,9 @@ func evalStringInfixExpression(line int, op string, left, right object.Object) o
 	switch op {
 	case "+":
 		return &object.String{Value: leftVal + rightVal}
-	case "==", "=": // 支持 = 作为相等
+	case "==", "等于":
+		return &object.Boolean{Value: leftVal == rightVal}
+	case "是":
 		return &object.Boolean{Value: leftVal == rightVal}
 	case "!=":
 		return &object.Boolean{Value: leftVal != rightVal}

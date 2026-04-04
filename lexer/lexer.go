@@ -179,9 +179,9 @@ func lookupKeyword(ident string) token.TokenType {
 	switch ident {
 	case "打印":
 		return token.TOKEN_PRINT
-	case "变量":
+	case "设", "变量":
 		return token.TOKEN_VAR
-	case "常量":
+	case "常", "常量":
 		return token.TOKEN_CONST
 	case "若":
 		return token.TOKEN_IF
@@ -191,17 +191,19 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_ELSE
 	case "当":
 		return token.TOKEN_WHILE
+	case "循":
+		return token.TOKEN_LOOP
 	case "遍历":
 		return token.TOKEN_FOR
 	case "于":
 		return token.TOKEN_IN
-	case "跳出":
+	case "断", "跳出":
 		return token.TOKEN_BREAK
-	case "继续":
+	case "续", "继续":
 		return token.TOKEN_CONTINUE
-	case "函数":
+	case "函", "函数":
 		return token.TOKEN_FUNCTION
-	case "返回":
+	case "返", "返回":
 		return token.TOKEN_RETURN
 	case "真":
 		return token.TOKEN_TRUE
@@ -225,7 +227,7 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_AWAIT
 	case "并行":
 		return token.TOKEN_PARALLEL
-	case "引用":
+	case "引", "引用":
 		return token.TOKEN_IMPORT
 	case "且":
 		return token.TOKEN_AND
@@ -233,15 +235,19 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_OR
 	case "非":
 		return token.TOKEN_NOT
+	case "是":
+		return token.TOKEN_IS
+	case "等于":
+		return token.TOKEN_EQ
 	case "结果":
 		return token.TOKEN_RESULT_TYPE
-	case "字符串":
+	case "字", "字符串":
 		return token.TOKEN_STRING_TYPE
-	case "整数":
+	case "整", "整数":
 		return token.TOKEN_INT_TYPE
 	case "小数":
 		return token.TOKEN_FLOAT_TYPE
-	case "逻辑":
+	case "逻", "逻辑":
 		return token.TOKEN_BOOL_TYPE
 	case "数组":
 		return token.TOKEN_ARRAY_TYPE

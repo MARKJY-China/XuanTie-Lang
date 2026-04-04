@@ -267,6 +267,12 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 			c.writeStatement(stmt, indent+1)
 		}
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
+	case *ast.LoopStatement:
+		c.output.WriteString(fmt.Sprintf("%sfor {\n", indentStr))
+		for _, stmt := range s.Block {
+			c.writeStatement(stmt, indent+1)
+		}
+		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 	case *ast.ForStatement:
 		// 基础遍历实现
 		c.output.WriteString(fmt.Sprintf("%sfor _, _val := range toSlice(%s) {\n", indentStr, c.expressionCode(s.Iterable, false)))
@@ -431,7 +437,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 		// 如果是赋值引用，且语句是打印语句或非定义性质的表达式语句，则跳过
 		if isAssignment {
 			switch stmt.(type) {
-			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.ForStatement, *ast.TryCatchStatement:
+			case *ast.PrintStatement, *ast.ExpressionStatement, *ast.IfStatement, *ast.WhileStatement, *ast.LoopStatement, *ast.ForStatement, *ast.TryCatchStatement:
 				continue
 			}
 		}
@@ -577,8 +583,24 @@ func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression, isAssignment bo
 		return fmt.Sprintf("mul(%s, %s)", left, right)
 	case "/":
 		return fmt.Sprintf("div(%s, %s)", left, right)
-	case "==":
-		return fmt.Sprintf("reflect.DeepEqual(%s, %s)", left, right)
+	case "等于", "==":
+		return fmt.Sprintf("(reflect.DeepEqual(%s, %s))", left, right)
+	case "是":
+		// 如果右侧是字符串字面量（类型判断）
+		if strings.HasPrefix(right, "\"") && strings.HasSuffix(right, "\"") {
+			typeStr := strings.Trim(right, "\"")
+			switch typeStr {
+			case "整", "整数":
+				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.Int64)", left)
+			case "字", "字符串":
+				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.String)", left)
+			case "逻", "逻辑":
+				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.Bool)", left)
+			case "小数":
+				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.Float64)", left)
+			}
+		}
+		return fmt.Sprintf("(reflect.DeepEqual(%s, %s))", left, right)
 	case "<":
 		return fmt.Sprintf("lt(%s, %s)", left, right)
 	case ">":

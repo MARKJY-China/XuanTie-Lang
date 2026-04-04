@@ -165,6 +165,26 @@ func (is *IfStatement) String() string {
 	return out.String()
 }
 
+// LoopStatement 无限循环语句
+type LoopStatement struct {
+	Token token.Token // TOKEN_LOOP '循'
+	Block []Statement
+}
+
+func (ls *LoopStatement) statementNode()       {}
+func (ls *LoopStatement) TokenLiteral() string { return ls.Token.Literal }
+func (ls *LoopStatement) GetLine() int         { return ls.Token.Line }
+func (ls *LoopStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("循 { ")
+	for _, stmt := range ls.Block {
+		out.WriteString(stmt.String())
+		out.WriteString(" ")
+	}
+	out.WriteString("}")
+	return out.String()
+}
+
 // WhileStatement 循环语句
 type WhileStatement struct {
 	Token     token.Token

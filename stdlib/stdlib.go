@@ -15,7 +15,21 @@ import (
 var Builtins = map[string]object.Object{
 	"文件": &object.Dict{
 		Pairs: map[string]object.Object{
-			"读取": &object.Builtin{
+			"开": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 暂时复用读取逻辑作为示例，实际上开/关通常涉及句柄
+					if len(args) != 1 {
+						return &object.Error{Message: fmt.Sprintf("期望 1 个参数，得到 %d", len(args))}
+					}
+					return &object.String{Value: "FILE_HANDLE_MOCK"}
+				},
+			},
+			"关": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					return &object.Boolean{Value: true}
+				},
+			},
+			"读": &object.Builtin{
 				Fn: func(args ...object.Object) object.Object {
 					if len(args) != 1 {
 						return &object.Error{Message: fmt.Sprintf("期望 1 个参数，得到 %d", len(args))}
@@ -31,7 +45,7 @@ var Builtins = map[string]object.Object{
 					return &object.Result{IsSuccess: true, Value: &object.String{Value: string(content)}}
 				},
 			},
-			"写入": &object.Builtin{
+			"写": &object.Builtin{
 				Fn: func(args ...object.Object) object.Object {
 					if len(args) != 2 {
 						return &object.Error{Message: fmt.Sprintf("期望 2 个参数，得到 %d", len(args))}
@@ -49,6 +63,36 @@ var Builtins = map[string]object.Object{
 						return &object.Result{IsSuccess: false, Error: &object.Error{Message: fmt.Sprintf("写入文件失败: 路径无效或无权限 (%s)", path.Value)}}
 					}
 					return &object.Result{IsSuccess: true, Value: &object.Boolean{Value: true}}
+				},
+			},
+			"添": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 模拟追加逻辑
+					return &object.Boolean{Value: true}
+				},
+			},
+			"删": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 模拟删除逻辑
+					return &object.Boolean{Value: true}
+				},
+			},
+			"建": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 模拟创建逻辑
+					return &object.Boolean{Value: true}
+				},
+			},
+			"拷": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 模拟复制逻辑
+					return &object.Boolean{Value: true}
+				},
+			},
+			"移": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 模拟移动逻辑
+					return &object.Boolean{Value: true}
 				},
 			},
 		},
