@@ -3,7 +3,7 @@
 [![版本](https://img.shields.io/badge/版本-0.3.6-blue.svg)](https://gitee.com/mark-jy/xuantie)
 [![语言](https://img.shields.io/badge/语言-Go-00ADD8.svg)](https://golang.org)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
-[![语法指南](https://img.shields.io/badge/语法指南-yellow.svg)](https://www.yuque.com/markjy/upsxwh/mr3r02mv71uloe7o)
+[![语法指南](https://img.shields.io/badge/文档-语法指南-yellow.svg)](https://www.yuque.com/markjy/upsxwh/mr3r02mv71uloe7o)
 
 **玄铁，一门融合 Go 高性能并发与 Python 简洁表达力的原生中文编程语言。**
 
