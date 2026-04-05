@@ -95,7 +95,8 @@ func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
 func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
 
 type Function struct {
-	Parameters []*ast.Identifier
+	Parameters []*ast.Parameter
+	ReturnType string // 可选返回类型
 	Body       []ast.Statement
 	Env        map[string]Object
 	OwnerClass *Class    // 所属类（用于权限校验）
@@ -106,7 +107,7 @@ func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
 func (f *Function) Inspect() string {
 	params := []string{}
 	for _, p := range f.Parameters {
-		params = append(params, p.Value)
+		params = append(params, p.Name.Value)
 	}
 	return fmt.Sprintf("函数(%s) { ... }", strings.Join(params, ", "))
 }

@@ -174,11 +174,12 @@ func (p *Parser) parseVarStatement(visibility token.TokenType) *ast.VarStatement
 		p.nextToken() // cur: :
 		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
 			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
-			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE {
+			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
+			p.peek.Type == token.TOKEN_IDENT {
 			p.nextToken() // cur: type
 			stmt.DataType = p.cur.Literal
 		} else {
-			p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 期望类型关键字，得到: %s (%s)",
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 期望类型关键字或标识符，得到: %s (%s)",
 				p.peek.Line, p.peek.Column, p.peek.Type, p.peek.Literal))
 			return nil
 		}
@@ -582,6 +583,18 @@ func (p *Parser) parseFunctionStatement(visibility token.TokenType) *ast.Functio
 
 	stmt.Parameters = p.parseFunctionParameters()
 
+	// 检查返回类型
+	if p.peek.Type == token.TOKEN_COLON {
+		p.nextToken() // cur: :
+		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
+			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
+			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
+			p.peek.Type == token.TOKEN_IDENT {
+			p.nextToken() // cur: type
+			stmt.ReturnType = p.cur.Literal
+		}
+	}
+
 	if !p.expectPeek(token.TOKEN_LBRACE) {
 		return nil
 	}
@@ -716,6 +729,18 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 
 	lit.Parameters = p.parseFunctionParameters()
 
+	// 检查返回类型
+	if p.peek.Type == token.TOKEN_COLON {
+		p.nextToken() // cur: :
+		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
+			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
+			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
+			p.peek.Type == token.TOKEN_IDENT {
+			p.nextToken() // cur: type
+			lit.ReturnType = p.cur.Literal
+		}
+	}
+
 	if !p.expectPeek(token.TOKEN_LBRACE) {
 		return nil
 	}
@@ -784,31 +809,51 @@ func (p *Parser) parseDictLiteral() ast.Expression {
 	return dict
 }
 
-func (p *Parser) parseFunctionParameters() []*ast.Identifier {
-	identifiers := []*ast.Identifier{}
+func (p *Parser) parseFunctionParameters() []*ast.Parameter {
+	parameters := []*ast.Parameter{}
 
 	if p.peek.Type == token.TOKEN_RPAREN {
 		p.nextToken()
-		return identifiers
+		return parameters
 	}
 
 	p.nextToken()
 
-	ident := &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
-	identifiers = append(identifiers, ident)
+	param := &ast.Parameter{Name: &ast.Identifier{Token: p.cur, Value: p.cur.Literal}}
+	if p.peek.Type == token.TOKEN_COLON {
+		p.nextToken() // cur: :
+		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
+			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
+			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
+			p.peek.Type == token.TOKEN_IDENT {
+			p.nextToken() // cur: type
+			param.DataType = p.cur.Literal
+		}
+	}
+	parameters = append(parameters, param)
 
 	for p.peek.Type == token.TOKEN_COMMA {
 		p.nextToken()
 		p.nextToken()
-		ident := &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
-		identifiers = append(identifiers, ident)
+		param := &ast.Parameter{Name: &ast.Identifier{Token: p.cur, Value: p.cur.Literal}}
+		if p.peek.Type == token.TOKEN_COLON {
+			p.nextToken() // cur: :
+			if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
+				p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
+				p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
+				p.peek.Type == token.TOKEN_IDENT {
+				p.nextToken() // cur: type
+				param.DataType = p.cur.Literal
+			}
+		}
+		parameters = append(parameters, param)
 	}
 
 	if !p.expectPeek(token.TOKEN_RPAREN) {
 		return nil
 	}
 
-	return identifiers
+	return parameters
 }
 
 func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {

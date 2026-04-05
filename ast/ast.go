@@ -686,9 +686,25 @@ func (ie *InfixExpression) String() string {
 }
 
 // FunctionLiteral 函数定义
+// Parameter 函数参数
+type Parameter struct {
+	Name     *Identifier
+	DataType string // 可选类型
+}
+
+func (p *Parameter) String() string {
+	var out bytes.Buffer
+	out.WriteString(p.Name.String())
+	if p.DataType != "" {
+		out.WriteString(": " + p.DataType)
+	}
+	return out.String()
+}
+
 type FunctionLiteral struct {
 	Token      token.Token
-	Parameters []*Identifier
+	Parameters []*Parameter
+	ReturnType string // 可选返回类型
 	Body       []Statement
 }
 
@@ -704,7 +720,11 @@ func (fl *FunctionLiteral) String() string {
 	out.WriteString("函数")
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))
-	out.WriteString(") { ")
+	out.WriteString(")")
+	if fl.ReturnType != "" {
+		out.WriteString(": " + fl.ReturnType)
+	}
+	out.WriteString(" { ")
 	for _, s := range fl.Body {
 		out.WriteString(s.String())
 	}
@@ -716,7 +736,8 @@ func (fl *FunctionLiteral) String() string {
 type FunctionStatement struct {
 	Token      token.Token
 	Name       *Identifier
-	Parameters []*Identifier
+	Parameters []*Parameter
+	ReturnType string // 可选返回类型
 	Body       []Statement
 	Visibility token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC, TOKEN_PROTECTED
 }
@@ -737,7 +758,11 @@ func (fs *FunctionStatement) String() string {
 	out.WriteString(fs.Name.String())
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))
-	out.WriteString(") { ")
+	out.WriteString(")")
+	if fs.ReturnType != "" {
+		out.WriteString(": " + fs.ReturnType)
+	}
+	out.WriteString(" { ")
 	for _, s := range fs.Body {
 		out.WriteString(s.String())
 	}

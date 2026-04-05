@@ -65,33 +65,11 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		if isError(val) {
 			return val
 		}
-		// 简单类型检查
+		// 类型检查
 		if n.DataType != "" {
-			switch n.DataType {
-			case "字符串":
-				if val.Type() != object.STRING_OBJ {
-					return newError(n.GetLine(), "类型不匹配: 期望字符串，得到 %s", val.Type())
-				}
-			case "整数":
-				if val.Type() != object.INTEGER_OBJ {
-					return newError(n.GetLine(), "类型不匹配: 期望整数，得到 %s", val.Type())
-				}
-			case "小数":
-				if val.Type() != object.FLOAT_OBJ {
-					return newError(n.GetLine(), "类型不匹配: 期望小数，得到 %s", val.Type())
-				}
-			case "逻辑":
-				if val.Type() != object.BOOLEAN_OBJ {
-					return newError(n.GetLine(), "类型不匹配: 期望逻辑，得到 %s", val.Type())
-				}
-			case "数组":
-				if val.Type() != object.ARRAY_OBJ {
-					return newError(n.GetLine(), "类型不匹配: 期望数组，得到 %s", val.Type())
-				}
-			case "字典":
-				if val.Type() != object.DICT_OBJ {
-					return newError(n.GetLine(), "类型不匹配: 期望字典，得到 %s", val.Type())
-				}
+			err := checkType(n.DataType, val, env)
+			if err != nil {
+				return newError(n.GetLine(), err.(*object.Error).Message)
 			}
 		}
 		env[n.Name.Value] = val
@@ -123,7 +101,7 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 	case *ast.TryCatchStatement:
 		return evalTryCatchStatement(n, env)
 	case *ast.FunctionStatement:
-		fn := &object.Function{Parameters: n.Parameters, Body: n.Body, Env: env}
+		fn := &object.Function{Parameters: n.Parameters, ReturnType: n.ReturnType, Body: n.Body, Env: env}
 		env[n.Name.Value] = fn
 		return &object.Null{}
 	case *ast.TypeDefinitionStatement:
@@ -157,7 +135,7 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 	case *ast.ChannelExpression:
 		return &object.Channel{Value: make(chan object.Object, 100)}
 	case *ast.FunctionLiteral:
-		return &object.Function{Parameters: n.Parameters, Body: n.Body, Env: env}
+		return &object.Function{Parameters: n.Parameters, ReturnType: n.ReturnType, Body: n.Body, Env: env}
 	case *ast.CallExpression:
 		// 特殊处理 成功 和 失败
 		if ident, ok := n.Function.(*ast.Identifier); ok {
@@ -1547,7 +1525,11 @@ func evalDictLiteral(node *ast.DictLiteral, env map[string]object.Object) object
 func applyFunction(line int, fn object.Object, args []object.Object) object.Object {
 	switch function := fn.(type) {
 	case *object.Function:
-		extendedEnv := extendFunctionEnv(function, args)
+		envObj := extendFunctionEnv(function, args)
+		if isError(envObj) {
+			return envObj
+		}
+		extendedEnv := envObj.(*object.Dict).Pairs
 
 		// 如果绑定了实例，注入实例上下文
 		if function.Receiver != nil {
@@ -1595,7 +1577,17 @@ func applyFunction(line int, fn object.Object, args []object.Object) object.Obje
 		}
 
 		evaluated := evalBlock(function.Body, extendedEnv)
-		return unwrapReturnValue(evaluated)
+		result := unwrapReturnValue(evaluated)
+
+		// 检查返回类型
+		if function.ReturnType != "" {
+			err := checkType(function.ReturnType, result, extendedEnv)
+			if err != nil {
+				return newError(line, "函数返回值 %s", err.(*object.Error).Message)
+			}
+		}
+
+		return result
 	case *object.Builtin:
 		return function.Fn(args...)
 	default:
@@ -1603,16 +1595,24 @@ func applyFunction(line int, fn object.Object, args []object.Object) object.Obje
 	}
 }
 
-func extendFunctionEnv(fn *object.Function, args []object.Object) map[string]object.Object {
+func extendFunctionEnv(fn *object.Function, args []object.Object) object.Object {
 	env := make(map[string]object.Object)
 	// Copy outer env (not efficient but simple for now)
 	for k, v := range fn.Env {
 		env[k] = v
 	}
 	for i, param := range fn.Parameters {
-		env[param.Value] = args[i]
+		val := args[i]
+		// 类型检查
+		if param.DataType != "" {
+			err := checkType(param.DataType, val, env)
+			if err != nil {
+				return newError(param.Name.GetLine(), "参数 '%s' %s", param.Name.Value, err.(*object.Error).Message)
+			}
+		}
+		env[param.Name.Value] = val
 	}
-	return env
+	return &object.Dict{Pairs: env} // 返回一个包装了 env 的对象，方便 applyFunction 处理错误
 }
 
 func unwrapReturnValue(obj object.Object) object.Object {
@@ -1969,4 +1969,63 @@ func evalExecuteExpression(ee *ast.ExecuteExpression, env map[string]object.Obje
 	}
 
 	return &object.Result{IsSuccess: true, Value: &object.String{Value: string(out)}}
+}
+
+func checkType(expectedType string, val object.Object, env map[string]object.Object) object.Object {
+	if expectedType == "" {
+		return nil
+	}
+
+	actualType := val.Type()
+	switch expectedType {
+	case "字", "字符串":
+		if actualType == object.STRING_OBJ {
+			return nil
+		}
+	case "整", "整数":
+		if actualType == object.INTEGER_OBJ {
+			return nil
+		}
+	case "小数":
+		if actualType == object.FLOAT_OBJ {
+			return nil
+		}
+	case "逻", "逻辑":
+		if actualType == object.BOOLEAN_OBJ {
+			return nil
+		}
+	case "数组":
+		if actualType == object.ARRAY_OBJ {
+			return nil
+		}
+	case "字典":
+		if actualType == object.DICT_OBJ {
+			return nil
+		}
+	case "结果":
+		if actualType == object.RESULT_OBJ {
+			return nil
+		}
+	case "字节":
+		if actualType == object.BYTES_OBJ {
+			return nil
+		}
+	case "空":
+		if actualType == object.NULL_OBJ {
+			return nil
+		}
+	default:
+		// 检查自定义类名
+		if classObj, ok := env[expectedType]; ok {
+			if class, ok := classObj.(*object.Class); ok {
+				if instance, ok := val.(*object.Instance); ok {
+					if isSubclassOf(instance.Class, class) {
+						return nil
+					}
+				}
+			}
+		}
+	}
+
+	return &object.Error{Message: fmt.Sprintf("类型不匹配: 期望 %s，得到 %s", expectedType, actualType)}
 }

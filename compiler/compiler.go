@@ -12,13 +12,14 @@ import (
 )
 
 type GoCompiler struct {
-	program     *ast.Program
-	output      bytes.Buffer
-	modules     map[string]string // 缓存已转译的模块路径和生成的函数名
-	moduleCode  bytes.Buffer      // 存储所有模块生成的 Go 代码
-	classes     map[string]*ast.TypeDefinitionStatement
-	importStack []string // 用于循环引用检测
-	errors      []string
+	program         *ast.Program
+	output          bytes.Buffer
+	modules         map[string]string // 缓存已转译的模块路径和生成的函数名
+	moduleCode      bytes.Buffer      // 存储所有模块生成的 Go 代码
+	classes         map[string]*ast.TypeDefinitionStatement
+	importStack     []string // 用于循环引用检测
+	returnTypeStack []string // 用于函数返回类型校验
+	errors          []string
 }
 
 func (c *GoCompiler) Errors() []string {
@@ -108,6 +109,34 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\tcase string: return val != \"\"\n")
 	c.output.WriteString("\tdefault: return true\n")
 	c.output.WriteString("\t}\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func checkTypeRuntime(expectedType string, v interface{}, label string) {\n")
+	c.output.WriteString("\tif expectedType == \"\" { return }\n")
+	c.output.WriteString("\tmatch := false\n")
+	c.output.WriteString("\tif v == nil {\n")
+	c.output.WriteString("\t\tif expectedType == \"空\" { match = true }\n")
+	c.output.WriteString("\t} else {\n")
+	c.output.WriteString("\t\tswitch expectedType {\n")
+	c.output.WriteString("\t\tcase \"字\", \"字符串\": _, match = v.(string)\n")
+	c.output.WriteString("\t\tcase \"整\", \"整数\": _, match = v.(int64)\n")
+	c.output.WriteString("\t\tcase \"小数\": _, match = v.(float64)\n")
+	c.output.WriteString("\t\tcase \"逻\", \"逻辑\": _, match = v.(bool)\n")
+	c.output.WriteString("\t\tcase \"数组\":\n")
+	c.output.WriteString("\t\t\tif _, ok := v.(*[]interface{}); ok { match = true }\n")
+	c.output.WriteString("\t\t\tif _, ok := v.([]interface{}); ok { match = true }\n")
+	c.output.WriteString("\t\tcase \"字典\": _, match = v.(map[string]interface{})\n")
+	c.output.WriteString("\t\tcase \"字节\": _, match = v.([]byte)\n")
+	c.output.WriteString("\t\tcase \"结果\": _, match = v.(*Result)\n")
+	c.output.WriteString("\t\tdefault:\n")
+	c.output.WriteString("\t\t\tif dict, ok := v.(map[string]interface{}); ok {\n")
+	c.output.WriteString("\t\t\t\tif classes, ok := dict[\"__CLASSES__\"].([]string); ok {\n")
+	c.output.WriteString("\t\t\t\t\tfor _, cls := range classes { if cls == expectedType { match = true; break } }\n")
+	c.output.WriteString("\t\t\t\t}\n")
+	c.output.WriteString("\t\t\t}\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\tif !match { panic(fmt.Sprintf(\"%s类型错误: 期望 %s, 实际得到 %T\", label, expectedType, v)) }\n")
 	c.output.WriteString("}\n\n")
 
 	c.output.WriteString("func add(l, r interface{}) interface{} {\n")
@@ -606,6 +635,9 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	case *ast.VarStatement:
 		c.output.WriteString(fmt.Sprintf("%svar %s interface{} = %s\n", indentStr, s.Name.Value, c.expressionCode(s.Value, true)))
 		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
+		if s.DataType != "" {
+			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, %s, %q)\n", indentStr, s.DataType, s.Name.Value, "变量 "+s.Name.Value))
+		}
 	case *ast.AssignStatement:
 		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value, true)))
 	case *ast.MemberAssignStatement:
@@ -672,18 +704,25 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		}
 		c.output.WriteString(fmt.Sprintf("%s}()\n", indentStr))
 	case *ast.FunctionStatement:
-		params := []string{}
-		for _, p := range s.Parameters {
-			params = append(params, p.Value)
-		}
 		c.output.WriteString(fmt.Sprintf("%svar %s interface{} = func(args []interface{}) interface{} {\n", indentStr, s.Name.Value))
 		// 绑定参数
-		for i, p := range params {
-			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{}\n", indentStr, p))
-			c.output.WriteString(fmt.Sprintf("%s\tif len(args) > %d { %s = args[%d] }\n", indentStr, i, p, i))
+		for i, p := range s.Parameters {
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{}\n", indentStr, p.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%s\tif len(args) > %d { %s = args[%d] }\n", indentStr, i, p.Name.Value, i))
+			// 类型校验
+			if p.DataType != "" {
+				c.output.WriteString(fmt.Sprintf("%s\tcheckTypeRuntime(%q, %s, %q)\n", indentStr, p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+			}
 		}
+
+		c.returnTypeStack = append(c.returnTypeStack, s.ReturnType)
 		for _, stmt := range s.Body {
 			c.writeStatement(stmt, indent+1)
+		}
+		c.returnTypeStack = c.returnTypeStack[:len(c.returnTypeStack)-1]
+
+		if s.ReturnType != "" {
+			c.output.WriteString(fmt.Sprintf("%s\tcheckTypeRuntime(%q, nil, \"返回值\")\n", indentStr, s.ReturnType))
 		}
 		c.output.WriteString(fmt.Sprintf("%s\treturn nil\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
@@ -697,7 +736,10 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		} else {
 			c.output.WriteString(fmt.Sprintf("%s\tres := make(map[string]interface{})\n", indentStr))
 			c.output.WriteString(fmt.Sprintf("%s\tres[\"__VIS__\"] = make(map[string]string)\n", indentStr))
+			c.output.WriteString(fmt.Sprintf("%s\tres[\"__CLASSES__\"] = []string{}\n", indentStr))
 		}
+		c.output.WriteString(fmt.Sprintf("%s\tres[\"__CLASS__\"] = %q\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%s\tres[\"__CLASSES__\"] = append(res[\"__CLASSES__\"].([]string), %q)\n", indentStr, s.Name.Value))
 
 		// 记录可见性
 		for _, stmt := range s.Block {
@@ -750,8 +792,11 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 
 				// 绑定参数
 				for i, p := range fnStmt.Parameters {
-					c.output.WriteString(fmt.Sprintf("%s\t\t%s := interface{}(nil)\n", indentStr, p.Value))
-					c.output.WriteString(fmt.Sprintf("%s\t\tif len(m_args) > %d { %s = m_args[%d] }\n", indentStr, i, p.Value, i))
+					c.output.WriteString(fmt.Sprintf("%s\t\t%s := interface{}(nil)\n", indentStr, p.Name.Value))
+					c.output.WriteString(fmt.Sprintf("%s\t\tif len(m_args) > %d { %s = m_args[%d] }\n", indentStr, i, p.Name.Value, i))
+					if p.DataType != "" {
+						c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q)\n", indentStr, p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+					}
 				}
 				for _, b := range fnStmt.Body {
 					c.writeStatement(b, indent+2)
@@ -786,7 +831,18 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
 	case *ast.ReturnStatement:
-		c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, c.expressionCode(s.ReturnValue, false)))
+		expectedType := ""
+		if len(c.returnTypeStack) > 0 {
+			expectedType = c.returnTypeStack[len(c.returnTypeStack)-1]
+		}
+		valCode := c.expressionCode(s.ReturnValue, false)
+		if expectedType != "" {
+			c.output.WriteString(fmt.Sprintf("%s_rv := %s\n", indentStr, valCode))
+			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, _rv, \"返回值\")\n", indentStr, expectedType))
+			c.output.WriteString(fmt.Sprintf("%sreturn _rv\n", indentStr))
+		} else {
+			c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, valCode))
+		}
 	case *ast.ExpressionStatement:
 		exprCode := c.expressionCode(s.Expression, false)
 		if exprCode != "nil" {
@@ -979,13 +1035,20 @@ func (c *GoCompiler) functionLiteralCode(e *ast.FunctionLiteral, isAssignment bo
 	var out bytes.Buffer
 	out.WriteString("func(args []interface{}) interface{} {\n")
 	for i, p := range e.Parameters {
-		out.WriteString(fmt.Sprintf("\t\t%s := args[%d]\n", p.Value, i))
-		out.WriteString(fmt.Sprintf("\t\t_ = %s\n", p.Value))
+		out.WriteString(fmt.Sprintf("\t\t%s := args[%d]\n", p.Name.Value, i))
+		out.WriteString(fmt.Sprintf("\t\t_ = %s\n", p.Name.Value))
+		if p.DataType != "" {
+			out.WriteString(fmt.Sprintf("\t\tcheckTypeRuntime(%q, %s, %q)\n", p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+		}
 	}
+	c.returnTypeStack = append(c.returnTypeStack, e.ReturnType)
 	for _, stmt := range e.Body {
 		c.writeStatementToBuffer(stmt, 2, &out)
 	}
-	// 在 Go 函数末尾尝试获取最后一个表达式的返回值（如果有的话，但玄铁函数必须显式返回）
+	c.returnTypeStack = c.returnTypeStack[:len(c.returnTypeStack)-1]
+	if e.ReturnType != "" {
+		out.WriteString(fmt.Sprintf("\t\tcheckTypeRuntime(%q, nil, \"返回值\")\n", e.ReturnType))
+	}
 	out.WriteString("\t\treturn nil\n")
 	out.WriteString("\t}")
 	return out.String()
