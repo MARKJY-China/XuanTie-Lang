@@ -2,6 +2,7 @@ package object
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"xuantie/ast"
 	"xuantie/token"
@@ -27,6 +28,8 @@ const (
 	CONTINUE_OBJ     ObjectType = "CONTINUE"
 	CLASS_OBJ        ObjectType = "CLASS"
 	INSTANCE_OBJ     ObjectType = "INSTANCE"
+	STREAM_OBJ       ObjectType = "STREAM"
+	CHANNEL_OBJ      ObjectType = "CHANNEL"
 )
 
 type Object interface {
@@ -147,6 +150,20 @@ func (d *Dict) Inspect() string {
 	out.WriteString("}")
 	return out.String()
 }
+
+type Stream struct {
+	Conn net.Conn
+}
+
+func (s *Stream) Type() ObjectType { return STREAM_OBJ }
+func (s *Stream) Inspect() string  { return fmt.Sprintf("流(%s)", s.Conn.RemoteAddr()) }
+
+type Channel struct {
+	Value chan Object
+}
+
+func (c *Channel) Type() ObjectType { return CHANNEL_OBJ }
+func (c *Channel) Inspect() string  { return "道" }
 
 type Result struct {
 	IsSuccess bool

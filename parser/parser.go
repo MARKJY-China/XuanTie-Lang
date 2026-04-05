@@ -432,6 +432,16 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseSerializeExpression()
 	case token.TOKEN_DESERIALIZE:
 		leftExp = p.parseDeserializeExpression()
+	case token.TOKEN_CONNECT:
+		leftExp = p.parseConnectExpression()
+	case token.TOKEN_LISTEN:
+		leftExp = p.parseListenExpression()
+	case token.TOKEN_REQUEST:
+		leftExp = p.parseConnectRequestExpression()
+	case token.TOKEN_EXECUTE:
+		leftExp = p.parseExecuteExpression()
+	case token.TOKEN_CHANNEL:
+		leftExp = &ast.ChannelExpression{Token: p.cur}
 	case token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
 		leftExp = p.parseResultLiteral()
 	case token.TOKEN_NOT, token.TOKEN_MINUS:
@@ -618,6 +628,78 @@ func (p *Parser) parseDeserializeExpression() ast.Expression {
 	}
 	p.nextToken()
 	exp.Value = p.parseExpression(LOWEST)
+	if !p.expectPeek(token.TOKEN_RPAREN) {
+		return nil
+	}
+	return exp
+}
+
+func (p *Parser) parseConnectExpression() ast.Expression {
+	exp := &ast.ConnectExpression{Token: p.cur}
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	exp.Address = p.parseExpression(LOWEST)
+	if p.peek.Type == token.TOKEN_COMMA {
+		p.nextToken()
+		p.nextToken()
+		exp.Arguments = p.parseCallArguments()
+	}
+	if !p.expectPeek(token.TOKEN_RPAREN) {
+		return nil
+	}
+	return exp
+}
+
+func (p *Parser) parseListenExpression() ast.Expression {
+	exp := &ast.ListenExpression{Token: p.cur}
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	exp.Address = p.parseExpression(LOWEST)
+	if !p.expectPeek(token.TOKEN_COMMA) {
+		return nil
+	}
+	p.nextToken()
+	exp.Callback = p.parseExpression(LOWEST)
+	if p.peek.Type == token.TOKEN_COMMA {
+		p.nextToken()
+		p.nextToken()
+		exp.Arguments = p.parseCallArguments()
+	}
+	if !p.expectPeek(token.TOKEN_RPAREN) {
+		return nil
+	}
+	return exp
+}
+
+func (p *Parser) parseConnectRequestExpression() ast.Expression {
+	exp := &ast.ConnectRequestExpression{Token: p.cur}
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	exp.Url = p.parseExpression(LOWEST)
+	if p.peek.Type == token.TOKEN_COMMA {
+		p.nextToken()
+		p.nextToken()
+		exp.Arguments = p.parseCallArguments()
+	}
+	if !p.expectPeek(token.TOKEN_RPAREN) {
+		return nil
+	}
+	return exp
+}
+
+func (p *Parser) parseExecuteExpression() ast.Expression {
+	exp := &ast.ExecuteExpression{Token: p.cur}
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	exp.Command = p.parseExpression(LOWEST)
 	if !p.expectPeek(token.TOKEN_RPAREN) {
 		return nil
 	}

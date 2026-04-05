@@ -52,6 +52,13 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t\"fmt\"\n")
 	c.output.WriteString("\t\"reflect\"\n")
 	c.output.WriteString("\t\"encoding/json\"\n")
+	c.output.WriteString("\t\"net\"\n")
+	c.output.WriteString("\t\"net/http\"\n")
+	c.output.WriteString("\t\"io/ioutil\"\n")
+	c.output.WriteString("\t\"os/exec\"\n")
+	c.output.WriteString("\t\"time\"\n")
+	c.output.WriteString("\t\"bufio\"\n")
+	c.output.WriteString("\t\"strings\"\n")
 	c.output.WriteString(")\n\n")
 	c.output.WriteString("var _ = reflect.TypeOf\n\n")
 
@@ -111,6 +118,49 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\treturn []interface{}{}\n")
 	c.output.WriteString("}\n\n")
 
+	c.output.WriteString("func listen(addr interface{}, callback interface{}) interface{} {\n")
+	c.output.WriteString("\taddrStr := fmt.Sprintf(\"%v\", addr)\n")
+	c.output.WriteString("\tif !strings.Contains(addrStr, \":\") { addrStr = \":\" + addrStr }\n")
+	c.output.WriteString("\tl, err := net.Listen(\"tcp\", addrStr)\n")
+	c.output.WriteString("\tif err != nil { return nil }\n")
+	c.output.WriteString("\tgo func() {\n")
+	c.output.WriteString("\t\tdefer l.Close()\n")
+	c.output.WriteString("\t\tfor {\n")
+	c.output.WriteString("\t\t\tconn, err := l.Accept()\n")
+	c.output.WriteString("\t\t\tif err != nil { continue }\n")
+	c.output.WriteString("\t\t\tcall(callback, []interface{}{conn})\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}()\n")
+	c.output.WriteString("\treturn nil\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func connect(addr interface{}, timeout interface{}) interface{} {\n")
+	c.output.WriteString("\tt := 5 * time.Second\n")
+	c.output.WriteString("\tif ti, ok := timeout.(int64); ok { t = time.Duration(ti) * time.Millisecond }\n")
+	c.output.WriteString("\tconn, err := net.DialTimeout(\"tcp\", fmt.Sprintf(\"%v\", addr), t)\n")
+	c.output.WriteString("\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
+	c.output.WriteString("\treturn &Result{IsSuccess: true, Value: conn}\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func request(url interface{}) interface{} {\n")
+	c.output.WriteString("\tresp, err := http.Get(fmt.Sprintf(\"%v\", url))\n")
+	c.output.WriteString("\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
+	c.output.WriteString("\tdefer resp.Body.Close()\n")
+	c.output.WriteString("\tbody, err := ioutil.ReadAll(resp.Body)\n")
+	c.output.WriteString("\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
+	c.output.WriteString("\treturn &Result{IsSuccess: true, Value: string(body)}\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func execute(cmd interface{}) interface{} {\n")
+	c.output.WriteString("\tcmdStr := fmt.Sprintf(\"%v\", cmd)\n")
+	c.output.WriteString("\tparts := strings.Fields(cmdStr)\n")
+	c.output.WriteString("\tif len(parts) == 0 { return &Result{IsSuccess: false, Error: \"empty command\"} }\n")
+	c.output.WriteString("\tc := exec.Command(parts[0], parts[1:]...)\n")
+	c.output.WriteString("\tout, err := c.CombinedOutput()\n")
+	c.output.WriteString("\tif err != nil { return &Result{IsSuccess: false, Error: string(out) + \" \" + err.Error()} }\n")
+	c.output.WriteString("\treturn &Result{IsSuccess: true, Value: string(out)}\n")
+	c.output.WriteString("}\n\n")
+
 	c.output.WriteString("func call(fn interface{}, args []interface{}) interface{} {\n")
 	c.output.WriteString("\tif fn == nil { return nil }\n")
 	c.output.WriteString("\tif f, ok := fn.(func([]interface{}) interface{}); ok { return f(args) }\n")
@@ -142,9 +192,53 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t\t\treturn dict[s]\n")
 	c.output.WriteString("\t\t}\n")
 	c.output.WriteString("\t}\n")
+
 	c.output.WriteString("\tif str, ok := obj.(string); ok {\n")
 	c.output.WriteString("\t\tif attr == \"长度\" { return int64(len(str)) }\n")
 	c.output.WriteString("\t}\n")
+
+	c.output.WriteString("\tif conn, ok := obj.(net.Conn); ok {\n")
+	c.output.WriteString("\t\tswitch attr {\n")
+	c.output.WriteString("\t\tcase \"读\":\n")
+	c.output.WriteString("\t\t\treturn func(args []interface{}) interface{} {\n")
+	c.output.WriteString("\t\t\t\tvar size int64 = 0\n")
+	c.output.WriteString("\t\t\t\tif len(args) > 0 { if s, ok := args[0].(int64); ok { size = s } }\n")
+	c.output.WriteString("\t\t\t\tif size > 0 {\n")
+	c.output.WriteString("\t\t\t\t\tbuf := make([]byte, size)\n")
+	c.output.WriteString("\t\t\t\t\tn, err := conn.Read(buf)\n")
+	c.output.WriteString("\t\t\t\t\tif err != nil { return nil }\n")
+	c.output.WriteString("\t\t\t\t\treturn string(buf[:n])\n")
+	c.output.WriteString("\t\t\t\t} else if size == -1 {\n")
+	c.output.WriteString("\t\t\t\t\tc, _ := ioutil.ReadAll(conn)\n")
+	c.output.WriteString("\t\t\t\t\treturn string(c)\n")
+	c.output.WriteString("\t\t\t\t} else {\n")
+	c.output.WriteString("\t\t\t\t\tr := bufio.NewReader(conn)\n")
+	c.output.WriteString("\t\t\t\t\tl, _ := r.ReadString('\\n')\n")
+	c.output.WriteString("\t\t\t\t\treturn strings.TrimSpace(l)\n")
+	c.output.WriteString("\t\t\t\t}\n")
+	c.output.WriteString("\t\t\t}\n")
+	c.output.WriteString("\t\tcase \"写\":\n")
+	c.output.WriteString("\t\t\treturn func(args []interface{}) interface{} {\n")
+	c.output.WriteString("\t\t\t\tif len(args) == 0 { return false }\n")
+	c.output.WriteString("\t\t\t\t_, err := conn.Write([]byte(fmt.Sprintf(\"%v\\n\", args[0])))\n")
+	c.output.WriteString("\t\t\t\treturn err == nil\n")
+	c.output.WriteString("\t\t\t}\n")
+	c.output.WriteString("\t\tcase \"关\":\n")
+	c.output.WriteString("\t\t\treturn func(args []interface{}) interface{} { conn.Close(); return nil }\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+
+	c.output.WriteString("\tif ch, ok := obj.(chan interface{}); ok {\n")
+	c.output.WriteString("\t\tswitch attr {\n")
+	c.output.WriteString("\t\tcase \"送\":\n")
+	c.output.WriteString("\t\t\treturn func(args []interface{}) interface{} { if len(args) > 0 { ch <- args[0] }; return nil }\n")
+	c.output.WriteString("\t\tcase \"收\":\n")
+	c.output.WriteString("\t\t\treturn func(args []interface{}) interface{} { return <-ch }\n")
+	c.output.WriteString("\t\tcase \"关\":\n")
+	c.output.WriteString("\t\t\treturn func(args []interface{}) interface{} { close(ch); return nil }\n")
+	c.output.WriteString("\t\t}\n")
+	c.output.WriteString("\t}\n")
+
 	c.output.WriteString("\tif res, ok := obj.(*Result); ok {\n")
 	c.output.WriteString("\t\tswitch attr {\n")
 	c.output.WriteString("\t\tcase \"接着\":\n")
@@ -531,6 +625,16 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 		return fmt.Sprintf("serialize(%s)", c.expressionCode(e.Value, false))
 	case *ast.DeserializeExpression:
 		return fmt.Sprintf("deserialize(%s)", c.expressionCode(e.Value, false))
+	case *ast.ListenExpression:
+		return c.listenExpressionCode(e, isAssignment)
+	case *ast.ConnectExpression:
+		return c.connectExpressionCode(e, isAssignment)
+	case *ast.ConnectRequestExpression:
+		return c.requestExpressionCode(e, isAssignment)
+	case *ast.ExecuteExpression:
+		return c.executeExpressionCode(e, isAssignment)
+	case *ast.ChannelExpression:
+		return "make(chan interface{}, 100)"
 	}
 	return "nil"
 }
@@ -696,6 +800,31 @@ func (c *GoCompiler) asyncExpressionCode(e *ast.AsyncExpression, isAssignment bo
 
 func (c *GoCompiler) awaitExpressionCode(e *ast.AwaitExpression, isAssignment bool) string {
 	return fmt.Sprintf("await(%s)", c.expressionCode(e.Value, isAssignment))
+}
+
+func (c *GoCompiler) listenExpressionCode(e *ast.ListenExpression, isAssignment bool) string {
+	addr := c.expressionCode(e.Address, isAssignment)
+	callback := c.expressionCode(e.Callback, isAssignment)
+	return fmt.Sprintf("listen(%s, %s)", addr, callback)
+}
+
+func (c *GoCompiler) connectExpressionCode(e *ast.ConnectExpression, isAssignment bool) string {
+	addr := c.expressionCode(e.Address, isAssignment)
+	timeout := "5000"
+	if len(e.Arguments) > 0 {
+		timeout = c.expressionCode(e.Arguments[0], isAssignment)
+	}
+	return fmt.Sprintf("connect(%s, %s)", addr, timeout)
+}
+
+func (c *GoCompiler) requestExpressionCode(e *ast.ConnectRequestExpression, isAssignment bool) string {
+	url := c.expressionCode(e.Url, isAssignment)
+	return fmt.Sprintf("request(%s)", url)
+}
+
+func (c *GoCompiler) executeExpressionCode(e *ast.ExecuteExpression, isAssignment bool) string {
+	cmd := c.expressionCode(e.Command, isAssignment)
+	return fmt.Sprintf("execute(%s)", cmd)
 }
 
 func (c *GoCompiler) parallelExpressionCode(e *ast.ParallelExpression, isAssignment bool) string {

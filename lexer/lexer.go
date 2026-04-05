@@ -239,6 +239,16 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_NEW
 	case "承":
 		return token.TOKEN_INHERIT
+	case "连":
+		return token.TOKEN_CONNECT
+	case "听":
+		return token.TOKEN_LISTEN
+	case "求":
+		return token.TOKEN_REQUEST
+	case "执":
+		return token.TOKEN_EXECUTE
+	case "道":
+		return token.TOKEN_CHANNEL
 	case "私":
 		return token.TOKEN_PRIVATE
 	case "公":

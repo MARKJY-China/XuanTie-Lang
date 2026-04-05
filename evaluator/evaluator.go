@@ -1,10 +1,17 @@
 package evaluator
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net"
+	"net/http"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/object"
@@ -132,6 +139,16 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalSerializeExpression(n, env)
 	case *ast.DeserializeExpression:
 		return evalDeserializeExpression(n, env)
+	case *ast.ListenExpression:
+		return evalListenExpression(n, env)
+	case *ast.ConnectExpression:
+		return evalConnectExpression(n, env)
+	case *ast.ConnectRequestExpression:
+		return evalRequestExpression(n, env)
+	case *ast.ExecuteExpression:
+		return evalExecuteExpression(n, env)
+	case *ast.ChannelExpression:
+		return &object.Channel{Value: make(chan object.Object, 100)}
 	case *ast.FunctionLiteral:
 		return &object.Function{Parameters: n.Parameters, Body: n.Body, Env: env}
 	case *ast.CallExpression:
@@ -847,14 +864,22 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		switch mce.Member.Value {
 		case "接着":
 			if result.IsSuccess {
-				return applyFunction(mce.GetLine(), args[0], []object.Object{result.Value})
+				res := applyFunction(mce.GetLine(), args[0], []object.Object{result.Value})
+				if r, ok := res.(*object.Result); ok {
+					return r
+				}
+				return &object.Result{IsSuccess: true, Value: res}
 			}
-			return result // 保持原样向下传递
+			return result
 		case "否则":
 			if !result.IsSuccess {
-				return applyFunction(mce.GetLine(), args[0], []object.Object{result.Error})
+				res := applyFunction(mce.GetLine(), args[0], []object.Object{result.Error})
+				if r, ok := res.(*object.Result); ok {
+					return r
+				}
+				return &object.Result{IsSuccess: true, Value: res}
 			}
-			return result // 保持原样向下传递
+			return result
 		}
 	}
 
@@ -870,6 +895,75 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 	if dict, ok := obj.(*object.Dict); ok {
 		if val, ok := dict.Pairs[mce.Member.Value]; ok {
 			return applyFunction(mce.GetLine(), val, args)
+		}
+	}
+
+	// 处理流对象的成员调用
+	if stream, ok := obj.(*object.Stream); ok {
+		switch mce.Member.Value {
+		case "读":
+			// 默认读取一行
+			var size int64 = 0
+			if len(args) > 0 {
+				if s, ok := args[0].(*object.Integer); ok {
+					size = s.Value
+				}
+			}
+
+			if size > 0 {
+				buf := make([]byte, size)
+				n, err := stream.Conn.Read(buf)
+				if err != nil {
+					return &object.Null{}
+				}
+				return &object.String{Value: string(buf[:n])}
+			} else if size == -1 {
+				// 读取全部
+				content, err := ioutil.ReadAll(stream.Conn)
+				if err != nil {
+					return &object.Null{}
+				}
+				return &object.String{Value: string(content)}
+			} else {
+				// 读行
+				reader := bufio.NewReader(stream.Conn)
+				line, err := reader.ReadString('\n')
+				if err != nil {
+					return &object.Null{}
+				}
+				return &object.String{Value: strings.TrimSpace(line)}
+			}
+		case "写":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "写期望 1 个参数")
+			}
+			content := args[0].Inspect()
+			_, err := stream.Conn.Write([]byte(content + "\n"))
+			if err != nil {
+				return &object.Boolean{Value: false}
+			}
+			return &object.Boolean{Value: true}
+		case "关":
+			stream.Conn.Close()
+			return &object.Null{}
+		}
+	}
+
+	// 处理通道对象的成员调用
+	if channel, ok := obj.(*object.Channel); ok {
+		switch mce.Member.Value {
+		case "送":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "送期望 1 个参数")
+			}
+			channel.Value <- args[0]
+			return &object.Null{}
+		case "收":
+			val := <-channel.Value
+			return val
+		case "关":
+			close(channel.Value)
+			return &object.Null{}
 		}
 	}
 
@@ -1409,4 +1503,113 @@ func isError(obj object.Object) bool {
 		return obj.Type() == object.ERROR_OBJ
 	}
 	return false
+}
+
+func evalListenExpression(le *ast.ListenExpression, env map[string]object.Object) object.Object {
+	addr := Eval(le.Address, env)
+	if isError(addr) {
+		return addr
+	}
+
+	callback := Eval(le.Callback, env)
+	if isError(callback) {
+		return callback
+	}
+
+	addrStr := addr.Inspect()
+	if !strings.Contains(addrStr, ":") {
+		// 如果只是数字，当作端口处理
+		if _, err := strconv.Atoi(addrStr); err == nil {
+			addrStr = ":" + addrStr
+		}
+	}
+
+	listener, err := net.Listen("tcp", addrStr)
+	if err != nil {
+		return newError(le.GetLine(), "监听失败: %s", err.Error())
+	}
+
+	// 默认非阻塞后台运行
+	go func() {
+		defer listener.Close()
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				continue
+			}
+			stream := &object.Stream{Conn: conn}
+			// 在新协程中处理连接
+			go applyFunction(le.GetLine(), callback, []object.Object{stream})
+		}
+	}()
+
+	return &object.Null{}
+}
+
+func evalConnectExpression(ce *ast.ConnectExpression, env map[string]object.Object) object.Object {
+	addr := Eval(ce.Address, env)
+	if isError(addr) {
+		return addr
+	}
+
+	timeout := 5 * time.Second
+	if len(ce.Arguments) > 0 {
+		// 寻找名为 ".超时" 的参数
+		// 目前简单处理第一个参数如果是整数则为毫秒超时
+		arg := Eval(ce.Arguments[0], env)
+		if t, ok := arg.(*object.Integer); ok {
+			timeout = time.Duration(t.Value) * time.Millisecond
+		}
+	}
+
+	conn, err := net.DialTimeout("tcp", addr.Inspect(), timeout)
+	if err != nil {
+		return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+	}
+
+	return &object.Result{IsSuccess: true, Value: &object.Stream{Conn: conn}}
+}
+
+func evalRequestExpression(re *ast.ConnectRequestExpression, env map[string]object.Object) object.Object {
+	url := Eval(re.Url, env)
+	if isError(url) {
+		return url
+	}
+
+	// 简单 GET 请求
+	resp, err := http.Get(url.Inspect())
+	if err != nil {
+		return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+	}
+
+	return &object.Result{IsSuccess: true, Value: &object.String{Value: string(body)}}
+}
+
+func evalExecuteExpression(ee *ast.ExecuteExpression, env map[string]object.Object) object.Object {
+	cmdExpr := Eval(ee.Command, env)
+	if isError(cmdExpr) {
+		return cmdExpr
+	}
+
+	cmdStr := cmdExpr.Inspect()
+	var cmd *exec.Cmd
+	if strings.Contains(cmdStr, " ") {
+		parts := strings.Fields(cmdStr)
+		cmd = exec.Command(parts[0], parts[1:]...)
+	} else {
+		cmd = exec.Command(cmdStr)
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return &object.Result{IsSuccess: false, Error: &object.String{Value: string(out) + " " + err.Error()}}
+	}
+
+	return &object.Result{IsSuccess: true, Value: &object.String{Value: string(out)}}
 }

@@ -375,6 +375,78 @@ func (ae *AsyncExpression) String() string {
 	return out.String()
 }
 
+// ListenExpression 监听表达式
+type ListenExpression struct {
+	Token     token.Token // "听"
+	Address   Expression
+	Callback  Expression
+	Arguments []Expression // 其他可选参数
+}
+
+func (le *ListenExpression) expressionNode()      {}
+func (le *ListenExpression) TokenLiteral() string { return le.Token.Literal }
+func (le *ListenExpression) GetLine() int         { return le.Token.Line }
+func (le *ListenExpression) String() string {
+	var out bytes.Buffer
+	out.WriteString("听(")
+	out.WriteString(le.Address.String())
+	out.WriteString(", ")
+	out.WriteString(le.Callback.String())
+	out.WriteString(")")
+	return out.String()
+}
+
+// ConnectExpression 连接表达式
+type ConnectExpression struct {
+	Token     token.Token // "连"
+	Address   Expression
+	Arguments []Expression // 可选参数如超时
+}
+
+func (ce *ConnectExpression) expressionNode()      {}
+func (ce *ConnectExpression) TokenLiteral() string { return ce.Token.Literal }
+func (ce *ConnectExpression) GetLine() int         { return ce.Token.Line }
+func (ce *ConnectExpression) String() string {
+	return "连(" + ce.Address.String() + ")"
+}
+
+// RequestExpression 请求表达式
+type ConnectRequestExpression struct {
+	Token     token.Token // "求"
+	Url       Expression
+	Arguments []Expression // 可选参数如方法、头部、主体
+}
+
+func (re *ConnectRequestExpression) expressionNode()      {}
+func (re *ConnectRequestExpression) TokenLiteral() string { return re.Token.Literal }
+func (re *ConnectRequestExpression) GetLine() int         { return re.Token.Line }
+func (re *ConnectRequestExpression) String() string {
+	return "求(" + re.Url.String() + ")"
+}
+
+// ExecuteExpression 执行表达式
+type ExecuteExpression struct {
+	Token   token.Token // "执"
+	Command Expression
+}
+
+func (ee *ExecuteExpression) expressionNode()      {}
+func (ee *ExecuteExpression) TokenLiteral() string { return ee.Token.Literal }
+func (ee *ExecuteExpression) GetLine() int         { return ee.Token.Line }
+func (ee *ExecuteExpression) String() string {
+	return "执(" + ee.Command.String() + ")"
+}
+
+// ChannelExpression 通道表达式
+type ChannelExpression struct {
+	Token token.Token // "道"
+}
+
+func (ce *ChannelExpression) expressionNode()      {}
+func (ce *ChannelExpression) TokenLiteral() string { return ce.Token.Literal }
+func (ce *ChannelExpression) GetLine() int         { return ce.Token.Line }
+func (ce *ChannelExpression) String() string       { return "道" }
+
 // ParallelExpression 并行执行表达式
 type ParallelExpression struct {
 	Token  token.Token // "并行"

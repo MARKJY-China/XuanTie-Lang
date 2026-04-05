@@ -60,3 +60,9 @@
 
 示("\n\nOOP测试")
 引 "./test_oop_assign.xt"
+
+示("\n\nv080测试")
+引 "./test_oop_v080.xt"
+
+示("\n\nv090测试")
+引 "./test_v090.xt"
