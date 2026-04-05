@@ -61,17 +61,24 @@ func isPowerShell() bool {
 	return runtime.GOOS == "windows" || os.Getenv("PSModulePath") != ""
 }
 
+func printHelp() {
+	fmt.Println("用法:")
+	fmt.Println("  xuantie <源文件>          解释执行脚本")
+	fmt.Println("  xuantie zao <源文件>      编译为独立可执行文件 (或用 build/造)")
+	fmt.Println("")
+	fmt.Println("选项:")
+	fmt.Println("  --pt <os>      目标操作系统 (windows, linux, darwin)")
+	fmt.Println("  --jg <arch>    目标指令集架构 (amd64, arm64, 386)")
+	fmt.Println("  -V, --version  打印版本号")
+	fmt.Println("  -h, --help, -? 打印此帮助信息")
+}
+
 func main() {
 	enableVirtualTerminalProcessing()
 	useColor := isPowerShell()
 
 	if len(os.Args) < 2 {
-		fmt.Println("用法: xuantie <源文件>")
-		fmt.Println("用法: xuantie build <源文件> [选项]")
-		fmt.Println("选项:")
-		fmt.Println("  --平台 <os>    目标操作系统 (windows, linux, darwin)")
-		fmt.Println("  --架构 <arch>  目标指令集架构 (amd64, arm64, 386)")
-		fmt.Println("  -V, --version  打印版本号")
+		printHelp()
 		return
 	}
 
@@ -84,20 +91,23 @@ func main() {
 	for i := 1; i < len(os.Args); i++ {
 		arg := os.Args[i]
 		switch arg {
-		case "build":
+		case "build", "zao", "造":
 			isBuild = true
-		case "--平台":
+		case "--平台", "--pt":
 			if i+1 < len(os.Args) {
 				targetOS = os.Args[i+1]
 				i++
 			}
-		case "--架构":
+		case "--架构", "--jg":
 			if i+1 < len(os.Args) {
 				targetArch = os.Args[i+1]
 				i++
 			}
 		case "-V", "--version":
 			fmt.Printf("玄铁(XuanTie) %s\n", version)
+			return
+		case "-h", "--help", "-?":
+			printHelp()
 			return
 		default:
 			if filename == "" {

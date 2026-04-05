@@ -7,8 +7,8 @@
     若 v.包含("Windows") {
         示("\n1. 测试 Windows FFI:")
         外.加载("user32.dll").接着(函(库) {
-            // 调用 MessageBoxA(0, "你好，从玄铁调用的 C 函数！", "玄铁 FFI", 0)
-            设 弹窗结果 = 库.MessageBoxA(0, "你好，从玄铁调用的 C 函数！", "玄铁 FFI", 0)
+            // 使用 MessageBoxW 支持 Unicode，彻底解决乱码
+            设 弹窗结果 = 库.MessageBoxW(0, "你好，这是从玄铁调用的 Unicode C 函数！", "玄铁 FFI 成功", 0)
             示("对话框返回代码: " & 弹窗结果)
         }).否则(函(错) {
             示("加载库失败: " & 错)
@@ -21,4 +21,4 @@
 // 2. 测试交叉编译说明
 示("\n2. 交叉编译说明:")
 示("你可以运行以下命令来编译 Linux 版本:")
-示("xuantie build Test/demo.xt --平台 linux --架构 amd64")
+示("xuantie zao Test/demo.xt --pt linux --jg amd64")

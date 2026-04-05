@@ -233,12 +233,12 @@
 ```
 
 ### 外部函数接口 (外) (v0.9.1)
-玄铁支持直接调用 C 语言编写的动态库（Windows `.dll` 或 Linux `.so`）。
+玄铁支持直接调用 C 语言编写的动态库（Windows `.dll` 或 Linux `.so`）。玄铁会自动识别以 `W` 结尾的 Windows 函数并使用 UTF-16 编码，彻底解决乱码问题。
 
 ```xuantie
 外.加载("user32.dll").接着(函(库) {
-    // 直接调用库中的函数名
-    设 结果 = 库.MessageBoxA(0, "内容", "标题", 0)
+    // 调用 MessageBoxW (Unicode版本)
+    设 结果 = 库.MessageBoxW(0, "内容", "标题", 0)
     示("返回: " & 结果)
 })
 ```
@@ -247,7 +247,7 @@
 玄铁命令行支持一键构建跨平台程序。
 ```bash
 # 在 Windows 下编译 Linux 版本
-xuantie build 程序.xt --平台 linux --架构 amd64
+xuantie zao 程序.xt --pt linux --jg amd64
 ```
 
 ### 结果处理 (Result)

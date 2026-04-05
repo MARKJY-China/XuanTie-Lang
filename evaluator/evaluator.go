@@ -953,8 +953,14 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 						case *object.Integer:
 							uArgs[i] = uintptr(v.Value)
 						case *object.String:
-							p, _ := syscall.BytePtrFromString(v.Value)
-							uArgs[i] = uintptr(unsafe.Pointer(p))
+							// 自动检测：如果函数名以 W 结尾，使用 UTF-16 编码，否则使用本地字节编码
+							if strings.HasSuffix(procName, "W") {
+								p, _ := syscall.UTF16PtrFromString(v.Value)
+								uArgs[i] = uintptr(unsafe.Pointer(p))
+							} else {
+								p, _ := syscall.BytePtrFromString(v.Value)
+								uArgs[i] = uintptr(unsafe.Pointer(p))
+							}
 						default:
 							uArgs[i] = 0
 						}
