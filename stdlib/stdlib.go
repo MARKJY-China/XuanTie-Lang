@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 	"xuantie/object"
@@ -184,6 +185,48 @@ var Builtins = map[string]object.Object{
 						return &object.Error{Message: "加载期望 1 个参数（库路径）"}
 					}
 					return &object.Result{IsSuccess: true, Value: &object.String{Value: "LIB_HANDLE_" + args[0].Inspect()}}
+				},
+			},
+		},
+	},
+	"系统": &object.Dict{
+		Pairs: map[string]object.Object{
+			"参数": &object.Array{
+				Elements: func() []object.Object {
+					args := os.Args
+					res := make([]object.Object, len(args))
+					for i, a := range args {
+						res[i] = &object.String{Value: a}
+					}
+					return res
+				}(),
+			},
+		},
+	},
+	"字节": &object.Dict{
+		Pairs: map[string]object.Object{
+			"从字": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "从字期望 1 个参数"}
+					}
+					s, ok := args[0].(*object.String)
+					if !ok {
+						return &object.Error{Message: "参数必须是字符串"}
+					}
+					return &object.Bytes{Value: []byte(s.Value)}
+				},
+			},
+			"到字": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "到字期望 1 个参数"}
+					}
+					b, ok := args[0].(*object.Bytes)
+					if !ok {
+						return &object.Error{Message: "参数必须是字节"}
+					}
+					return &object.String{Value: string(b.Value)}
 				},
 			},
 		},

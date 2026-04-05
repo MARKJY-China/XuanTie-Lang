@@ -32,6 +32,7 @@ const (
 	STREAM_OBJ       ObjectType = "STREAM"
 	CHANNEL_OBJ      ObjectType = "CHANNEL"
 	HTTP_RES_OBJ     ObjectType = "HTTP_RES"
+	BYTES_OBJ        ObjectType = "BYTES"
 )
 
 type Object interface {
@@ -173,6 +174,24 @@ type HttpResponseWriter struct {
 
 func (h *HttpResponseWriter) Type() ObjectType { return HTTP_RES_OBJ }
 func (h *HttpResponseWriter) Inspect() string  { return "答" }
+
+type Bytes struct {
+	Value []byte
+}
+
+func (b *Bytes) Type() ObjectType { return BYTES_OBJ }
+func (b *Bytes) Inspect() string {
+	var out strings.Builder
+	out.WriteString("字节[")
+	for i, b := range b.Value {
+		if i > 0 {
+			out.WriteString(" ")
+		}
+		out.WriteString(fmt.Sprintf("%02X", b))
+	}
+	out.WriteString("]")
+	return out.String()
+}
 
 type Result struct {
 	IsSuccess bool

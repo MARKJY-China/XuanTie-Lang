@@ -206,7 +206,7 @@ func main() {
 
 		fmt.Printf("正在编译 %s -> %s (平台: %s, 架构: %s) ...\n", filename, outputName, actualOS, targetArch)
 		// 在当前目录下执行编译，明确指定临时文件
-		cmd := exec.Command("go", "build", "-o", outputName, tmpFile)
+		cmd := exec.Command("go", "build", "-a", "-o", outputName, tmpFile)
 		cmd.Env = os.Environ()
 		if targetOS != "" {
 			cmd.Env = append(cmd.Env, "GOOS="+targetOS)

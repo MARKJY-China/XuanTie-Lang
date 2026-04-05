@@ -903,6 +903,22 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		}
 	}
 
+	// 处理字节成员属性
+	if b, ok := obj.(*object.Bytes); ok {
+		switch mce.Member.Value {
+		case "长度":
+			return &object.Integer{Value: int64(len(b.Value))}
+		}
+	}
+
+	// 处理数组成员属性
+	if arr, ok := obj.(*object.Array); ok {
+		switch mce.Member.Value {
+		case "长度":
+			return &object.Integer{Value: int64(len(arr.Elements))}
+		}
+	}
+
 	// 处理字典/模块的成员调用
 	if dict, ok := obj.(*object.Dict); ok {
 		if val, ok := dict.Pairs[mce.Member.Value]; ok {
@@ -926,7 +942,13 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 					return &object.Result{IsSuccess: true, Value: res}
 				}
 			}
-			return applyFunction(mce.GetLine(), val, args)
+
+			// 如果有参数或者是函数类型，尝试执行
+			if mce.Arguments != nil || val.Type() == object.FUNCTION_OBJ || val.Type() == object.BUILTIN_OBJ {
+				return applyFunction(mce.GetLine(), val, args)
+			}
+			// 否则作为属性直接返回
+			return val
 		}
 	}
 
@@ -1236,6 +1258,8 @@ func evalIndexExpression(line int, left, index object.Object) object.Object {
 		return evalDictIndexExpression(line, left, index)
 	case left.Type() == object.STRING_OBJ && index.Type() == object.INTEGER_OBJ:
 		return evalStringIndexExpression(line, left, index)
+	case left.Type() == object.BYTES_OBJ && index.Type() == object.INTEGER_OBJ:
+		return evalBytesIndexExpression(line, left, index)
 	default:
 		return newError(line, "不支持索引操作: %s[%s]", left.Type(), index.Type())
 	}
@@ -1296,6 +1320,18 @@ func evalStringIndexExpression(line int, str, index object.Object) object.Object
 	}
 
 	return &object.String{Value: string(runes[idx])}
+}
+
+func evalBytesIndexExpression(line int, bytes, index object.Object) object.Object {
+	bytesObject := bytes.(*object.Bytes)
+	idx := index.(*object.Integer).Value
+	max := int64(len(bytesObject.Value) - 1)
+
+	if idx < 0 || idx > max {
+		return &object.Null{}
+	}
+
+	return &object.Integer{Value: int64(bytesObject.Value[idx])}
 }
 
 func extendEnv(outer map[string]object.Object) map[string]object.Object {
