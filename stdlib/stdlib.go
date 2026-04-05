@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 	"xuantie/object"
 )
@@ -119,6 +120,14 @@ var Builtins = map[string]object.Object{
 					return &object.Integer{Value: int64(len(str.Value))}
 				},
 			},
+			"包含": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 2 {
+						return &object.Error{Message: "期望 2 个参数 (字符串, 子串)"}
+					}
+					return &object.Boolean{Value: strings.Contains(args[0].Inspect(), args[1].Inspect())}
+				},
+			},
 		},
 	},
 	"数学": &object.Dict{
@@ -162,6 +171,19 @@ var Builtins = map[string]object.Object{
 			"现": &object.Builtin{
 				Fn: func(args ...object.Object) object.Object {
 					return &object.Integer{Value: time.Now().UnixNano() / int64(time.Millisecond)}
+				},
+			},
+		},
+	},
+	"外": &object.Dict{
+		Pairs: map[string]object.Object{
+			"加载": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					// 这是一个占位实现，实际 FFI 逻辑将在 Evaluator 中配合具体平台实现
+					if len(args) != 1 {
+						return &object.Error{Message: "加载期望 1 个参数（库路径）"}
+					}
+					return &object.Result{IsSuccess: true, Value: &object.String{Value: "LIB_HANDLE_" + args[0].Inspect()}}
 				},
 			},
 		},

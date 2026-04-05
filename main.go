@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.9.0"
+var version = "0.9.1"
 
 const (
 	colorReset = "\033[0m"
@@ -67,25 +67,47 @@ func main() {
 
 	if len(os.Args) < 2 {
 		fmt.Println("用法: xuantie <源文件>")
-		fmt.Println("用法: xuantie build <源文件> (编译为独立可执行文件)")
-		fmt.Println("其他选项: -V, --version 打印版本号")
+		fmt.Println("用法: xuantie build <源文件> [选项]")
+		fmt.Println("选项:")
+		fmt.Println("  --平台 <os>    目标操作系统 (windows, linux, darwin)")
+		fmt.Println("  --架构 <arch>  目标指令集架构 (amd64, arm64, 386)")
+		fmt.Println("  -V, --version  打印版本号")
 		return
 	}
 
 	isBuild := false
-	filename := os.Args[1]
+	filename := ""
+	targetOS := ""
+	targetArch := ""
 
-	if filename == "build" {
-		if len(os.Args) < 3 {
-			fmt.Println("用法: xuantie build <源文件>")
+	// 解析命令行参数
+	for i := 1; i < len(os.Args); i++ {
+		arg := os.Args[i]
+		switch arg {
+		case "build":
+			isBuild = true
+		case "--平台":
+			if i+1 < len(os.Args) {
+				targetOS = os.Args[i+1]
+				i++
+			}
+		case "--架构":
+			if i+1 < len(os.Args) {
+				targetArch = os.Args[i+1]
+				i++
+			}
+		case "-V", "--version":
+			fmt.Printf("玄铁(XuanTie) %s\n", version)
 			return
+		default:
+			if filename == "" {
+				filename = arg
+			}
 		}
-		isBuild = true
-		filename = os.Args[2]
 	}
 
-	if filename == "-V" || filename == "--version" {
-		fmt.Printf("玄铁(XuanTie) %s\n", version)
+	if filename == "" {
+		fmt.Println("未指定源文件")
 		return
 	}
 
@@ -164,13 +186,24 @@ func main() {
 		defer os.Remove(tmpFile)
 
 		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
-		if runtime.GOOS == "windows" {
+		actualOS := runtime.GOOS
+		if targetOS != "" {
+			actualOS = targetOS
+		}
+		if actualOS == "windows" {
 			outputName += ".exe"
 		}
 
-		fmt.Printf("正在编译 %s -> %s ...\n", filename, outputName)
+		fmt.Printf("正在编译 %s -> %s (平台: %s, 架构: %s) ...\n", filename, outputName, actualOS, targetArch)
 		// 在当前目录下执行编译，明确指定临时文件
 		cmd := exec.Command("go", "build", "-o", outputName, tmpFile)
+		cmd.Env = os.Environ()
+		if targetOS != "" {
+			cmd.Env = append(cmd.Env, "GOOS="+targetOS)
+		}
+		if targetArch != "" {
+			cmd.Env = append(cmd.Env, "GOARCH="+targetArch)
+		}
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		err = cmd.Run()

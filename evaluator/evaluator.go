@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/object"
@@ -24,6 +26,10 @@ import (
 func RegisterStdLib(env map[string]object.Object) {
 	for name, obj := range stdlib.Builtins {
 		env[name] = obj
+		// 为字典类型的内置模块添加 __NAME__ 以便识别
+		if dict, ok := obj.(*object.Dict); ok {
+			dict.Pairs["__NAME__"] = &object.String{Value: name}
+		}
 	}
 }
 
@@ -889,13 +895,80 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		switch mce.Member.Value {
 		case "长度":
 			return &object.Integer{Value: int64(len(str.Value))}
+		case "包含":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "包含期望 1 个参数")
+			}
+			return &object.Boolean{Value: strings.Contains(str.Value, args[0].Inspect())}
 		}
 	}
 
 	// 处理字典/模块的成员调用
 	if dict, ok := obj.(*object.Dict); ok {
 		if val, ok := dict.Pairs[mce.Member.Value]; ok {
+			// 特殊处理 '外' 模块的调用
+			if self, ok := dict.Pairs["__NAME__"]; ok && self.Inspect() == "外" {
+				switch mce.Member.Value {
+				case "加载":
+					if len(args) != 1 {
+						return newError(mce.GetLine(), "加载期望 1 个参数")
+					}
+					libPath := args[0].Inspect()
+					dll, err := syscall.LoadDLL(libPath)
+					if err != nil {
+						return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+					}
+					// 返回一个包装了 DLL 句柄的字典
+					res := &object.Dict{Pairs: make(map[string]object.Object)}
+					res.Pairs["__HANDLE__"] = &object.String{Value: "DLL"} // 标记类型
+					res.Pairs["__PTR__"] = &object.Integer{Value: int64(uintptr(dll.Handle))}
+					res.Pairs["__PATH__"] = &object.String{Value: libPath}
+					return &object.Result{IsSuccess: true, Value: res}
+				}
+			}
 			return applyFunction(mce.GetLine(), val, args)
+		}
+	}
+
+	// 处理 FFI DLL 对象的成员调用
+	if dict, ok := obj.(*object.Dict); ok {
+		if handle, ok := dict.Pairs["__HANDLE__"]; ok && handle.Inspect() == "DLL" {
+			// 此时成员名就是函数名
+			procName := mce.Member.Value
+			ptr := dict.Pairs["__PTR__"].(*object.Integer).Value
+			path := dict.Pairs["__PATH__"].Inspect()
+
+			fn := &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					dll := &syscall.DLL{Name: path, Handle: syscall.Handle(ptr)}
+					proc, err := dll.FindProc(procName)
+					if err != nil {
+						return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+					}
+
+					// 转换参数为 uintptr
+					uArgs := make([]uintptr, len(fArgs))
+					for i, a := range fArgs {
+						switch v := a.(type) {
+						case *object.Integer:
+							uArgs[i] = uintptr(v.Value)
+						case *object.String:
+							p, _ := syscall.BytePtrFromString(v.Value)
+							uArgs[i] = uintptr(unsafe.Pointer(p))
+						default:
+							uArgs[i] = 0
+						}
+					}
+
+					r1, _, _ := proc.Call(uArgs...)
+					return &object.Integer{Value: int64(r1)}
+				},
+			}
+
+			if mce.Arguments != nil {
+				return applyFunction(mce.GetLine(), fn, args)
+			}
+			return fn
 		}
 	}
 
@@ -1058,6 +1131,9 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			}
 			return boundFn
 		}
+
+		// 检查 FFI DLL 对象（如果它是以实例形式存在的）
+		// ... 这里我们已经在上面处理了字典形式的 DLL 包装
 
 		// 查找字段
 		if val, ok := instance.Fields[mce.Member.Value]; ok {
