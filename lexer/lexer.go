@@ -72,6 +72,8 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_MINUS, Literal: string(l.ch), Line: line, Column: col}
 	case '*':
 		tok = token.Token{Type: token.TOKEN_MUL, Literal: string(l.ch), Line: line, Column: col}
+	case '%':
+		tok = token.Token{Type: token.TOKEN_MOD, Literal: string(l.ch), Line: line, Column: col}
 	case '/':
 		if l.peekChar() == '/' {
 			l.skipComment()

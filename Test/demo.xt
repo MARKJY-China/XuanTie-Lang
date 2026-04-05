@@ -59,7 +59,7 @@
 引 "./test_index.xt"
 
 示("\n\nOOP测试")
-引 "./test_oop_assign.xt"
+// 引 "./test_oop_assign.xt"
 
 示("\n\nv080测试")
 引 "./test_oop_v080.xt"
@@ -69,3 +69,9 @@
 
 示("\n\nv091测试")
 引 "./test_v091.xt"
+
+示("\n\nv092测试")
+引 "./test_v092.xt"
+
+示("\n\nv093测试")
+引 "./test_v093.xt"

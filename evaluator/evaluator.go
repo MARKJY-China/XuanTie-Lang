@@ -911,11 +911,148 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		}
 	}
 
-	// 处理数组成员属性
+	// 处理数组成员属性与方法
 	if arr, ok := obj.(*object.Array); ok {
+		var memberVal object.Object
 		switch mce.Member.Value {
 		case "长度":
-			return &object.Integer{Value: int64(len(arr.Elements))}
+			memberVal = &object.Integer{Value: int64(len(arr.Elements))}
+		case "追加":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					arr.Elements = append(arr.Elements, fArgs...)
+					return arr
+				},
+			}
+		case "截取":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) < 1 {
+						return newError(mce.GetLine(), "截取期望至少 1 个参数 (起始索引)")
+					}
+					start, ok := fArgs[0].(*object.Integer)
+					if !ok {
+						return newError(mce.GetLine(), "起始索引必须是整数")
+					}
+					s := start.Value
+					e := int64(len(arr.Elements))
+					if len(fArgs) >= 2 {
+						end, ok := fArgs[1].(*object.Integer)
+						if !ok {
+							return newError(mce.GetLine(), "结束索引必须是整数")
+						}
+						e = end.Value
+					}
+					if s < 0 {
+						s = 0
+					}
+					if e > int64(len(arr.Elements)) {
+						e = int64(len(arr.Elements))
+					}
+					if s > e {
+						return &object.Array{Elements: []object.Object{}}
+					}
+					return &object.Array{Elements: arr.Elements[s:e]}
+				},
+			}
+		case "删":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) != 1 {
+						return newError(mce.GetLine(), "删期望 1 个参数 (索引)")
+					}
+					idxObj, ok := fArgs[0].(*object.Integer)
+					if !ok {
+						return newError(mce.GetLine(), "索引必须是整数")
+					}
+					idx := idxObj.Value
+					if idx < 0 || idx >= int64(len(arr.Elements)) {
+						return newError(mce.GetLine(), "索引越界: %d", idx)
+					}
+					arr.Elements = append(arr.Elements[:idx], arr.Elements[idx+1:]...)
+					return arr
+				},
+			}
+		case "插":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) != 2 {
+						return newError(mce.GetLine(), "插期望 2 个参数 (索引, 元素)")
+					}
+					idxObj, ok := fArgs[0].(*object.Integer)
+					if !ok {
+						return newError(mce.GetLine(), "索引必须是整数")
+					}
+					idx := idxObj.Value
+					if idx < 0 || idx > int64(len(arr.Elements)) {
+						return newError(mce.GetLine(), "索引越界: %d", idx)
+					}
+					val := fArgs[1]
+					arr.Elements = append(arr.Elements[:idx], append([]object.Object{val}, arr.Elements[idx:]...)...)
+					return arr
+				},
+			}
+		case "找":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) != 1 {
+						return newError(mce.GetLine(), "找期望 1 个参数 (元素)")
+					}
+					target := fArgs[0]
+					for i, e := range arr.Elements {
+						res := evalInfixExpression(mce.GetLine(), "==", e, target)
+						if b, ok := res.(*object.Boolean); ok && b.Value {
+							return &object.Integer{Value: int64(i)}
+						}
+					}
+					return &object.Integer{Value: -1}
+				},
+			}
+		case "映射":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) != 1 {
+						return newError(mce.GetLine(), "映射期望 1 个参数 (回调函数)")
+					}
+					fn := fArgs[0]
+					newElements := make([]object.Object, len(arr.Elements))
+					for i, e := range arr.Elements {
+						res := applyFunction(mce.GetLine(), fn, []object.Object{e, &object.Integer{Value: int64(i)}})
+						if isError(res) {
+							return res
+						}
+						newElements[i] = res
+					}
+					return &object.Array{Elements: newElements}
+				},
+			}
+		case "过滤":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) != 1 {
+						return newError(mce.GetLine(), "过滤期望 1 个参数 (谓词函数)")
+					}
+					fn := fArgs[0]
+					newElements := []object.Object{}
+					for i, e := range arr.Elements {
+						res := applyFunction(mce.GetLine(), fn, []object.Object{e, &object.Integer{Value: int64(i)}})
+						if isError(res) {
+							return res
+						}
+						if isTruthy(res) {
+							newElements = append(newElements, e)
+						}
+					}
+					return &object.Array{Elements: newElements}
+				},
+			}
+		}
+
+		if memberVal != nil {
+			if mce.Arguments != nil || memberVal.Type() == object.FUNCTION_OBJ || memberVal.Type() == object.BUILTIN_OBJ {
+				return applyFunction(mce.GetLine(), memberVal, args)
+			}
+			return memberVal
 		}
 	}
 
@@ -1550,6 +1687,11 @@ func evalIntegerInfixExpression(line int, op string, left, right object.Object) 
 			return newError(line, "除数不能为零")
 		}
 		return &object.Integer{Value: leftVal / rightVal}
+	case "%":
+		if rightVal == 0 {
+			return newError(line, "除数不能为零")
+		}
+		return &object.Integer{Value: leftVal % rightVal}
 	case "<":
 		return &object.Boolean{Value: leftVal < rightVal}
 	case ">":

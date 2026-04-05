@@ -33,6 +33,7 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_MINUS:     SUM,
 	token.TOKEN_MUL:       PRODUCT,
 	token.TOKEN_DIV:       PRODUCT,
+	token.TOKEN_MOD:       PRODUCT,
 	token.TOKEN_AMPERSAND: SUM,
 	token.TOKEN_LPAREN:    CALL,
 	token.TOKEN_DOT:       DOT,
@@ -464,7 +465,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	for p.peek.Type != token.TOKEN_EOF && precedence < p.peekPrecedence() {
 		switch p.peek.Type {
-		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_LT, token.TOKEN_GT, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS:
+		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD, token.TOKEN_LT, token.TOKEN_GT, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS:
 			p.nextToken()
 			leftExp = p.parseInfixExpression(leftExp)
 		case token.TOKEN_DOT:

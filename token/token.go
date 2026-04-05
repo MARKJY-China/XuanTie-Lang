@@ -17,6 +17,7 @@ const (
 	TOKEN_MINUS     TokenType = "-"
 	TOKEN_MUL       TokenType = "*"
 	TOKEN_DIV       TokenType = "/"
+	TOKEN_MOD       TokenType = "%"
 	TOKEN_LT        TokenType = "<"
 	TOKEN_GT        TokenType = ">"
 	TOKEN_EQ        TokenType = "=="
