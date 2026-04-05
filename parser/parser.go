@@ -172,13 +172,8 @@ func (p *Parser) parseVarStatement(visibility token.TokenType) *ast.VarStatement
 
 	if p.peek.Type == token.TOKEN_COLON {
 		p.nextToken() // cur: :
-		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
-			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
-			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
-			p.peek.Type == token.TOKEN_IDENT {
-			p.nextToken() // cur: type
-			stmt.DataType = p.cur.Literal
-		} else {
+		stmt.DataType = p.parseTypeAnnotation()
+		if stmt.DataType == "" {
 			p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 期望类型关键字或标识符，得到: %s (%s)",
 				p.peek.Line, p.peek.Column, p.peek.Type, p.peek.Literal))
 			return nil
@@ -586,13 +581,7 @@ func (p *Parser) parseFunctionStatement(visibility token.TokenType) *ast.Functio
 	// 检查返回类型
 	if p.peek.Type == token.TOKEN_COLON {
 		p.nextToken() // cur: :
-		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
-			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
-			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
-			p.peek.Type == token.TOKEN_IDENT {
-			p.nextToken() // cur: type
-			stmt.ReturnType = p.cur.Literal
-		}
+		stmt.ReturnType = p.parseTypeAnnotation()
 	}
 
 	if !p.expectPeek(token.TOKEN_LBRACE) {
@@ -732,13 +721,7 @@ func (p *Parser) parseFunctionLiteral() ast.Expression {
 	// 检查返回类型
 	if p.peek.Type == token.TOKEN_COLON {
 		p.nextToken() // cur: :
-		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
-			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
-			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
-			p.peek.Type == token.TOKEN_IDENT {
-			p.nextToken() // cur: type
-			lit.ReturnType = p.cur.Literal
-		}
+		lit.ReturnType = p.parseTypeAnnotation()
 	}
 
 	if !p.expectPeek(token.TOKEN_LBRACE) {
@@ -822,13 +805,7 @@ func (p *Parser) parseFunctionParameters() []*ast.Parameter {
 	param := &ast.Parameter{Name: &ast.Identifier{Token: p.cur, Value: p.cur.Literal}}
 	if p.peek.Type == token.TOKEN_COLON {
 		p.nextToken() // cur: :
-		if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
-			p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
-			p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
-			p.peek.Type == token.TOKEN_IDENT {
-			p.nextToken() // cur: type
-			param.DataType = p.cur.Literal
-		}
+		param.DataType = p.parseTypeAnnotation()
 	}
 	parameters = append(parameters, param)
 
@@ -838,13 +815,7 @@ func (p *Parser) parseFunctionParameters() []*ast.Parameter {
 		param := &ast.Parameter{Name: &ast.Identifier{Token: p.cur, Value: p.cur.Literal}}
 		if p.peek.Type == token.TOKEN_COLON {
 			p.nextToken() // cur: :
-			if p.peek.Type == token.TOKEN_STRING_TYPE || p.peek.Type == token.TOKEN_INT_TYPE ||
-				p.peek.Type == token.TOKEN_FLOAT_TYPE || p.peek.Type == token.TOKEN_BOOL_TYPE ||
-				p.peek.Type == token.TOKEN_ARRAY_TYPE || p.peek.Type == token.TOKEN_DICT_TYPE ||
-				p.peek.Type == token.TOKEN_IDENT {
-				p.nextToken() // cur: type
-				param.DataType = p.cur.Literal
-			}
+			param.DataType = p.parseTypeAnnotation()
 		}
 		parameters = append(parameters, param)
 	}
@@ -950,4 +921,47 @@ func (p *Parser) curPrecedence() int {
 		return p
 	}
 	return LOWEST
+}
+
+func (p *Parser) isTypeToken(t token.TokenType) bool {
+	return t == token.TOKEN_STRING_TYPE || t == token.TOKEN_INT_TYPE ||
+		t == token.TOKEN_FLOAT_TYPE || t == token.TOKEN_BOOL_TYPE ||
+		t == token.TOKEN_ARRAY_TYPE || t == token.TOKEN_DICT_TYPE ||
+		t == token.TOKEN_BYTES_TYPE || t == token.TOKEN_RESULT_TYPE ||
+		t == token.TOKEN_IDENT || t == token.TOKEN_NULL
+}
+
+func (p *Parser) parseTypeAnnotation() string {
+	if !p.isTypeToken(p.peek.Type) {
+		return ""
+	}
+	p.nextToken() // move to first type part
+
+	typeStr := p.cur.Literal
+
+	// Handle Nullable Type: 类型?
+	if p.peek.Type == token.TOKEN_QUESTION {
+		p.nextToken()
+		typeStr += "?"
+	}
+
+	// Handle Union Type: 类型1 | 类型2
+	for p.peek.Type == token.TOKEN_PIPE {
+		p.nextToken() // skip |
+		typeStr += " | "
+		if p.isTypeToken(p.peek.Type) {
+			p.nextToken()
+			typeStr += p.cur.Literal
+			// Handle Nullable in Union: 类型1 | 类型2?
+			if p.peek.Type == token.TOKEN_QUESTION {
+				p.nextToken()
+				typeStr += "?"
+			}
+		} else {
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d] 联合类型期望类型关键字，得到: %s", p.peek.Line, p.peek.Type))
+			return typeStr
+		}
+	}
+
+	return typeStr
 }

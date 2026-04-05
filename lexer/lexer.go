@@ -116,6 +116,10 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_COLON, Literal: string(l.ch), Line: line, Column: col}
 	case '&':
 		tok = token.Token{Type: token.TOKEN_AMPERSAND, Literal: string(l.ch), Line: line, Column: col}
+	case '|':
+		tok = token.Token{Type: token.TOKEN_PIPE, Literal: string(l.ch), Line: line, Column: col}
+	case '?':
+		tok = token.Token{Type: token.TOKEN_QUESTION, Literal: string(l.ch), Line: line, Column: col}
 	case '.':
 		if isDigit(l.peekChar()) {
 			tok.Literal, _ = l.readNumber()
@@ -281,6 +285,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_ARRAY_TYPE
 	case "字典":
 		return token.TOKEN_DICT_TYPE
+	case "字节":
+		return token.TOKEN_BYTES_TYPE
 	default:
 		return token.TOKEN_IDENT
 	}

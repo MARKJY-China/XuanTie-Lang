@@ -32,6 +32,8 @@ const (
 	TOKEN_COLON     TokenType = ":"
 	TOKEN_AMPERSAND TokenType = "&"
 	TOKEN_DOT       TokenType = "."
+	TOKEN_PIPE      TokenType = "|"
+	TOKEN_QUESTION  TokenType = "?"
 
 	TOKEN_PRINT    TokenType = "示"
 	TOKEN_VAR      TokenType = "设"
@@ -87,6 +89,7 @@ const (
 	TOKEN_BOOL_TYPE   TokenType = "逻"
 	TOKEN_ARRAY_TYPE  TokenType = "数组"
 	TOKEN_DICT_TYPE   TokenType = "字典"
+	TOKEN_BYTES_TYPE  TokenType = "字节"
 )
 
 type Token struct {

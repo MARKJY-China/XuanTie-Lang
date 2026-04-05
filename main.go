@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.9.4"
+var version = "0.9.5"
 
 const (
 	colorReset = "\033[0m"

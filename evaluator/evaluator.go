@@ -24,6 +24,7 @@ import (
 )
 
 func RegisterStdLib(env map[string]object.Object) {
+	env["空"] = &object.Null{}
 	for name, obj := range stdlib.Builtins {
 		env[name] = obj
 		// 为字典类型的内置模块添加 __NAME__ 以便识别
@@ -1976,6 +1977,26 @@ func checkType(expectedType string, val object.Object, env map[string]object.Obj
 		return nil
 	}
 
+	// 1. 处理联合类型 (Union Types)
+	if strings.Contains(expectedType, " | ") {
+		types := strings.Split(expectedType, " | ")
+		for _, t := range types {
+			if checkType(strings.TrimSpace(t), val, env) == nil {
+				return nil
+			}
+		}
+		return &object.Error{Message: fmt.Sprintf("类型不匹配: 期望 %s，实际得到 %s", expectedType, val.Type())}
+	}
+
+	// 2. 处理可空类型 (Nullable Types)
+	if strings.HasSuffix(expectedType, "?") {
+		if val.Type() == object.NULL_OBJ {
+			return nil
+		}
+		baseType := expectedType[:len(expectedType)-1]
+		return checkType(baseType, val, env)
+	}
+
 	actualType := val.Type()
 	switch expectedType {
 	case "字", "字符串":
@@ -2027,5 +2048,5 @@ func checkType(expectedType string, val object.Object, env map[string]object.Obj
 		}
 	}
 
-	return &object.Error{Message: fmt.Sprintf("类型不匹配: 期望 %s，得到 %s", expectedType, actualType)}
+	return &object.Error{Message: fmt.Sprintf("类型不匹配: 期望 %s，实际得到 %s", expectedType, actualType)}
 }
