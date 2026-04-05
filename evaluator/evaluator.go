@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -949,6 +950,33 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		}
 	}
 
+	// 处理 HTTP 响应对象的成员调用
+	if res, ok := obj.(*object.HttpResponseWriter); ok {
+		switch mce.Member.Value {
+		case "写":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "写期望 1 个参数")
+			}
+			content := args[0].Inspect()
+			res.Writer.Write([]byte(content))
+			return &object.Null{}
+		case "头":
+			if len(args) < 2 {
+				return newError(mce.GetLine(), "设置头部期望 2 个参数 (键, 值)")
+			}
+			res.Writer.Header().Set(args[0].Inspect(), args[1].Inspect())
+			return &object.Null{}
+		case "码":
+			if len(args) < 1 {
+				return newError(mce.GetLine(), "设置状态码期望 1 个参数")
+			}
+			if code, ok := args[0].(*object.Integer); ok {
+				res.Writer.WriteHeader(int(code.Value))
+			}
+			return &object.Null{}
+		}
+	}
+
 	// 处理通道对象的成员调用
 	if channel, ok := obj.(*object.Channel); ok {
 		switch mce.Member.Value {
@@ -1524,24 +1552,61 @@ func evalListenExpression(le *ast.ListenExpression, env map[string]object.Object
 		}
 	}
 
-	listener, err := net.Listen("tcp", addrStr)
-	if err != nil {
-		return newError(le.GetLine(), "监听失败: %s", err.Error())
+	// 检查回调函数参数数量
+	var paramCount int
+	if fn, ok := callback.(*object.Function); ok {
+		paramCount = len(fn.Parameters)
+	} else if bi, ok := callback.(*object.Builtin); ok {
+		// 内置函数无法确定参数数量，默认当作 1 个 (TCP)
+		_ = bi
+		paramCount = 1
 	}
 
-	// 默认非阻塞后台运行
-	go func() {
-		defer listener.Close()
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				continue
-			}
-			stream := &object.Stream{Conn: conn}
-			// 在新协程中处理连接
-			go applyFunction(le.GetLine(), callback, []object.Object{stream})
+	if paramCount == 2 {
+		// HTTP 模式
+		server := &http.Server{
+			Addr: addrStr,
+			Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// 包装请求对象
+				reqDict := &object.Dict{Pairs: make(map[string]object.Object)}
+				reqDict.Pairs["方法"] = &object.String{Value: r.Method}
+				reqDict.Pairs["路径"] = &object.String{Value: r.URL.Path}
+
+				headers := &object.Dict{Pairs: make(map[string]object.Object)}
+				for k, v := range r.Header {
+					headers.Pairs[k] = &object.String{Value: strings.Join(v, ",")}
+				}
+				reqDict.Pairs["头"] = headers
+
+				body, _ := ioutil.ReadAll(r.Body)
+				reqDict.Pairs["主体"] = &object.String{Value: string(body)}
+
+				// 包装响应对象
+				resObj := &object.HttpResponseWriter{Writer: w}
+
+				applyFunction(le.GetLine(), callback, []object.Object{reqDict, resObj})
+			}),
 		}
-	}()
+		go server.ListenAndServe()
+	} else {
+		// TCP 模式
+		listener, err := net.Listen("tcp", addrStr)
+		if err != nil {
+			return newError(le.GetLine(), "监听失败: %s", err.Error())
+		}
+
+		go func() {
+			defer listener.Close()
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					continue
+				}
+				stream := &object.Stream{Conn: conn}
+				go applyFunction(le.GetLine(), callback, []object.Object{stream})
+			}
+		}()
+	}
 
 	return &object.Null{}
 }
@@ -1576,19 +1641,51 @@ func evalRequestExpression(re *ast.ConnectRequestExpression, env map[string]obje
 		return url
 	}
 
-	// 简单 GET 请求
-	resp, err := http.Get(url.Inspect())
+	method := "GET"
+	var body io.Reader
+	headers := make(map[string]string)
+
+	if len(re.Arguments) > 0 {
+		arg := Eval(re.Arguments[0], env)
+		if dict, ok := arg.(*object.Dict); ok {
+			if m, ok := dict.Pairs["方法"]; ok {
+				method = m.Inspect()
+			}
+			if b, ok := dict.Pairs["主体"]; ok {
+				body = strings.NewReader(b.Inspect())
+			}
+			if h, ok := dict.Pairs["头"]; ok {
+				if hd, ok := h.(*object.Dict); ok {
+					for k, v := range hd.Pairs {
+						headers[k] = v.Inspect()
+					}
+				}
+			}
+		}
+	}
+
+	req, err := http.NewRequest(method, url.Inspect(), body)
+	if err != nil {
+		return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+	}
+
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	respBody, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 	}
 
-	return &object.Result{IsSuccess: true, Value: &object.String{Value: string(body)}}
+	return &object.Result{IsSuccess: true, Value: &object.String{Value: string(respBody)}}
 }
 
 func evalExecuteExpression(ee *ast.ExecuteExpression, env map[string]object.Object) object.Object {

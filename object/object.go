@@ -3,6 +3,7 @@ package object
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"xuantie/ast"
 	"xuantie/token"
@@ -30,6 +31,7 @@ const (
 	INSTANCE_OBJ     ObjectType = "INSTANCE"
 	STREAM_OBJ       ObjectType = "STREAM"
 	CHANNEL_OBJ      ObjectType = "CHANNEL"
+	HTTP_RES_OBJ     ObjectType = "HTTP_RES"
 )
 
 type Object interface {
@@ -164,6 +166,13 @@ type Channel struct {
 
 func (c *Channel) Type() ObjectType { return CHANNEL_OBJ }
 func (c *Channel) Inspect() string  { return "道" }
+
+type HttpResponseWriter struct {
+	Writer http.ResponseWriter
+}
+
+func (h *HttpResponseWriter) Type() ObjectType { return HTTP_RES_OBJ }
+func (h *HttpResponseWriter) Inspect() string  { return "答" }
 
 type Result struct {
 	IsSuccess bool
