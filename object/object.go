@@ -29,6 +29,7 @@ const (
 	CONTINUE_OBJ     ObjectType = "CONTINUE"
 	CLASS_OBJ        ObjectType = "CLASS"
 	INSTANCE_OBJ     ObjectType = "INSTANCE"
+	INTERFACE_OBJ    ObjectType = "INTERFACE"
 	STREAM_OBJ       ObjectType = "STREAM"
 	CHANNEL_OBJ      ObjectType = "CHANNEL"
 	HTTP_RES_OBJ     ObjectType = "HTTP_RES"
@@ -82,10 +83,21 @@ func (n *Null) Inspect() string  { return "空" }
 
 type Error struct {
 	Message string
+	Trace   []string
 }
 
 func (e *Error) Type() ObjectType { return ERROR_OBJ }
-func (e *Error) Inspect() string  { return e.Message }
+func (e *Error) Inspect() string {
+	var out strings.Builder
+	out.WriteString(e.Message)
+	if len(e.Trace) > 0 {
+		out.WriteString("\n堆栈追踪:")
+		for _, t := range e.Trace {
+			out.WriteString("\n  于 " + t)
+		}
+	}
+	return out.String()
+}
 
 type ReturnValue struct {
 	Value Object
@@ -243,6 +255,15 @@ type Class struct {
 
 func (c *Class) Type() ObjectType { return CLASS_OBJ }
 func (c *Class) Inspect() string  { return fmt.Sprintf("型 %s { ... }", c.Name) }
+
+type Interface struct {
+	Name    string
+	Methods map[string]*ast.MethodSignature
+	Env     map[string]Object
+}
+
+func (i *Interface) Type() ObjectType { return INTERFACE_OBJ }
+func (i *Interface) Inspect() string  { return fmt.Sprintf("口 %s { ... }", i.Name) }
 
 type Instance struct {
 	Class  *Class

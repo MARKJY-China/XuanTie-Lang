@@ -101,6 +101,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseExpressionStatement()
 	case token.TOKEN_TYPE_DEF:
 		return p.parseTypeDefinitionStatement()
+	case token.TOKEN_INTERFACE:
+		return p.parseInterfaceStatement()
 	case token.TOKEN_FUNCTION:
 		if p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_NEW {
 			return p.parseFunctionStatement("")
@@ -297,6 +299,48 @@ func (p *Parser) parseForStatement() *ast.ForStatement {
 		return nil
 	}
 	stmt.Block = p.parseBlock()
+
+	return stmt
+}
+
+func (p *Parser) parseInterfaceStatement() *ast.InterfaceStatement {
+	stmt := &ast.InterfaceStatement{Token: p.cur}
+
+	if !p.expectPeek(token.TOKEN_IDENT) {
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+
+	for p.peek.Type != token.TOKEN_RBRACE && p.peek.Type != token.TOKEN_EOF {
+		p.nextToken()
+		if p.cur.Type == token.TOKEN_FUNCTION {
+			if !p.expectPeek(token.TOKEN_IDENT) {
+				return nil
+			}
+			method := &ast.MethodSignature{Name: &ast.Identifier{Token: p.cur, Value: p.cur.Literal}}
+			if !p.expectPeek(token.TOKEN_LPAREN) {
+				return nil
+			}
+			method.Parameters = p.parseFunctionParameters()
+			if p.peek.Type == token.TOKEN_COLON {
+				p.nextToken()
+				method.ReturnType = p.parseTypeAnnotation()
+			}
+			stmt.Methods = append(stmt.Methods, method)
+		} else {
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d] 接口内部仅支持方法签名定义，得到: %s", p.cur.Line, p.cur.Type))
+			return nil
+		}
+	}
+
+	if !p.expectPeek(token.TOKEN_RBRACE) {
+		return nil
+	}
 
 	return stmt
 }

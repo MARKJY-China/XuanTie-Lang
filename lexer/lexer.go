@@ -241,6 +241,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_DESERIALIZE
 	case "型":
 		return token.TOKEN_TYPE_DEF
+	case "口":
+		return token.TOKEN_INTERFACE
 	case "造":
 		return token.TOKEN_NEW
 	case "承":

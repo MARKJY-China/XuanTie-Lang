@@ -884,3 +884,44 @@ func (cs *ContinueStatement) statementNode()       {}
 func (cs *ContinueStatement) TokenLiteral() string { return cs.Token.Literal }
 func (cs *ContinueStatement) GetLine() int         { return cs.Token.Line }
 func (cs *ContinueStatement) String() string       { return "继续" }
+
+// MethodSignature 接口方法签名
+type MethodSignature struct {
+	Name       *Identifier
+	Parameters []*Parameter
+	ReturnType string
+}
+
+// InterfaceStatement 接口定义语句
+type InterfaceStatement struct {
+	Token   token.Token // '口'
+	Name    *Identifier
+	Methods []*MethodSignature
+}
+
+func (is *InterfaceStatement) statementNode()       {}
+func (is *InterfaceStatement) TokenLiteral() string { return is.Token.Literal }
+func (is *InterfaceStatement) GetLine() int         { return is.Token.Line }
+func (is *InterfaceStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("口 ")
+	out.WriteString(is.Name.String())
+	out.WriteString(" { ")
+	for _, m := range is.Methods {
+		out.WriteString("函 ")
+		out.WriteString(m.Name.String())
+		out.WriteString("(")
+		params := []string{}
+		for _, p := range m.Parameters {
+			params = append(params, p.String())
+		}
+		out.WriteString(strings.Join(params, ", "))
+		out.WriteString(")")
+		if m.ReturnType != "" {
+			out.WriteString(": " + m.ReturnType)
+		}
+		out.WriteString(" ")
+	}
+	out.WriteString("}")
+	return out.String()
+}

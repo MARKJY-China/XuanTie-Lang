@@ -65,6 +65,7 @@ const (
 	TOKEN_SERIALIZE   TokenType = "化"
 	TOKEN_DESERIALIZE TokenType = "解"
 	TOKEN_TYPE_DEF    TokenType = "型"
+	TOKEN_INTERFACE   TokenType = "口"
 	TOKEN_NEW         TokenType = "造"
 	TOKEN_INHERIT     TokenType = "承"
 	TOKEN_CONNECT     TokenType = "连"

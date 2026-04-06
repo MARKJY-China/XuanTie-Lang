@@ -107,6 +107,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return &object.Null{}
 	case *ast.TypeDefinitionStatement:
 		return evalTypeDefinitionStatement(n, env)
+	case *ast.InterfaceStatement:
+		return evalInterfaceStatement(n, env)
 	case *ast.AsyncExpression:
 		return evalAsyncExpression(n, env)
 	case *ast.ParallelExpression:
@@ -159,7 +161,13 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		if len(args) == 1 && isError(args[0]) {
 			return args[0]
 		}
-		return applyFunction(n.GetLine(), function, args)
+
+		funcName := "匿名函数"
+		if ident, ok := n.Function.(*ast.Identifier); ok {
+			funcName = ident.Value
+		}
+
+		return applyFunctionWithName(n.GetLine(), funcName, function, args)
 	case *ast.AwaitExpression:
 		return evalAwaitExpression(n, env)
 	case *ast.MemberCallExpression:
@@ -605,7 +613,7 @@ func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[strin
 			}
 			classEnv[s.Name.Value] = val
 		case *ast.FunctionStatement:
-			fn := &object.Function{Parameters: s.Parameters, Body: s.Body, Env: classEnv, OwnerClass: class}
+			fn := &object.Function{Parameters: s.Parameters, ReturnType: s.ReturnType, Body: s.Body, Env: classEnv, OwnerClass: class}
 			class.Methods[s.Name.Value] = fn
 			if s.Visibility != "" {
 				class.Visibilities[s.Name.Value] = s.Visibility
@@ -614,6 +622,21 @@ func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[strin
 	}
 
 	env[tds.Name.Value] = class
+	return &object.Null{}
+}
+
+func evalInterfaceStatement(is *ast.InterfaceStatement, env map[string]object.Object) object.Object {
+	inf := &object.Interface{
+		Name:    is.Name.Value,
+		Methods: make(map[string]*ast.MethodSignature),
+		Env:     env,
+	}
+
+	for _, m := range is.Methods {
+		inf.Methods[m.Name.Value] = m
+	}
+
+	env[is.Name.Value] = inf
 	return &object.Null{}
 }
 
@@ -666,7 +689,10 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 		}
 
 		boundConstructor := bindInstance(instance, constructor)
-		applyFunction(ne.GetLine(), boundConstructor, args)
+		res := applyFunctionWithName(ne.GetLine(), class.Name+".造", boundConstructor, args)
+		if isError(res) {
+			return res
+		}
 	}
 
 	return instance
@@ -850,7 +876,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		switch mce.Member.Value {
 		case "接着":
 			if result.IsSuccess {
-				res := applyFunction(mce.GetLine(), args[0], []object.Object{result.Value})
+				res := applyFunctionWithName(mce.GetLine(), "接着", args[0], []object.Object{result.Value})
 				if r, ok := res.(*object.Result); ok {
 					return r
 				}
@@ -859,7 +885,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			return result
 		case "否则":
 			if !result.IsSuccess {
-				res := applyFunction(mce.GetLine(), args[0], []object.Object{result.Error})
+				res := applyFunctionWithName(mce.GetLine(), "否则", args[0], []object.Object{result.Error})
 				if r, ok := res.(*object.Result); ok {
 					return r
 				}
@@ -1029,7 +1055,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 		if memberVal != nil {
 			if mce.Arguments != nil || memberVal.Type() == object.FUNCTION_OBJ || memberVal.Type() == object.BUILTIN_OBJ {
-				return applyFunction(mce.GetLine(), memberVal, args)
+				return applyFunctionWithName(mce.GetLine(), mce.Member.Value, memberVal, args)
 			}
 			return memberVal
 		}
@@ -1061,7 +1087,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 			// 如果有参数或者是函数类型，尝试执行
 			if mce.Arguments != nil || val.Type() == object.FUNCTION_OBJ || val.Type() == object.BUILTIN_OBJ {
-				return applyFunction(mce.GetLine(), val, args)
+				return applyFunctionWithName(mce.GetLine(), mce.Member.Value, val, args)
 			}
 			// 否则作为属性直接返回
 			return val
@@ -1110,7 +1136,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			}
 
 			if mce.Arguments != nil {
-				return applyFunction(mce.GetLine(), fn, args)
+				return applyFunctionWithName(mce.GetLine(), mce.Member.Value, fn, args)
 			}
 			return fn
 		}
@@ -1305,6 +1331,36 @@ func isSubclassOf(child, parent *object.Class) bool {
 		curr = curr.Parent
 	}
 	return false
+}
+
+func implementsInterface(instance *object.Instance, inf *object.Interface) bool {
+	for name, signature := range inf.Methods {
+		method, ok := findMethod(instance.Class, name)
+		if !ok {
+			return false
+		}
+		// 校验方法签名
+		if len(method.Parameters) != len(signature.Parameters) {
+			return false
+		}
+		if method.ReturnType != signature.ReturnType {
+			// 如果返回值类型不一致，暂时认为不满足。
+			// 未来可以支持协变
+			return false
+		}
+	}
+	return true
+}
+
+func findMethod(class *object.Class, name string) (*object.Function, bool) {
+	curr := class
+	for curr != nil {
+		if method, ok := curr.Methods[name]; ok {
+			return method, true
+		}
+		curr = curr.Parent
+	}
+	return nil, false
 }
 
 func evalMemberAssignStatement(mas *ast.MemberAssignStatement, env map[string]object.Object) object.Object {
@@ -1524,11 +1580,17 @@ func evalDictLiteral(node *ast.DictLiteral, env map[string]object.Object) object
 }
 
 func applyFunction(line int, fn object.Object, args []object.Object) object.Object {
+	return applyFunctionWithName(line, "匿名函数", fn, args)
+}
+
+func applyFunctionWithName(line int, name string, fn object.Object, args []object.Object) object.Object {
 	switch function := fn.(type) {
 	case *object.Function:
 		envObj := extendFunctionEnv(function, args)
 		if isError(envObj) {
-			return envObj
+			err := envObj.(*object.Error)
+			err.Trace = append(err.Trace, fmt.Sprintf("%s [行:%d]", name, line))
+			return err
 		}
 		extendedEnv := envObj.(*object.Dict).Pairs
 
@@ -1578,19 +1640,32 @@ func applyFunction(line int, fn object.Object, args []object.Object) object.Obje
 		}
 
 		evaluated := evalBlock(function.Body, extendedEnv)
+		if isError(evaluated) {
+			err := evaluated.(*object.Error)
+			err.Trace = append(err.Trace, fmt.Sprintf("%s [行:%d]", name, line))
+			return err
+		}
 		result := unwrapReturnValue(evaluated)
 
 		// 检查返回类型
 		if function.ReturnType != "" {
-			err := checkType(function.ReturnType, result, extendedEnv)
-			if err != nil {
-				return newError(line, "函数返回值 %s", err.(*object.Error).Message)
+			errObj := checkType(function.ReturnType, result, extendedEnv)
+			if errObj != nil {
+				err := errObj.(*object.Error)
+				err.Message = fmt.Sprintf("函数返回值 %s", err.Message)
+				err.Trace = append(err.Trace, fmt.Sprintf("%s [行:%d]", name, line))
+				return err
 			}
 		}
 
 		return result
 	case *object.Builtin:
-		return function.Fn(args...)
+		res := function.Fn(args...)
+		if isError(res) {
+			err := res.(*object.Error)
+			err.Trace = append(err.Trace, fmt.Sprintf("内置函数:%s [行:%d]", name, line))
+		}
+		return res
 	default:
 		return newError(line, "不是函数: %s", fn.Type())
 	}
@@ -2036,11 +2111,18 @@ func checkType(expectedType string, val object.Object, env map[string]object.Obj
 			return nil
 		}
 	default:
-		// 检查自定义类名
-		if classObj, ok := env[expectedType]; ok {
-			if class, ok := classObj.(*object.Class); ok {
+		// 检查自定义类名或接口
+		if typeObj, ok := env[expectedType]; ok {
+			switch t := typeObj.(type) {
+			case *object.Class:
 				if instance, ok := val.(*object.Instance); ok {
-					if isSubclassOf(instance.Class, class) {
+					if isSubclassOf(instance.Class, t) {
+						return nil
+					}
+				}
+			case *object.Interface:
+				if instance, ok := val.(*object.Instance); ok {
+					if implementsInterface(instance, t) {
 						return nil
 					}
 				}
