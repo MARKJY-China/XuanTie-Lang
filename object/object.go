@@ -107,12 +107,13 @@ func (rv *ReturnValue) Type() ObjectType { return RETURN_VALUE_OBJ }
 func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
 
 type Function struct {
-	Parameters []*ast.Parameter
-	ReturnType string // 可选返回类型
-	Body       []ast.Statement
-	Env        map[string]Object
-	OwnerClass *Class    // 所属类（用于权限校验）
-	Receiver   *Instance // 绑定的实例（如果是方法）
+	Parameters    []*ast.Parameter
+	GenericParams []string // 泛型参数
+	ReturnType    string   // 可选返回类型
+	Body          []ast.Statement
+	Env           map[string]Object
+	OwnerClass    *Class    // 所属类（用于权限校验）
+	Receiver      *Instance // 绑定的实例（如果是方法）
 }
 
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
@@ -245,16 +246,25 @@ func (c *Continue) Type() ObjectType { return CONTINUE_OBJ }
 func (c *Continue) Inspect() string  { return "继续" }
 
 type Class struct {
-	Name         string
-	Parent       *Class
-	Fields       map[string]Object
-	Methods      map[string]*Function
-	Visibilities map[string]token.TokenType
-	Env          map[string]Object
+	Name          string
+	GenericParams []string // 泛型参数
+	Parent        *Class
+	Fields        map[string]Object
+	Methods       map[string]*Function
+	Visibilities  map[string]token.TokenType
+	Env           map[string]Object
 }
 
 func (c *Class) Type() ObjectType { return CLASS_OBJ }
-func (c *Class) Inspect() string  { return fmt.Sprintf("型 %s { ... }", c.Name) }
+func (c *Class) Inspect() string {
+	var out strings.Builder
+	out.WriteString("型 " + c.Name)
+	if len(c.GenericParams) > 0 {
+		out.WriteString("<" + strings.Join(c.GenericParams, ", ") + ">")
+	}
+	out.WriteString(" { ... }")
+	return out.String()
+}
 
 type Interface struct {
 	Name    string
@@ -266,8 +276,9 @@ func (i *Interface) Type() ObjectType { return INTERFACE_OBJ }
 func (i *Interface) Inspect() string  { return fmt.Sprintf("口 %s { ... }", i.Name) }
 
 type Instance struct {
-	Class  *Class
-	Fields map[string]Object
+	Class    *Class
+	TypeArgs map[string]string // 泛型绑定，如 T -> 整
+	Fields   map[string]Object
 }
 
 func (i *Instance) Type() ObjectType { return INSTANCE_OBJ }

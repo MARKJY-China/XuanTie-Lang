@@ -39,6 +39,9 @@ func Eval(node ast.Node, env map[string]object.Object) object.Object {
 }
 
 func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool) object.Object {
+	if node == nil {
+		return &object.Null{}
+	}
 	switch n := node.(type) {
 	case *ast.Program:
 		return evalProgram(n, env)
@@ -102,7 +105,13 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 	case *ast.TryCatchStatement:
 		return evalTryCatchStatement(n, env)
 	case *ast.FunctionStatement:
-		fn := &object.Function{Parameters: n.Parameters, ReturnType: n.ReturnType, Body: n.Body, Env: env}
+		fn := &object.Function{
+			Parameters:    n.Parameters,
+			GenericParams: n.GenericParams,
+			ReturnType:    n.ReturnType,
+			Body:          n.Body,
+			Env:           env,
+		}
 		env[n.Name.Value] = fn
 		return &object.Null{}
 	case *ast.TypeDefinitionStatement:
@@ -138,7 +147,13 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 	case *ast.ChannelExpression:
 		return &object.Channel{Value: make(chan object.Object, 100)}
 	case *ast.FunctionLiteral:
-		return &object.Function{Parameters: n.Parameters, ReturnType: n.ReturnType, Body: n.Body, Env: env}
+		return &object.Function{
+			Parameters:    n.Parameters,
+			GenericParams: n.GenericParams,
+			ReturnType:    n.ReturnType,
+			Body:          n.Body,
+			Env:           env,
+		}
 	case *ast.CallExpression:
 		// 特殊处理 成功 和 失败
 		if ident, ok := n.Function.(*ast.Identifier); ok {
@@ -167,7 +182,7 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 			funcName = ident.Value
 		}
 
-		return applyFunctionWithName(n.GetLine(), funcName, function, args)
+		return applyFunctionWithGenerics(n.GetLine(), funcName, function, args, n.TypeArguments)
 	case *ast.AwaitExpression:
 		return evalAwaitExpression(n, env)
 	case *ast.MemberCallExpression:
@@ -557,11 +572,12 @@ func evalTryCatchStatement(ts *ast.TryCatchStatement, env map[string]object.Obje
 
 func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[string]object.Object) object.Object {
 	class := &object.Class{
-		Name:         tds.Name.Value,
-		Fields:       make(map[string]object.Object),
-		Methods:      make(map[string]*object.Function),
-		Visibilities: make(map[string]token.TokenType),
-		Env:          env,
+		Name:          tds.Name.Value,
+		GenericParams: tds.GenericParams,
+		Fields:        make(map[string]object.Object),
+		Methods:       make(map[string]*object.Function),
+		Visibilities:  make(map[string]token.TokenType),
+		Env:           env,
 	}
 
 	// 1. 绑定父类
@@ -652,8 +668,21 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 	}
 
 	instance := &object.Instance{
-		Class:  class,
-		Fields: make(map[string]object.Object),
+		Class:    class,
+		TypeArgs: make(map[string]string),
+		Fields:   make(map[string]object.Object),
+	}
+
+	// 绑定泛型参数
+	if len(class.GenericParams) > 0 {
+		if len(ne.TypeArguments) > 0 {
+			if len(ne.TypeArguments) != len(class.GenericParams) {
+				return newError(ne.GetLine(), "泛型参数数量不匹配: 期望 %d, 得到 %d", len(class.GenericParams), len(ne.TypeArguments))
+			}
+			for i, p := range class.GenericParams {
+				instance.TypeArgs[p] = ne.TypeArguments[i]
+			}
+		}
 	}
 
 	// 1. 初始化所有字段（包括私有字段，从继承链最顶端开始向下覆盖）
@@ -1580,13 +1609,37 @@ func evalDictLiteral(node *ast.DictLiteral, env map[string]object.Object) object
 }
 
 func applyFunction(line int, fn object.Object, args []object.Object) object.Object {
-	return applyFunctionWithName(line, "匿名函数", fn, args)
+	return applyFunctionWithGenerics(line, "匿名函数", fn, args, nil)
 }
 
 func applyFunctionWithName(line int, name string, fn object.Object, args []object.Object) object.Object {
+	return applyFunctionWithGenerics(line, name, fn, args, nil)
+}
+
+func applyFunctionWithGenerics(line int, name string, fn object.Object, args []object.Object, typeArgs []string) object.Object {
 	switch function := fn.(type) {
 	case *object.Function:
-		envObj := extendFunctionEnv(function, args)
+		// 绑定泛型参数
+		boundTypeArgs := make(map[string]string)
+		// 如果是方法，从实例中继承泛型绑定
+		if function.Receiver != nil {
+			for k, v := range function.Receiver.TypeArgs {
+				boundTypeArgs[k] = v
+			}
+		}
+		// 如果提供了显式泛型参数
+		if len(function.GenericParams) > 0 {
+			if len(typeArgs) > 0 {
+				if len(typeArgs) != len(function.GenericParams) {
+					return newError(line, "泛型参数数量不匹配: 期望 %d, 得到 %d", len(function.GenericParams), len(typeArgs))
+				}
+				for i, p := range function.GenericParams {
+					boundTypeArgs[p] = typeArgs[i]
+				}
+			}
+		}
+
+		envObj := extendFunctionEnvWithGenerics(function, args, boundTypeArgs)
 		if isError(envObj) {
 			err := envObj.(*object.Error)
 			err.Trace = append(err.Trace, fmt.Sprintf("%s [行:%d]", name, line))
@@ -1649,7 +1702,7 @@ func applyFunctionWithName(line int, name string, fn object.Object, args []objec
 
 		// 检查返回类型
 		if function.ReturnType != "" {
-			errObj := checkType(function.ReturnType, result, extendedEnv)
+			errObj := checkTypeWithGenerics(function.ReturnType, result, extendedEnv, boundTypeArgs)
 			if errObj != nil {
 				err := errObj.(*object.Error)
 				err.Message = fmt.Sprintf("函数返回值 %s", err.Message)
@@ -1671,7 +1724,7 @@ func applyFunctionWithName(line int, name string, fn object.Object, args []objec
 	}
 }
 
-func extendFunctionEnv(fn *object.Function, args []object.Object) object.Object {
+func extendFunctionEnvWithGenerics(fn *object.Function, args []object.Object, boundTypeArgs map[string]string) object.Object {
 	env := make(map[string]object.Object)
 	// Copy outer env (not efficient but simple for now)
 	for k, v := range fn.Env {
@@ -1681,7 +1734,7 @@ func extendFunctionEnv(fn *object.Function, args []object.Object) object.Object 
 		val := args[i]
 		// 类型检查
 		if param.DataType != "" {
-			err := checkType(param.DataType, val, env)
+			err := checkTypeWithGenerics(param.DataType, val, env, boundTypeArgs)
 			if err != nil {
 				return newError(param.Name.GetLine(), "参数 '%s' %s", param.Name.Value, err.(*object.Error).Message)
 			}
@@ -2048,15 +2101,26 @@ func evalExecuteExpression(ee *ast.ExecuteExpression, env map[string]object.Obje
 }
 
 func checkType(expectedType string, val object.Object, env map[string]object.Object) object.Object {
+	return checkTypeWithGenerics(expectedType, val, env, nil)
+}
+
+func checkTypeWithGenerics(expectedType string, val object.Object, env map[string]object.Object, boundTypeArgs map[string]string) object.Object {
 	if expectedType == "" {
 		return nil
+	}
+
+	// 0. 处理泛型参数替换 (如 T -> 整)
+	if boundTypeArgs != nil {
+		if substituted, ok := boundTypeArgs[expectedType]; ok {
+			expectedType = substituted
+		}
 	}
 
 	// 1. 处理联合类型 (Union Types)
 	if strings.Contains(expectedType, " | ") {
 		types := strings.Split(expectedType, " | ")
 		for _, t := range types {
-			if checkType(strings.TrimSpace(t), val, env) == nil {
+			if checkTypeWithGenerics(strings.TrimSpace(t), val, env, boundTypeArgs) == nil {
 				return nil
 			}
 		}
@@ -2069,7 +2133,40 @@ func checkType(expectedType string, val object.Object, env map[string]object.Obj
 			return nil
 		}
 		baseType := expectedType[:len(expectedType)-1]
-		return checkType(baseType, val, env)
+		return checkTypeWithGenerics(baseType, val, env, boundTypeArgs)
+	}
+
+	// 3. 处理带泛型参数的类型校验 (如 盒子<整>)
+	if strings.Contains(expectedType, "<") && strings.HasSuffix(expectedType, ">") {
+		baseTypeName := expectedType[:strings.Index(expectedType, "<")]
+		argsStr := expectedType[strings.Index(expectedType, "<")+1 : len(expectedType)-1]
+		typeArgs := strings.Split(argsStr, ",")
+		for i := range typeArgs {
+			typeArgs[i] = strings.TrimSpace(typeArgs[i])
+		}
+
+		// 首先校验基础类名
+		if err := checkTypeWithGenerics(baseTypeName, val, env, boundTypeArgs); err != nil {
+			return err
+		}
+
+		// 如果是实例，进一步校验泛型绑定是否一致
+		if instance, ok := val.(*object.Instance); ok {
+			class := instance.Class
+			if len(class.GenericParams) != len(typeArgs) {
+				return &object.Error{Message: fmt.Sprintf("泛型参数数量不匹配: 期望 %d, 得到 %d", len(class.GenericParams), len(typeArgs))}
+			}
+			for i, p := range class.GenericParams {
+				actualArg := instance.TypeArgs[p]
+				expectedArg := typeArgs[i]
+				// 递归校验泛型参数
+				// 注意：这里我们简单对比类型名字符串，或者可以进行更深度的类型兼容性检查
+				if actualArg != expectedArg {
+					return &object.Error{Message: fmt.Sprintf("泛型参数 '%s' 类型不匹配: 期望 %s, 得到 %s", p, expectedArg, actualArg)}
+				}
+			}
+			return nil
+		}
 	}
 
 	actualType := val.Type()

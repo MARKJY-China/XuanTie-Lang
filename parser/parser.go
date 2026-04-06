@@ -12,6 +12,7 @@ const (
 	LOWEST      = iota
 	LOGICAL_OR  // 或
 	LOGICAL_AND // 且
+	CONCAT      // &
 	EQUALS      // == !=
 	LESSGREATER // < >
 	SUM         // + -
@@ -34,7 +35,7 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_MUL:       PRODUCT,
 	token.TOKEN_DIV:       PRODUCT,
 	token.TOKEN_MOD:       PRODUCT,
-	token.TOKEN_AMPERSAND: SUM,
+	token.TOKEN_AMPERSAND: CONCAT,
 	token.TOKEN_LPAREN:    CALL,
 	token.TOKEN_DOT:       DOT,
 	token.TOKEN_LBRACKET:  INDEX,
@@ -505,7 +506,44 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	for p.peek.Type != token.TOKEN_EOF && precedence < p.peekPrecedence() {
 		switch p.peek.Type {
-		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD, token.TOKEN_LT, token.TOKEN_GT, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS:
+		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS:
+			p.nextToken()
+			leftExp = p.parseInfixExpression(leftExp)
+		case token.TOKEN_LT:
+			// 只有在没有空格的情况下才解析为泛型调用 f<T>(...)
+			if !p.peek.HasSpaceBefore {
+				p.nextToken() // cur: <
+				typeArgs := p.parseTypeArgumentList()
+				if p.peek.Type == token.TOKEN_LPAREN {
+					p.nextToken()
+					leftExp = &ast.CallExpression{
+						Token:         p.cur,
+						Function:      leftExp,
+						TypeArguments: typeArgs,
+						Arguments:     p.parseCallArguments(),
+					}
+				} else {
+					// 即使没空格，如果没有 ( 也可能是 a < b
+					// 由于已经消耗了 <，我们需要尝试恢复。
+					// 如果 typeArgs 为空，说明 < 后面不是有效的类型名，肯定是比较。
+					var right ast.Expression
+					if len(typeArgs) > 0 {
+						right = &ast.Identifier{Token: token.Token{Type: token.TOKEN_IDENT, Literal: typeArgs[0]}, Value: typeArgs[0]}
+					} else {
+						right = p.parseExpression(LESSGREATER)
+					}
+					leftExp = &ast.InfixExpression{
+						Token:    token.Token{Type: token.TOKEN_LT, Literal: "<", Line: p.cur.Line, Column: p.cur.Column},
+						Left:     leftExp,
+						Operator: "<",
+						Right:    right,
+					}
+				}
+			} else {
+				p.nextToken()
+				leftExp = p.parseInfixExpression(leftExp)
+			}
+		case token.TOKEN_GT:
 			p.nextToken()
 			leftExp = p.parseInfixExpression(leftExp)
 		case token.TOKEN_DOT:
@@ -587,6 +625,12 @@ func (p *Parser) parseTypeDefinitionStatement() *ast.TypeDefinitionStatement {
 
 	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 
+	// 检查泛型参数 <T, U>
+	if p.peek.Type == token.TOKEN_LT {
+		p.nextToken() // cur: <
+		stmt.GenericParams = p.parseGenericParamList()
+	}
+
 	// 检查是否有 "承" (继承)
 	if p.peek.Type == token.TOKEN_INHERIT {
 		p.nextToken() // cur: 承
@@ -616,6 +660,12 @@ func (p *Parser) parseFunctionStatement(visibility token.TokenType) *ast.Functio
 
 	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 
+	// 检查泛型参数 <T, U>
+	if p.peek.Type == token.TOKEN_LT {
+		p.nextToken() // cur: <
+		stmt.GenericParams = p.parseGenericParamList()
+	}
+
 	if !p.expectPeek(token.TOKEN_LPAREN) {
 		return nil
 	}
@@ -643,6 +693,12 @@ func (p *Parser) parseNewExpression() ast.Expression {
 
 	// 限制类型部分只解析标识符或成员访问，不解析调用
 	exp.Type = p.parseExpression(CALL)
+
+	// 检查泛型实际类型 <整>
+	if p.peek.Type == token.TOKEN_LT {
+		p.nextToken() // cur: <
+		exp.TypeArguments = p.parseTypeArgumentList()
+	}
 
 	if p.peek.Type == token.TOKEN_LBRACE {
 		p.nextToken() // cur: {
@@ -755,6 +811,12 @@ func (p *Parser) parseExecuteExpression() ast.Expression {
 
 func (p *Parser) parseFunctionLiteral() ast.Expression {
 	lit := &ast.FunctionLiteral{Token: p.cur}
+
+	// 检查泛型参数 <T, U>
+	if p.peek.Type == token.TOKEN_LT {
+		p.nextToken() // cur: <
+		lit.GenericParams = p.parseGenericParamList()
+	}
 
 	if !p.expectPeek(token.TOKEN_LPAREN) {
 		return nil
@@ -873,6 +935,15 @@ func (p *Parser) parseFunctionParameters() []*ast.Parameter {
 
 func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	exp := &ast.CallExpression{Token: p.cur, Function: function}
+
+	// 检查泛型实际类型 <整>
+	if p.cur.Type == token.TOKEN_LT {
+		exp.TypeArguments = p.parseTypeArgumentList()
+		if !p.expectPeek(token.TOKEN_LPAREN) {
+			return nil
+		}
+	}
+
 	exp.Arguments = p.parseCallArguments()
 	return exp
 }
@@ -983,6 +1054,24 @@ func (p *Parser) parseTypeAnnotation() string {
 
 	typeStr := p.cur.Literal
 
+	// Handle Generic Arguments: 类型<实际类型>
+	if p.peek.Type == token.TOKEN_LT {
+		p.nextToken() // cur: <
+		typeStr += "<"
+		if p.peek.Type != token.TOKEN_GT {
+			typeStr += p.parseTypeAnnotation()
+			for p.peek.Type == token.TOKEN_COMMA {
+				p.nextToken() // cur: ,
+				typeStr += ", "
+				typeStr += p.parseTypeAnnotation()
+			}
+		}
+		if !p.expectPeek(token.TOKEN_GT) {
+			return typeStr
+		}
+		typeStr += ">"
+	}
+
 	// Handle Nullable Type: 类型?
 	if p.peek.Type == token.TOKEN_QUESTION {
 		p.nextToken()
@@ -993,19 +1082,58 @@ func (p *Parser) parseTypeAnnotation() string {
 	for p.peek.Type == token.TOKEN_PIPE {
 		p.nextToken() // skip |
 		typeStr += " | "
-		if p.isTypeToken(p.peek.Type) {
-			p.nextToken()
-			typeStr += p.cur.Literal
-			// Handle Nullable in Union: 类型1 | 类型2?
-			if p.peek.Type == token.TOKEN_QUESTION {
-				p.nextToken()
-				typeStr += "?"
-			}
-		} else {
-			p.errors = append(p.errors, fmt.Sprintf("[行:%d] 联合类型期望类型关键字，得到: %s", p.peek.Line, p.peek.Type))
-			return typeStr
-		}
+		typeStr += p.parseTypeAnnotation()
 	}
 
 	return typeStr
+}
+
+func (p *Parser) parseGenericParamList() []string {
+	params := []string{}
+
+	if p.peek.Type == token.TOKEN_GT {
+		p.nextToken()
+		return params
+	}
+
+	if !p.expectPeek(token.TOKEN_IDENT) {
+		return nil
+	}
+	params = append(params, p.cur.Literal)
+
+	for p.peek.Type == token.TOKEN_COMMA {
+		p.nextToken()
+		if !p.expectPeek(token.TOKEN_IDENT) {
+			return nil
+		}
+		params = append(params, p.cur.Literal)
+	}
+
+	if !p.expectPeek(token.TOKEN_GT) {
+		return nil
+	}
+
+	return params
+}
+
+func (p *Parser) parseTypeArgumentList() []string {
+	args := []string{}
+
+	if p.peek.Type == token.TOKEN_GT {
+		p.nextToken()
+		return args
+	}
+
+	args = append(args, p.parseTypeAnnotation())
+
+	for p.peek.Type == token.TOKEN_COMMA {
+		p.nextToken()
+		args = append(args, p.parseTypeAnnotation())
+	}
+
+	if !p.expectPeek(token.TOKEN_GT) {
+		return nil
+	}
+
+	return args
 }

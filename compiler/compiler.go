@@ -114,25 +114,28 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("}\n\n")
 
-	c.output.WriteString("func checkTypeRuntime(expectedType string, v interface{}, label string) {\n")
+	c.output.WriteString("func checkTypeRuntime(expectedType string, v interface{}, label string, typeArgs map[string]string) {\n")
 	c.output.WriteString("\tif expectedType == \"\" { return }\n")
-	c.output.WriteString("\tif !checkTypeRuntimeNoPanic(expectedType, v) {\n")
+	c.output.WriteString("\tif !checkTypeRuntimeNoPanic(expectedType, v, typeArgs) {\n")
 	c.output.WriteString("\t\tpanic(fmt.Sprintf(\"%s类型错误: 期望 %s, 实际得到 %T\", label, expectedType, v))\n")
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("}\n\n")
 
-	c.output.WriteString("func checkTypeRuntimeNoPanic(expectedType string, v interface{}) bool {\n")
+	c.output.WriteString("func checkTypeRuntimeNoPanic(expectedType string, v interface{}, typeArgs map[string]string) bool {\n")
 	c.output.WriteString("\tif expectedType == \"\" { return true }\n")
+	c.output.WriteString("\tif typeArgs != nil {\n")
+	c.output.WriteString("\t\tif substituted, ok := typeArgs[expectedType]; ok { expectedType = substituted }\n")
+	c.output.WriteString("\t}\n")
 	c.output.WriteString("\tif strings.Contains(expectedType, \" | \") {\n")
 	c.output.WriteString("\t\ttypes := strings.Split(expectedType, \" | \")\n")
 	c.output.WriteString("\t\tfor _, t := range types {\n")
-	c.output.WriteString("\t\t\tif checkTypeRuntimeNoPanic(strings.TrimSpace(t), v) { return true }\n")
+	c.output.WriteString("\t\t\tif checkTypeRuntimeNoPanic(strings.TrimSpace(t), v, typeArgs) { return true }\n")
 	c.output.WriteString("\t\t}\n")
 	c.output.WriteString("\t\treturn false\n")
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("\tif strings.HasSuffix(expectedType, \"?\") {\n")
 	c.output.WriteString("\t\tif v == nil { return true }\n")
-	c.output.WriteString("\t\treturn checkTypeRuntimeNoPanic(expectedType[:len(expectedType)-1], v)\n")
+	c.output.WriteString("\t\treturn checkTypeRuntimeNoPanic(expectedType[:len(expectedType)-1], v, typeArgs)\n")
 	c.output.WriteString("\t}\n")
 	c.output.WriteString("\tif v == nil { return expectedType == \"空\" }\n")
 	c.output.WriteString("\tswitch expectedType {\n")
@@ -152,11 +155,8 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t\t\tif classes, ok := dict[\"__CLASSES__\"].([]string); ok {\n")
 	c.output.WriteString("\t\t\t\tfor _, cls := range classes { if cls == expectedType { return true } }\n")
 	c.output.WriteString("\t\t\t}\n")
-	c.output.WriteString("\t\t\t// 检查是否满足接口契约\n")
 	c.output.WriteString("\t\t\tif methods, ok := interfaces[expectedType]; ok {\n")
-	c.output.WriteString("\t\t\t\tfor _, m := range methods {\n")
-	c.output.WriteString("\t\t\t\t\tif _, ok := dict[m]; !ok { return false }\n")
-	c.output.WriteString("\t\t\t\t}\n")
+	c.output.WriteString("\t\t\t\tfor _, m := range methods { if _, ok := dict[m]; !ok { return false } }\n")
 	c.output.WriteString("\t\t\t\treturn true\n")
 	c.output.WriteString("\t\t\t}\n")
 	c.output.WriteString("\t\t}\n")
@@ -689,7 +689,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	case *ast.VarStatement:
 		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name.Value, c.expressionCode(s.Value, true)))
 		if s.DataType != "" {
-			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, %s, %q)\n", indentStr, s.DataType, s.Name.Value, "变量 "+s.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, %s, %q, nil)\n", indentStr, s.DataType, s.Name.Value, "变量 "+s.Name.Value))
 		}
 	case *ast.AssignStatement:
 		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value, true)))
@@ -759,7 +759,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 			c.output.WriteString(fmt.Sprintf("%s\t\tif len(args) > %d { %s = args[%d] }\n", indentStr, i, p.Name.Value, i))
 			// 类型校验
 			if p.DataType != "" {
-				c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q)\n", indentStr, p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+				c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q, nil)\n", indentStr, p.DataType, p.Name.Value, "参数 "+p.Name.Value))
 			}
 		}
 
@@ -768,7 +768,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.returnTypeStack = c.returnTypeStack[:len(c.returnTypeStack)-1]
 
 		if s.ReturnType != "" {
-			c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, nil, \"返回值\")\n", indentStr, s.ReturnType))
+			c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, nil, \"返回值\", nil)\n", indentStr, s.ReturnType))
 		}
 		c.output.WriteString(fmt.Sprintf("%s\t\treturn nil\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s\t}()\n", indentStr))
@@ -893,7 +893,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		valCode := c.expressionCode(s.ReturnValue, false)
 		if expectedType != "" {
 			c.output.WriteString(fmt.Sprintf("%s_rv := %s\n", indentStr, valCode))
-			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, _rv, \"返回值\")\n", indentStr, expectedType))
+			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, _rv, \"返回值\", nil)\n", indentStr, expectedType))
 			c.output.WriteString(fmt.Sprintf("%sreturn _rv\n", indentStr))
 		} else {
 			c.output.WriteString(fmt.Sprintf("%sreturn %s\n", indentStr, valCode))
@@ -1095,14 +1095,14 @@ func (c *GoCompiler) functionLiteralCode(e *ast.FunctionLiteral, isAssignment bo
 		out.WriteString(fmt.Sprintf("\t\t\t%s := args[%d]\n", p.Name.Value, i))
 		out.WriteString(fmt.Sprintf("\t\t\t_ = %s\n", p.Name.Value))
 		if p.DataType != "" {
-			out.WriteString(fmt.Sprintf("\t\t\tcheckTypeRuntime(%q, %s, %q)\n", p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+			out.WriteString(fmt.Sprintf("\t\t\tcheckTypeRuntime(%q, %s, %q, nil)\n", p.DataType, p.Name.Value, "参数 "+p.Name.Value))
 		}
 	}
 	c.returnTypeStack = append(c.returnTypeStack, e.ReturnType)
 	c.writeStatementsWithDeclarationsToBuffer(e.Body, 3, &out)
 	c.returnTypeStack = c.returnTypeStack[:len(c.returnTypeStack)-1]
 	if e.ReturnType != "" {
-		out.WriteString(fmt.Sprintf("\t\t\tcheckTypeRuntime(%q, nil, \"返回值\")\n", e.ReturnType))
+		out.WriteString(fmt.Sprintf("\t\t\tcheckTypeRuntime(%q, nil, \"返回值\", nil)\n", e.ReturnType))
 	}
 	out.WriteString("\t\t\treturn nil\n")
 	out.WriteString("\t\t}()\n")

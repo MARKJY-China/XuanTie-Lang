@@ -94,8 +94,9 @@ const (
 )
 
 type Token struct {
-	Type    TokenType
-	Literal string
-	Line    int
-	Column  int
+	Type           TokenType
+	Literal        string
+	Line           int
+	Column         int
+	HasSpaceBefore bool
 }

@@ -275,10 +275,11 @@ func (tl *TypeLiteral) String() string       { return tl.Value }
 
 // TypeDefinitionStatement 类型定义语句
 type TypeDefinitionStatement struct {
-	Token  token.Token // "型"
-	Name   *Identifier
-	Parent *Identifier // 继承的父类名
-	Block  []Statement
+	Token         token.Token // "型"
+	Name          *Identifier
+	GenericParams []string    // 泛型参数，如 <T, U>
+	Parent        *Identifier // 继承的父类名
+	Block         []Statement
 }
 
 func (tds *TypeDefinitionStatement) statementNode()       {}
@@ -288,6 +289,9 @@ func (tds *TypeDefinitionStatement) String() string {
 	var out bytes.Buffer
 	out.WriteString("型 ")
 	out.WriteString(tds.Name.String())
+	if len(tds.GenericParams) > 0 {
+		out.WriteString("<" + strings.Join(tds.GenericParams, ", ") + ">")
+	}
 	if tds.Parent != nil {
 		out.WriteString(" 承 " + tds.Parent.String())
 	}
@@ -302,10 +306,11 @@ func (tds *TypeDefinitionStatement) String() string {
 
 // NewExpression 实例化表达式
 type NewExpression struct {
-	Token     token.Token  // "造"
-	Type      Expression   // Identifier
-	Data      Expression   // DictLiteral for initial values
-	Arguments []Expression // Constructor arguments
+	Token         token.Token  // "造"
+	Type          Expression   // Identifier
+	TypeArguments []string     // 泛型实际类型
+	Data          Expression   // DictLiteral for initial values
+	Arguments     []Expression // Constructor arguments
 }
 
 func (ne *NewExpression) expressionNode()      {}
@@ -315,6 +320,9 @@ func (ne *NewExpression) String() string {
 	var out bytes.Buffer
 	out.WriteString("造 ")
 	out.WriteString(ne.Type.String())
+	if len(ne.TypeArguments) > 0 {
+		out.WriteString("<" + strings.Join(ne.TypeArguments, ", ") + ">")
+	}
 	if ne.Data != nil {
 		out.WriteString(ne.Data.String())
 	}
@@ -702,10 +710,11 @@ func (p *Parameter) String() string {
 }
 
 type FunctionLiteral struct {
-	Token      token.Token
-	Parameters []*Parameter
-	ReturnType string // 可选返回类型
-	Body       []Statement
+	Token         token.Token
+	GenericParams []string // 泛型参数
+	Parameters    []*Parameter
+	ReturnType    string // 可选返回类型
+	Body          []Statement
 }
 
 func (fl *FunctionLiteral) expressionNode()      {}
@@ -718,6 +727,9 @@ func (fl *FunctionLiteral) String() string {
 		params = append(params, p.String())
 	}
 	out.WriteString("函数")
+	if len(fl.GenericParams) > 0 {
+		out.WriteString("<" + strings.Join(fl.GenericParams, ", ") + ">")
+	}
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))
 	out.WriteString(")")
@@ -734,12 +746,13 @@ func (fl *FunctionLiteral) String() string {
 
 // FunctionStatement 具名函数定义
 type FunctionStatement struct {
-	Token      token.Token
-	Name       *Identifier
-	Parameters []*Parameter
-	ReturnType string // 可选返回类型
-	Body       []Statement
-	Visibility token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC, TOKEN_PROTECTED
+	Token         token.Token
+	Name          *Identifier
+	GenericParams []string // 泛型参数
+	Parameters    []*Parameter
+	ReturnType    string // 可选返回类型
+	Body          []Statement
+	Visibility    token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC, TOKEN_PROTECTED
 }
 
 func (fs *FunctionStatement) statementNode()       {}
@@ -756,6 +769,9 @@ func (fs *FunctionStatement) String() string {
 	}
 	out.WriteString("函 ")
 	out.WriteString(fs.Name.String())
+	if len(fs.GenericParams) > 0 {
+		out.WriteString("<" + strings.Join(fs.GenericParams, ", ") + ">")
+	}
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))
 	out.WriteString(")")
@@ -788,9 +804,10 @@ func (es *ExpressionStatement) String() string {
 
 // CallExpression 函数调用
 type CallExpression struct {
-	Token     token.Token // '('
-	Function  Expression  // Identifier or FunctionLiteral
-	Arguments []Expression
+	Token         token.Token // '('
+	Function      Expression  // Identifier or FunctionLiteral
+	TypeArguments []string    // 泛型实际类型，如 <整>
+	Arguments     []Expression
 }
 
 func (ce *CallExpression) expressionNode()      {}
@@ -798,12 +815,15 @@ func (ce *CallExpression) TokenLiteral() string { return ce.Token.Literal }
 func (ce *CallExpression) GetLine() int         { return ce.Token.Line }
 func (ce *CallExpression) String() string {
 	var out bytes.Buffer
+	out.WriteString(ce.Function.String())
+	if len(ce.TypeArguments) > 0 {
+		out.WriteString("<" + strings.Join(ce.TypeArguments, ", ") + ">")
+	}
+	out.WriteString("(")
 	args := []string{}
 	for _, a := range ce.Arguments {
 		args = append(args, a.String())
 	}
-	out.WriteString(ce.Function.String())
-	out.WriteString("(")
 	out.WriteString(strings.Join(args, ", "))
 	out.WriteString(")")
 	return out.String()
