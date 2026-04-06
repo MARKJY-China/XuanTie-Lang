@@ -273,12 +273,25 @@ func (tl *TypeLiteral) TokenLiteral() string { return tl.Token.Literal }
 func (tl *TypeLiteral) GetLine() int         { return tl.Token.Line }
 func (tl *TypeLiteral) String() string       { return tl.Value }
 
+// GenericParam 泛型参数定义，包含约束
+type GenericParam struct {
+	Name       string // 参数名，如 T
+	Constraint string // 约束类型，如 会飞的
+}
+
+func (gp *GenericParam) String() string {
+	if gp.Constraint != "" {
+		return gp.Name + " 承 " + gp.Constraint
+	}
+	return gp.Name
+}
+
 // TypeDefinitionStatement 类型定义语句
 type TypeDefinitionStatement struct {
 	Token         token.Token // "型"
 	Name          *Identifier
-	GenericParams []string    // 泛型参数，如 <T, U>
-	Parent        *Identifier // 继承的父类名
+	GenericParams []*GenericParam // 泛型参数，如 <T 承 会飞的, U>
+	Parent        *Identifier     // 继承的父类名
 	Block         []Statement
 }
 
@@ -290,7 +303,13 @@ func (tds *TypeDefinitionStatement) String() string {
 	out.WriteString("型 ")
 	out.WriteString(tds.Name.String())
 	if len(tds.GenericParams) > 0 {
-		out.WriteString("<" + strings.Join(tds.GenericParams, ", ") + ">")
+		out.WriteString("<")
+		params := []string{}
+		for _, p := range tds.GenericParams {
+			params = append(params, p.String())
+		}
+		out.WriteString(strings.Join(params, ", "))
+		out.WriteString(">")
 	}
 	if tds.Parent != nil {
 		out.WriteString(" 承 " + tds.Parent.String())
@@ -711,7 +730,7 @@ func (p *Parameter) String() string {
 
 type FunctionLiteral struct {
 	Token         token.Token
-	GenericParams []string // 泛型参数
+	GenericParams []*GenericParam // 泛型参数
 	Parameters    []*Parameter
 	ReturnType    string // 可选返回类型
 	Body          []Statement
@@ -728,7 +747,13 @@ func (fl *FunctionLiteral) String() string {
 	}
 	out.WriteString("函数")
 	if len(fl.GenericParams) > 0 {
-		out.WriteString("<" + strings.Join(fl.GenericParams, ", ") + ">")
+		out.WriteString("<")
+		gps := []string{}
+		for _, p := range fl.GenericParams {
+			gps = append(gps, p.String())
+		}
+		out.WriteString(strings.Join(gps, ", "))
+		out.WriteString(">")
 	}
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))
@@ -748,7 +773,7 @@ func (fl *FunctionLiteral) String() string {
 type FunctionStatement struct {
 	Token         token.Token
 	Name          *Identifier
-	GenericParams []string // 泛型参数
+	GenericParams []*GenericParam // 泛型参数
 	Parameters    []*Parameter
 	ReturnType    string // 可选返回类型
 	Body          []Statement
@@ -770,7 +795,13 @@ func (fs *FunctionStatement) String() string {
 	out.WriteString("函 ")
 	out.WriteString(fs.Name.String())
 	if len(fs.GenericParams) > 0 {
-		out.WriteString("<" + strings.Join(fs.GenericParams, ", ") + ">")
+		out.WriteString("<")
+		gps := []string{}
+		for _, p := range fs.GenericParams {
+			gps = append(gps, p.String())
+		}
+		out.WriteString(strings.Join(gps, ", "))
+		out.WriteString(">")
 	}
 	out.WriteString("(")
 	out.WriteString(strings.Join(params, ", "))

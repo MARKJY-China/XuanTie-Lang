@@ -108,8 +108,8 @@ func (rv *ReturnValue) Inspect() string  { return rv.Value.Inspect() }
 
 type Function struct {
 	Parameters    []*ast.Parameter
-	GenericParams []string // 泛型参数
-	ReturnType    string   // 可选返回类型
+	GenericParams []*ast.GenericParam // 泛型参数
+	ReturnType    string              // 可选返回类型
 	Body          []ast.Statement
 	Env           map[string]Object
 	OwnerClass    *Class    // 所属类（用于权限校验）
@@ -122,7 +122,19 @@ func (f *Function) Inspect() string {
 	for _, p := range f.Parameters {
 		params = append(params, p.Name.Value)
 	}
-	return fmt.Sprintf("函数(%s) { ... }", strings.Join(params, ", "))
+	var out strings.Builder
+	out.WriteString("函数")
+	if len(f.GenericParams) > 0 {
+		out.WriteString("<")
+		gps := []string{}
+		for _, p := range f.GenericParams {
+			gps = append(gps, p.String())
+		}
+		out.WriteString(strings.Join(gps, ", "))
+		out.WriteString(">")
+	}
+	out.WriteString(fmt.Sprintf("(%s) { ... }", strings.Join(params, ", ")))
+	return out.String()
 }
 
 type Array struct {
@@ -247,7 +259,7 @@ func (c *Continue) Inspect() string  { return "继续" }
 
 type Class struct {
 	Name          string
-	GenericParams []string // 泛型参数
+	GenericParams []*ast.GenericParam // 泛型参数
 	Parent        *Class
 	Fields        map[string]Object
 	Methods       map[string]*Function
@@ -260,7 +272,13 @@ func (c *Class) Inspect() string {
 	var out strings.Builder
 	out.WriteString("型 " + c.Name)
 	if len(c.GenericParams) > 0 {
-		out.WriteString("<" + strings.Join(c.GenericParams, ", ") + ">")
+		out.WriteString("<")
+		gps := []string{}
+		for _, p := range c.GenericParams {
+			gps = append(gps, p.String())
+		}
+		out.WriteString(strings.Join(gps, ", "))
+		out.WriteString(">")
 	}
 	out.WriteString(" { ... }")
 	return out.String()

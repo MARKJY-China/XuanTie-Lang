@@ -673,14 +673,21 @@ func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) obje
 		Fields:   make(map[string]object.Object),
 	}
 
-	// 绑定泛型参数
+	// 绑定泛型参数并校验约束
 	if len(class.GenericParams) > 0 {
 		if len(ne.TypeArguments) > 0 {
 			if len(ne.TypeArguments) != len(class.GenericParams) {
 				return newError(ne.GetLine(), "泛型参数数量不匹配: 期望 %d, 得到 %d", len(class.GenericParams), len(ne.TypeArguments))
 			}
 			for i, p := range class.GenericParams {
-				instance.TypeArgs[p] = ne.TypeArguments[i]
+				actualType := ne.TypeArguments[i]
+				// 校验约束
+				if p.Constraint != "" {
+					if !checkConstraint(p.Constraint, actualType, env) {
+						return newError(ne.GetLine(), "泛型参数 '%s' 不满足约束 '%s': 实际得到 '%s'", p.Name, p.Constraint, actualType)
+					}
+				}
+				instance.TypeArgs[p.Name] = actualType
 			}
 		}
 	}
@@ -1634,7 +1641,14 @@ func applyFunctionWithGenerics(line int, name string, fn object.Object, args []o
 					return newError(line, "泛型参数数量不匹配: 期望 %d, 得到 %d", len(function.GenericParams), len(typeArgs))
 				}
 				for i, p := range function.GenericParams {
-					boundTypeArgs[p] = typeArgs[i]
+					actualType := typeArgs[i]
+					// 校验约束
+					if p.Constraint != "" {
+						if !checkConstraint(p.Constraint, actualType, function.Env) {
+							return newError(line, "泛型参数 '%s' 不满足约束 '%s': 实际得到 '%s'", p.Name, p.Constraint, actualType)
+						}
+					}
+					boundTypeArgs[p.Name] = actualType
 				}
 			}
 		}
@@ -2100,6 +2114,46 @@ func evalExecuteExpression(ee *ast.ExecuteExpression, env map[string]object.Obje
 	return &object.Result{IsSuccess: true, Value: &object.String{Value: string(out)}}
 }
 
+func checkConstraint(constraint string, actualType string, env map[string]object.Object) bool {
+	if constraint == "" {
+		return true
+	}
+
+	// 我们需要创建一个该类型的模拟实例来进行校验
+	// 但这比较重。简化的做法是检查 actualType 是否满足 constraint 契约。
+	if actualType == constraint {
+		return true
+	}
+
+	// 获取实际类型的对象
+	actualTypeObj, ok := env[actualType]
+	if !ok {
+		// 可能是内置类型，目前我们只支持对类和接口的约束
+		return false
+	}
+
+	// 获取约束类型的对象
+	constraintObj, ok := env[constraint]
+	if !ok {
+		return false
+	}
+
+	switch c := constraintObj.(type) {
+	case *object.Class:
+		if a, ok := actualTypeObj.(*object.Class); ok {
+			return isSubclassOf(a, c)
+		}
+	case *object.Interface:
+		if a, ok := actualTypeObj.(*object.Class); ok {
+			// 创建一个模拟实例来检查接口实现
+			mockInstance := &object.Instance{Class: a}
+			return implementsInterface(mockInstance, c)
+		}
+	}
+
+	return false
+}
+
 func checkType(expectedType string, val object.Object, env map[string]object.Object) object.Object {
 	return checkTypeWithGenerics(expectedType, val, env, nil)
 }
@@ -2157,12 +2211,12 @@ func checkTypeWithGenerics(expectedType string, val object.Object, env map[strin
 				return &object.Error{Message: fmt.Sprintf("泛型参数数量不匹配: 期望 %d, 得到 %d", len(class.GenericParams), len(typeArgs))}
 			}
 			for i, p := range class.GenericParams {
-				actualArg := instance.TypeArgs[p]
+				actualArg := instance.TypeArgs[p.Name]
 				expectedArg := typeArgs[i]
 				// 递归校验泛型参数
 				// 注意：这里我们简单对比类型名字符串，或者可以进行更深度的类型兼容性检查
 				if actualArg != expectedArg {
-					return &object.Error{Message: fmt.Sprintf("泛型参数 '%s' 类型不匹配: 期望 %s, 得到 %s", p, expectedArg, actualArg)}
+					return &object.Error{Message: fmt.Sprintf("泛型参数 '%s' 类型不匹配: 期望 %s, 得到 %s", p.Name, expectedArg, actualArg)}
 				}
 			}
 			return nil

@@ -1088,25 +1088,33 @@ func (p *Parser) parseTypeAnnotation() string {
 	return typeStr
 }
 
-func (p *Parser) parseGenericParamList() []string {
-	params := []string{}
+func (p *Parser) parseGenericParamList() []*ast.GenericParam {
+	params := []*ast.GenericParam{}
 
 	if p.peek.Type == token.TOKEN_GT {
 		p.nextToken()
 		return params
 	}
 
-	if !p.expectPeek(token.TOKEN_IDENT) {
-		return nil
+	p.nextToken() // move to first param name
+	param := &ast.GenericParam{Name: p.cur.Literal}
+	if p.peek.Type == token.TOKEN_INHERIT {
+		p.nextToken() // cur: 承
+		param.Constraint = p.parseTypeAnnotation()
 	}
-	params = append(params, p.cur.Literal)
+	params = append(params, param)
 
 	for p.peek.Type == token.TOKEN_COMMA {
-		p.nextToken()
+		p.nextToken() // cur: ,
 		if !p.expectPeek(token.TOKEN_IDENT) {
 			return nil
 		}
-		params = append(params, p.cur.Literal)
+		param := &ast.GenericParam{Name: p.cur.Literal}
+		if p.peek.Type == token.TOKEN_INHERIT {
+			p.nextToken() // cur: 承
+			param.Constraint = p.parseTypeAnnotation()
+		}
+		params = append(params, param)
 	}
 
 	if !p.expectPeek(token.TOKEN_GT) {
