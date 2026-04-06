@@ -101,9 +101,9 @@ func (p *Parser) parseStatement() ast.Statement {
 	case token.TOKEN_IMPORT:
 		return p.parseExpressionStatement()
 	case token.TOKEN_TYPE_DEF:
-		return p.parseTypeDefinitionStatement()
+		return p.parseTypeDefinitionStatement("")
 	case token.TOKEN_INTERFACE:
-		return p.parseInterfaceStatement()
+		return p.parseInterfaceStatement("")
 	case token.TOKEN_FUNCTION:
 		if p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_NEW {
 			return p.parseFunctionStatement("")
@@ -134,6 +134,16 @@ func (p *Parser) parseImportExpression() ast.Expression {
 	}
 
 	exp.Path = p.cur.Literal
+
+	// 支持 引 "路径" 予 别名
+	if p.peek.Type == token.TOKEN_GIVE {
+		p.nextToken() // cur: 予
+		if !p.expectPeek(token.TOKEN_IDENT) {
+			return nil
+		}
+		exp.Alias = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+	}
+
 	return exp
 }
 
@@ -159,6 +169,14 @@ func (p *Parser) parseMemberStatement() ast.Statement {
 
 	if p.cur.Type == token.TOKEN_FUNCTION {
 		return p.parseFunctionStatement(visibility)
+	}
+
+	if p.cur.Type == token.TOKEN_TYPE_DEF {
+		return p.parseTypeDefinitionStatement(visibility)
+	}
+
+	if p.cur.Type == token.TOKEN_INTERFACE {
+		return p.parseInterfaceStatement(visibility)
 	}
 
 	return p.parseVarStatement(visibility)
@@ -304,8 +322,8 @@ func (p *Parser) parseForStatement() *ast.ForStatement {
 	return stmt
 }
 
-func (p *Parser) parseInterfaceStatement() *ast.InterfaceStatement {
-	stmt := &ast.InterfaceStatement{Token: p.cur}
+func (p *Parser) parseInterfaceStatement(visibility token.TokenType) *ast.InterfaceStatement {
+	stmt := &ast.InterfaceStatement{Token: p.cur, Visibility: visibility}
 
 	if !p.expectPeek(token.TOKEN_IDENT) {
 		return nil
@@ -616,8 +634,8 @@ func (p *Parser) parseInfixExpression(left ast.Expression) ast.Expression {
 	return exp
 }
 
-func (p *Parser) parseTypeDefinitionStatement() *ast.TypeDefinitionStatement {
-	stmt := &ast.TypeDefinitionStatement{Token: p.cur}
+func (p *Parser) parseTypeDefinitionStatement(visibility token.TokenType) *ast.TypeDefinitionStatement {
+	stmt := &ast.TypeDefinitionStatement{Token: p.cur, Visibility: visibility}
 
 	if !p.expectPeek(token.TOKEN_IDENT) {
 		return nil
@@ -692,7 +710,21 @@ func (p *Parser) parseNewExpression() ast.Expression {
 	p.nextToken() // cur: type identifier
 
 	// 限制类型部分只解析标识符或成员访问，不解析调用
-	exp.Type = p.parseExpression(CALL)
+	// 我们先解析第一个标识符
+	exp.Type = p.parseExpression(DOT)
+
+	// 手动解析后续的成员访问，以避免 parseMemberCallExpression 吞掉括号
+	for p.peek.Type == token.TOKEN_DOT {
+		p.nextToken() // cur: .
+		if !p.expectPeek(token.TOKEN_IDENT) {
+			return nil
+		}
+		exp.Type = &ast.MemberCallExpression{
+			Token:  p.cur,
+			Object: exp.Type,
+			Member: &ast.Identifier{Token: p.cur, Value: p.cur.Literal},
+		}
+	}
 
 	// 检查泛型实际类型 <整>
 	if p.peek.Type == token.TOKEN_LT {
@@ -950,8 +982,8 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 func (p *Parser) parseMemberCallExpression(left ast.Expression) ast.Expression {
 	exp := &ast.MemberCallExpression{Token: p.cur, Object: left}
-	// 允许 接着, 否则 以及其他标识符作为成员名
-	if p.peek.Type != token.TOKEN_IDENT && p.peek.Type != token.TOKEN_THEN && p.peek.Type != token.TOKEN_ELSE {
+	// 允许 接着, 否则, 函数 以及其他标识符作为成员名
+	if !p.isMemberName(p.peek.Type) {
 		p.errors = append(p.errors, fmt.Sprintf("预期下一个 Token 为成员名，但实际得到 %s", p.peek.Type))
 		return nil
 	}
@@ -963,6 +995,16 @@ func (p *Parser) parseMemberCallExpression(left ast.Expression) ast.Expression {
 		exp.Arguments = p.parseCallArguments()
 	}
 	return exp
+}
+
+func (p *Parser) isMemberName(t token.TokenType) bool {
+	switch t {
+	case token.TOKEN_IDENT, token.TOKEN_THEN, token.TOKEN_ELSE, token.TOKEN_FUNCTION,
+		token.TOKEN_INT_TYPE, token.TOKEN_STRING_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_FLOAT_TYPE:
+		return true
+	default:
+		return false
+	}
 }
 
 func (p *Parser) parseAwaitExpression() ast.Expression {

@@ -265,6 +265,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_EXECUTE
 	case "道":
 		return token.TOKEN_CHANNEL
+	case "予":
+		return token.TOKEN_GIVE
 	case "私":
 		return token.TOKEN_PRIVATE
 	case "公":

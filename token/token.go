@@ -73,6 +73,7 @@ const (
 	TOKEN_REQUEST     TokenType = "求"
 	TOKEN_EXECUTE     TokenType = "执"
 	TOKEN_CHANNEL     TokenType = "道"
+	TOKEN_GIVE        TokenType = "予"
 	TOKEN_PRIVATE     TokenType = "私"
 	TOKEN_PUBLIC      TokenType = "公"
 	TOKEN_PROTECTED   TokenType = "护"

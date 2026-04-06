@@ -34,6 +34,7 @@ const (
 	CHANNEL_OBJ      ObjectType = "CHANNEL"
 	HTTP_RES_OBJ     ObjectType = "HTTP_RES"
 	BYTES_OBJ        ObjectType = "BYTES"
+	FFI_FUNCTION_OBJ ObjectType = "FFI_FUNCTION"
 )
 
 type Object interface {
@@ -206,18 +207,18 @@ type Bytes struct {
 }
 
 func (b *Bytes) Type() ObjectType { return BYTES_OBJ }
-func (b *Bytes) Inspect() string {
-	var out strings.Builder
-	out.WriteString("字节[")
-	for i, b := range b.Value {
-		if i > 0 {
-			out.WriteString(" ")
-		}
-		out.WriteString(fmt.Sprintf("%02X", b))
-	}
-	out.WriteString("]")
-	return out.String()
+func (b *Bytes) Inspect() string  { return fmt.Sprintf("字节(%d)", len(b.Value)) }
+
+type FFIFunction struct {
+	Name       string
+	Path       string
+	Handle     uintptr
+	ParamTypes []string
+	ReturnType string
 }
+
+func (f *FFIFunction) Type() ObjectType { return FFI_FUNCTION_OBJ }
+func (f *FFIFunction) Inspect() string  { return fmt.Sprintf("外部函数 %s (%s)", f.Name, f.Path) }
 
 type Result struct {
 	IsSuccess bool

@@ -293,6 +293,7 @@ type TypeDefinitionStatement struct {
 	GenericParams []*GenericParam // 泛型参数，如 <T 承 会飞的, U>
 	Parent        *Identifier     // 继承的父类名
 	Block         []Statement
+	Visibility    token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC
 }
 
 func (tds *TypeDefinitionStatement) statementNode()       {}
@@ -300,6 +301,9 @@ func (tds *TypeDefinitionStatement) TokenLiteral() string { return tds.Token.Lit
 func (tds *TypeDefinitionStatement) GetLine() int         { return tds.Token.Line }
 func (tds *TypeDefinitionStatement) String() string {
 	var out bytes.Buffer
+	if tds.Visibility != "" {
+		out.WriteString(string(tds.Visibility) + " ")
+	}
 	out.WriteString("型 ")
 	out.WriteString(tds.Name.String())
 	if len(tds.GenericParams) > 0 {
@@ -882,13 +886,19 @@ func (rs *ReturnStatement) String() string {
 type ImportExpression struct {
 	Token token.Token // "引用"
 	Path  string      // 路径字符串
+	Alias *Identifier // 可选别名，用于命名空间
 }
 
 func (ie *ImportExpression) expressionNode()      {}
 func (ie *ImportExpression) TokenLiteral() string { return ie.Token.Literal }
 func (ie *ImportExpression) GetLine() int         { return ie.Token.Line }
 func (ie *ImportExpression) String() string {
-	return "引用 \"" + ie.Path + "\""
+	var out bytes.Buffer
+	out.WriteString("引 \"" + ie.Path + "\"")
+	if ie.Alias != nil {
+		out.WriteString(" 予 " + ie.Alias.String())
+	}
+	return out.String()
 }
 
 // ForStatement 遍历语句
@@ -945,9 +955,10 @@ type MethodSignature struct {
 
 // InterfaceStatement 接口定义语句
 type InterfaceStatement struct {
-	Token   token.Token // '口'
-	Name    *Identifier
-	Methods []*MethodSignature
+	Token      token.Token // '口'
+	Name       *Identifier
+	Methods    []*MethodSignature
+	Visibility token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC
 }
 
 func (is *InterfaceStatement) statementNode()       {}
@@ -955,6 +966,9 @@ func (is *InterfaceStatement) TokenLiteral() string { return is.Token.Literal }
 func (is *InterfaceStatement) GetLine() int         { return is.Token.Line }
 func (is *InterfaceStatement) String() string {
 	var out bytes.Buffer
+	if is.Visibility != "" {
+		out.WriteString(string(is.Visibility) + " ")
+	}
 	out.WriteString("口 ")
 	out.WriteString(is.Name.String())
 	out.WriteString(" { ")

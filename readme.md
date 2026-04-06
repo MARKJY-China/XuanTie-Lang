@@ -1,6 +1,6 @@
 # 玄铁 (XuanTie)
 
-[![版本](https://img.shields.io/badge/版本-0.9.8-blue.svg)](https://gitee.com/mark-jy/xuantie)
+[![版本](https://img.shields.io/badge/版本-0.10.0-blue.svg)](https://gitee.com/mark-jy/xuantie)
 [![语言](https://img.shields.io/badge/语言-Go-00ADD8.svg)](https://golang.org)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
 [![语法指南](https://img.shields.io/badge/文档-语法指南-yellow.svg)](https://www.yuque.com/markjy/upsxwh/mr3r02mv71uloe7o)
