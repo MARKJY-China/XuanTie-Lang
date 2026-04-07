@@ -1,6 +1,7 @@
 package stdlib
 
 import (
+	"bufio"
 	"fmt"
 	"io/ioutil"
 	"math"
@@ -14,6 +15,16 @@ import (
 
 // Builtins 存储所有内置函数和对象
 var Builtins = map[string]object.Object{
+	"输入": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) > 0 {
+				fmt.Print(args[0].Inspect())
+			}
+			reader := bufio.NewReader(os.Stdin)
+			text, _ := reader.ReadString('\n')
+			return &object.String{Value: strings.TrimSpace(text)}
+		},
+	},
 	"文件": &object.Dict{
 		Pairs: map[string]object.Object{
 			"开": &object.Builtin{
