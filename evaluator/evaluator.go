@@ -1010,7 +1010,25 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			if len(args) == 0 {
 				return newError(mce.GetLine(), "包含期望 1 个参数")
 			}
-			return &object.Boolean{Value: strings.Contains(str.Value, args[0].Inspect())}
+			substr := args[0].Inspect()
+			if s, ok := args[0].(*object.String); ok {
+				substr = s.Value
+			}
+			return &object.Boolean{Value: strings.Contains(str.Value, substr)}
+		case "分割":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "分割期望 1 个参数 (分隔符)")
+			}
+			sep := args[0].Inspect()
+			if s, ok := args[0].(*object.String); ok {
+				sep = s.Value
+			}
+			parts := strings.Split(str.Value, sep)
+			elements := make([]object.Object, len(parts))
+			for i, p := range parts {
+				elements[i] = &object.String{Value: p}
+			}
+			return &object.Array{Elements: elements}
 		}
 	}
 
@@ -1331,6 +1349,8 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		case "关":
 			stream.Conn.Close()
 			return &object.Null{}
+		case "Inspect":
+			return &object.String{Value: stream.Inspect()}
 		}
 	}
 

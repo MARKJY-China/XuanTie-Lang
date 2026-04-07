@@ -140,6 +140,27 @@ var Builtins = map[string]object.Object{
 					return &object.Boolean{Value: strings.Contains(args[0].Inspect(), args[1].Inspect())}
 				},
 			},
+			"分割": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 2 {
+						return &object.Error{Message: "期望 2 个参数 (字符串, 分隔符)"}
+					}
+					s := args[0].Inspect()
+					if str, ok := args[0].(*object.String); ok {
+						s = str.Value
+					}
+					sep := args[1].Inspect()
+					if str, ok := args[1].(*object.String); ok {
+						sep = str.Value
+					}
+					parts := strings.Split(s, sep)
+					elements := make([]object.Object, len(parts))
+					for i, p := range parts {
+						elements[i] = &object.String{Value: p}
+					}
+					return &object.Array{Elements: elements}
+				},
+			},
 		},
 	},
 	"数学": &object.Dict{
