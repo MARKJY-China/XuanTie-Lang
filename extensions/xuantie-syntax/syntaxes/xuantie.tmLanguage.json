@@ -25,6 +25,9 @@
 			"include": "#functions"
 		},
 		{
+			"include": "#properties"
+		},
+		{
 			"include": "#variables"
 		},
 		{
@@ -44,19 +47,23 @@
 			"patterns": [
 				{
 					"name": "keyword.control.xt",
-					"match": "\\b(如果|否则|当|返回|尝试|捕捉|接着|异步|等待|并行|引用)\\b"
+					"match": "\\b(若|抑|否|当|循|遍历|于|断|续|返|尝试|捕捉|异步|等待|并行|引|予|接着|且|或|非|是)\\b"
 				},
 				{
 					"name": "storage.type.xt",
-					"match": "\\b(变量|常量|函数)\\b"
+					"match": "\\b(设|常|型|函|造|公|私|护|承|口|变量|常量|函数)\\b"
 				},
 				{
 					"name": "support.type.xt",
-					"match": "\\b(结果|字符串|整数|小数|逻辑|数组|字典)\\b"
+					"match": "\\b(整|小数|字|逻|空|数组|字典|字节|结果|任务|字符串|整数|逻辑)\\b"
 				},
 				{
 					"name": "support.function.xt",
-					"match": "\\b(打印|成功|失败)\\b"
+					"match": "\\b(示|化|解|求|听|连|执|道|成功|失败|打印)\\b"
+				},
+				{
+					"name": "support.class.xt",
+					"match": "\\b(文件|网络|字符串|数学|时|系统|外|时间)\\b"
 				}
 			]
 		},
@@ -65,6 +72,14 @@
 				{
 					"name": "entity.name.function.xt",
 					"match": "([\\p{L}_][\\p{L}\\p{N}_]*)\\s*(?=\\()"
+				}
+			]
+		},
+		"properties": {
+			"patterns": [
+				{
+					"name": "variable.other.property.xt",
+					"match": "(?<=\\.)(长度|追加|截取|删|插|找|映射|过滤|现|睡|读|写|添|建|拷|移|开|关|头|码|送|收|到字|从字|包含|子串|替换|分割|绝对值|正弦|余弦|平方根|随机数|格式化|参数)\\b"
 				}
 			]
 		},
@@ -77,13 +92,28 @@
 			]
 		},
 		"strings": {
-			"name": "string.quoted.double.xt",
-			"begin": "\"",
-			"end": "\"",
 			"patterns": [
 				{
-					"name": "constant.character.escape.xt",
-					"match": "\\\\."
+					"name": "string.quoted.double.xt",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [
+						{
+							"name": "constant.character.escape.xt",
+							"match": "\\\\."
+						}
+					]
+				},
+				{
+					"name": "string.quoted.double.chinese.xt",
+					"begin": "“",
+					"end": "”",
+					"patterns": [
+						{
+							"name": "constant.character.escape.xt",
+							"match": "\\\\."
+						}
+					]
 				}
 			]
 		},
@@ -107,19 +137,19 @@
 				},
 				{
 					"name": "keyword.operator.comparison.xt",
-					"match": "(==|!=|<|>)"
+					"match": "(==|!=|<=|>=|<|>|等于)"
 				},
 				{
 					"name": "keyword.operator.arithmetic.xt",
-					"match": "(\\+|\\-|\\*|/)"
+					"match": "(\\+|\\-|\\*|/|%)"
 				},
 				{
 					"name": "keyword.operator.logical.xt",
-					"match": "(&|且|或|非)"
+					"match": "(&|且|或|非|是|\\|)"
 				},
 				{
 					"name": "keyword.operator.other.xt",
-					"match": "(\\.)"
+					"match": "(\\.|\\?)"
 				}
 			]
 		},
