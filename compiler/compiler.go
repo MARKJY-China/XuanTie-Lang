@@ -334,7 +334,37 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("func toSlice(v interface{}) []interface{} {\n")
 	c.output.WriteString("\tif s, ok := v.(*[]interface{}); ok { return *s }\n")
 	c.output.WriteString("\tif s, ok := v.([]interface{}); ok { return s }\n")
+	c.output.WriteString("\tif s, ok := v.(string); ok {\n")
+	c.output.WriteString("\t\tres := make([]interface{}, len(s))\n")
+	c.output.WriteString("\t\tfor i, r := range s { res[i] = string(r) }\n")
+	c.output.WriteString("\t\treturn res\n")
+	c.output.WriteString("\t}\n")
 	c.output.WriteString("\treturn []interface{}{}\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("type pair struct { K interface{}; V interface{} }\n")
+	c.output.WriteString("func toIterator(v interface{}) []pair {\n")
+	c.output.WriteString("\tif s, ok := v.(*[]interface{}); ok {\n")
+	c.output.WriteString("\t\tres := make([]pair, len(*s))\n")
+	c.output.WriteString("\t\tfor i, item := range *s { res[i] = pair{int64(i), item} }\n")
+	c.output.WriteString("\t\treturn res\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\tif s, ok := v.([]interface{}); ok {\n")
+	c.output.WriteString("\t\tres := make([]pair, len(s))\n")
+	c.output.WriteString("\t\tfor i, item := range s { res[i] = pair{int64(i), item} }\n")
+	c.output.WriteString("\t\treturn res\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\tif m, ok := v.(map[string]interface{}); ok {\n")
+	c.output.WriteString("\t\tres := make([]pair, 0, len(m))\n")
+	c.output.WriteString("\t\tfor k, val := range m { res = append(res, pair{k, val}) }\n")
+	c.output.WriteString("\t\treturn res\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\tif s, ok := v.(string); ok {\n")
+	c.output.WriteString("\t\tres := make([]pair, len(s))\n")
+	c.output.WriteString("\t\tfor i, r := range s { res[i] = pair{int64(i), string(r)} }\n")
+	c.output.WriteString("\t\treturn res\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn []pair{}\n")
 	c.output.WriteString("}\n\n")
 
 	c.output.WriteString("func listen(addr interface{}, callback interface{}, paramCount int) interface{} {\n")
@@ -876,8 +906,13 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 	case *ast.ForStatement:
 		// 基础遍历实现
-		c.output.WriteString(fmt.Sprintf("%sfor _, _val := range toSlice(%s) {\n", indentStr, c.expressionCode(s.Iterable, false)))
-		c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _val\n", indentStr, s.Variable.Value))
+		c.output.WriteString(fmt.Sprintf("%sfor _, _p := range toIterator(%s) {\n", indentStr, c.expressionCode(s.Iterable, false)))
+		if len(s.Variables) == 1 {
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.V\n", indentStr, s.Variables[0].Value))
+		} else if len(s.Variables) >= 2 {
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.K\n", indentStr, s.Variables[0].Value))
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.V\n", indentStr, s.Variables[1].Value))
+		}
 		c.writeStatementsWithDeclarations(s.Block, indent+1)
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
 	case *ast.BreakStatement:

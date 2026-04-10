@@ -327,17 +327,17 @@ var Builtins = map[string]object.Object{
 			}
 			switch arg := args[0].(type) {
 			case *object.Integer:
-				return arg
+				return &object.Result{IsSuccess: true, Value: arg}
 			case *object.Float:
-				return &object.Integer{Value: int64(arg.Value)}
+				return &object.Result{IsSuccess: true, Value: &object.Integer{Value: int64(arg.Value)}}
 			case *object.String:
 				val, err := strconv.ParseInt(arg.Value, 0, 64)
 				if err != nil {
-					return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+					return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 				}
 				return &object.Result{IsSuccess: true, Value: &object.Integer{Value: val}}
 			default:
-				return &object.Error{Message: fmt.Sprintf("无法转换为整数: %s", arg.Type())}
+				return &object.Result{IsSuccess: false, Error: &object.String{Value: fmt.Sprintf("无法转换为整数: %s", arg.Type())}}
 			}
 		},
 	},
@@ -348,17 +348,17 @@ var Builtins = map[string]object.Object{
 			}
 			switch arg := args[0].(type) {
 			case *object.Integer:
-				return &object.Float{Value: float64(arg.Value)}
+				return &object.Result{IsSuccess: true, Value: &object.Float{Value: float64(arg.Value)}}
 			case *object.Float:
-				return arg
+				return &object.Result{IsSuccess: true, Value: arg}
 			case *object.String:
 				val, err := strconv.ParseFloat(arg.Value, 64)
 				if err != nil {
-					return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+					return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 				}
 				return &object.Result{IsSuccess: true, Value: &object.Float{Value: val}}
 			default:
-				return &object.Error{Message: fmt.Sprintf("无法转换为小数: %s", arg.Type())}
+				return &object.Result{IsSuccess: false, Error: &object.String{Value: fmt.Sprintf("无法转换为小数: %s", arg.Type())}}
 			}
 		},
 	},

@@ -354,7 +354,15 @@ func (p *Parser) parseForStatement() *ast.ForStatement {
 	if !p.expectPeek(token.TOKEN_IDENT) {
 		return nil
 	}
-	stmt.Variable = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+	stmt.Variables = append(stmt.Variables, &ast.Identifier{Token: p.cur, Value: p.cur.Literal})
+
+	for p.peek.Type == token.TOKEN_COMMA {
+		p.nextToken() // cur: ,
+		if !p.expectPeek(token.TOKEN_IDENT) {
+			return nil
+		}
+		stmt.Variables = append(stmt.Variables, &ast.Identifier{Token: p.cur, Value: p.cur.Literal})
+	}
 
 	if !p.expectPeek(token.TOKEN_IN) {
 		return nil

@@ -1011,10 +1011,10 @@ func (ie *ImportExpression) String() string {
 
 // ForStatement 遍历语句
 type ForStatement struct {
-	Token    token.Token // "遍历"
-	Variable *Identifier
-	Iterable Expression
-	Block    []Statement
+	Token     token.Token // "遍历"
+	Variables []*Identifier
+	Iterable  Expression
+	Block     []Statement
 }
 
 func (fs *ForStatement) statementNode()       {}
@@ -1023,7 +1023,11 @@ func (fs *ForStatement) GetLine() int         { return fs.Token.Line }
 func (fs *ForStatement) String() string {
 	var out bytes.Buffer
 	out.WriteString("遍历 ")
-	out.WriteString(fs.Variable.String())
+	vars := []string{}
+	for _, v := range fs.Variables {
+		vars = append(vars, v.String())
+	}
+	out.WriteString(strings.Join(vars, ", "))
 	out.WriteString(" 于 ")
 	out.WriteString(fs.Iterable.String())
 	out.WriteString(" { ")

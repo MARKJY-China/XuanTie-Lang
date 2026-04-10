@@ -577,10 +577,14 @@ func evalForStatement(fs *ast.ForStatement, env map[string]object.Object) object
 
 	switch obj := iterable.(type) {
 	case *object.Array:
-		for _, element := range obj.Elements {
-			// 为每个迭代创建新的局部作用域
+		for i, element := range obj.Elements {
 			loopEnv := extendEnv(env)
-			loopEnv[fs.Variable.Value] = element
+			if len(fs.Variables) == 1 {
+				loopEnv[fs.Variables[0].Value] = element
+			} else if len(fs.Variables) >= 2 {
+				loopEnv[fs.Variables[0].Value] = &object.Integer{Value: int64(i)}
+				loopEnv[fs.Variables[1].Value] = element
+			}
 
 			result := evalBlock(fs.Block, loopEnv)
 			if result != nil {
@@ -597,9 +601,14 @@ func evalForStatement(fs *ast.ForStatement, env map[string]object.Object) object
 			}
 		}
 	case *object.Dict:
-		for key := range obj.Pairs {
+		for key, val := range obj.Pairs {
 			loopEnv := extendEnv(env)
-			loopEnv[fs.Variable.Value] = &object.String{Value: key}
+			if len(fs.Variables) == 1 {
+				loopEnv[fs.Variables[0].Value] = &object.String{Value: key}
+			} else if len(fs.Variables) >= 2 {
+				loopEnv[fs.Variables[0].Value] = &object.String{Value: key}
+				loopEnv[fs.Variables[1].Value] = val
+			}
 
 			result := evalBlock(fs.Block, loopEnv)
 			if result != nil {
@@ -616,9 +625,14 @@ func evalForStatement(fs *ast.ForStatement, env map[string]object.Object) object
 			}
 		}
 	case *object.String:
-		for _, r := range obj.Value {
+		for i, r := range obj.Value {
 			loopEnv := extendEnv(env)
-			loopEnv[fs.Variable.Value] = &object.String{Value: string(r)}
+			if len(fs.Variables) == 1 {
+				loopEnv[fs.Variables[0].Value] = &object.String{Value: string(r)}
+			} else if len(fs.Variables) >= 2 {
+				loopEnv[fs.Variables[0].Value] = &object.Integer{Value: int64(i)}
+				loopEnv[fs.Variables[1].Value] = &object.String{Value: string(r)}
+			}
 
 			result := evalBlock(fs.Block, loopEnv)
 			if result != nil {
@@ -1492,9 +1506,9 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 	// 处理通道对象的成员调用
 	if channel, ok := obj.(*object.Channel); ok {
 		switch mce.Member.Value {
-		case "送":
+		case "发", "送":
 			if len(args) == 0 {
-				return newError(mce.GetLine(), "送期望 1 个参数")
+				return newError(mce.GetLine(), "%s期望 1 个参数", mce.Member.Value)
 			}
 			channel.Value <- args[0]
 			return &object.Null{}
