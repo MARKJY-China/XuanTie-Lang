@@ -716,6 +716,70 @@ func (ie *InfixExpression) String() string {
 	return out.String()
 }
 
+// Walk 深度优先遍历 AST
+func Walk(node Node, fn func(Node)) {
+	if node == nil {
+		return
+	}
+	fn(node)
+	switch n := node.(type) {
+	case *Program:
+		for _, s := range n.Statements {
+			Walk(s, fn)
+		}
+	case *ExpressionStatement:
+		Walk(n.Expression, fn)
+	case *InfixExpression:
+		Walk(n.Left, fn)
+		Walk(n.Right, fn)
+	case *PrefixExpression:
+		Walk(n.Right, fn)
+	case *CallExpression:
+		Walk(n.Function, fn)
+		for _, a := range n.Arguments {
+			Walk(a, fn)
+		}
+	case *MemberCallExpression:
+		Walk(n.Object, fn)
+		Walk(n.Member, fn)
+		for _, a := range n.Arguments {
+			Walk(a, fn)
+		}
+	case *ArrayLiteral:
+		for _, e := range n.Elements {
+			Walk(e, fn)
+		}
+	case *DictLiteral:
+		for k, v := range n.Pairs {
+			Walk(k, fn)
+			Walk(v, fn)
+		}
+	case *IfStatement:
+		Walk(n.Condition, fn)
+		for _, s := range n.ThenBlock {
+			Walk(s, fn)
+		}
+		for _, eif := range n.ElseIfs {
+			Walk(eif.Condition, fn)
+			for _, s := range eif.Block {
+				Walk(s, fn)
+			}
+		}
+		for _, s := range n.ElseBlock {
+			Walk(s, fn)
+		}
+	case *WhileStatement:
+		Walk(n.Condition, fn)
+		for _, s := range n.Block {
+			Walk(s, fn)
+		}
+	case *FunctionLiteral:
+		for _, s := range n.Body {
+			Walk(s, fn)
+		}
+	}
+}
+
 // FunctionLiteral 函数定义
 // Parameter 函数参数
 type Parameter struct {

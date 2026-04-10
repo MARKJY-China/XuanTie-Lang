@@ -20,6 +20,8 @@ const (
 	TOKEN_MOD       TokenType = "%"
 	TOKEN_LT        TokenType = "<"
 	TOKEN_GT        TokenType = ">"
+	TOKEN_LE        TokenType = "<="
+	TOKEN_GE        TokenType = ">="
 	TOKEN_EQ        TokenType = "=="
 	TOKEN_NEQ       TokenType = "!="
 	TOKEN_LPAREN    TokenType = "("
@@ -92,6 +94,8 @@ const (
 	TOKEN_ARRAY_TYPE  TokenType = "数组"
 	TOKEN_DICT_TYPE   TokenType = "字典"
 	TOKEN_BYTES_TYPE  TokenType = "字节"
+
+	TOKEN_THIS TokenType = "此"
 )
 
 type Token struct {

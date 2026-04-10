@@ -234,6 +234,13 @@ func (r *Result) Inspect() string {
 	return fmt.Sprintf("失败(%s)", r.Error.Inspect())
 }
 
+func (r *Result) String() string {
+	if r.IsSuccess {
+		return fmt.Sprintf("成功(%s)", r.Value.Inspect())
+	}
+	return fmt.Sprintf("失败(%s)", r.Error.Inspect())
+}
+
 type Task struct {
 	Channel chan Object
 	Value   Object

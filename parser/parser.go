@@ -3,6 +3,7 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/token"
@@ -30,6 +31,8 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_NEQ:       EQUALS,
 	token.TOKEN_LT:        LESSGREATER,
 	token.TOKEN_GT:        LESSGREATER,
+	token.TOKEN_LE:        LESSGREATER,
+	token.TOKEN_GE:        LESSGREATER,
 	token.TOKEN_PLUS:      SUM,
 	token.TOKEN_MINUS:     SUM,
 	token.TOKEN_MUL:       PRODUCT,
@@ -465,17 +468,19 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.TOKEN_IDENT:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE:
-		leftExp = &ast.TypeLiteral{Token: p.cur, Value: p.cur.Literal}
+		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_NUMBER:
 		leftExp = p.parseIntegerLiteral()
 	case token.TOKEN_FLOAT:
 		leftExp = p.parseFloatLiteral()
 	case token.TOKEN_STRING:
-		leftExp = &ast.StringLiteral{Token: p.cur, Value: p.cur.Literal}
+		leftExp = p.parseStringLiteral()
 	case token.TOKEN_TRUE, token.TOKEN_FALSE:
 		leftExp = &ast.BooleanLiteral{Token: p.cur, Value: p.cur.Type == token.TOKEN_TRUE}
 	case token.TOKEN_NULL:
 		leftExp = &ast.Identifier{Token: p.cur, Value: "空"}
+	case token.TOKEN_THIS:
+		leftExp = &ast.Identifier{Token: p.cur, Value: "此"}
 	case token.TOKEN_FUNCTION:
 		leftExp = p.parseFunctionLiteral()
 	case token.TOKEN_ASYNC:
@@ -524,7 +529,10 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 	for p.peek.Type != token.TOKEN_EOF && precedence < p.peekPrecedence() {
 		switch p.peek.Type {
-		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD, token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND, token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS:
+		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD,
+			token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND,
+			token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS,
+			token.TOKEN_LE, token.TOKEN_GE:
 			p.nextToken()
 			leftExp = p.parseInfixExpression(leftExp)
 		case token.TOKEN_LT:
@@ -579,6 +587,131 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	}
 
 	return leftExp
+}
+
+func (p *Parser) parseStringLiteral() ast.Expression {
+	lit := &ast.StringLiteral{Token: p.cur, Value: p.cur.Literal}
+	if !strings.Contains(lit.Value, "${") {
+		return lit
+	}
+
+	var expressions []ast.Expression
+	str := lit.Value
+	for {
+		start := strings.Index(str, "${")
+		if start == -1 {
+			if str != "" {
+				expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: str})
+			}
+			break
+		}
+
+		if start > 0 {
+			expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: str[:start]})
+		}
+
+		str = str[start+2:]
+
+		// 寻找匹配的 }
+		depth := 1
+		end := -1
+		for i := 0; i < len(str); i++ {
+			char := str[i]
+			if char == '{' {
+				depth++
+			} else if char == '}' {
+				depth--
+				if depth == 0 {
+					end = i
+					break
+				}
+			}
+		}
+
+		if end == -1 {
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d] 字符串插值未闭合", p.cur.Line))
+			return lit
+		}
+
+		exprStr := str[:end]
+		subLexer := lexer.New(exprStr)
+		subParser := New(subLexer)
+		subExpr := subParser.parseExpression(LOWEST)
+		if subExpr != nil {
+			// 递归设置所有子节点的行号和列号，确保在错误信息中正确显示
+			ast.Walk(subExpr, func(node ast.Node) {
+				if node != nil {
+					// 尝试设置所有类型的行号
+					switch n := node.(type) {
+					case *ast.Identifier:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.IntegerLiteral:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.FloatLiteral:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.StringLiteral:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.BooleanLiteral:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.InfixExpression:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.CallExpression:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.MemberCallExpression:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.PrefixExpression:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.ArrayLiteral:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.DictLiteral:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					case *ast.IndexExpression:
+						n.Token.Line = p.cur.Line
+						n.Token.Column = p.cur.Column + start + 2
+					}
+				}
+			})
+			expressions = append(expressions, subExpr)
+		}
+
+		str = str[end+1:]
+	}
+
+	if len(expressions) == 0 {
+		return lit
+	}
+	if len(expressions) == 1 {
+		return expressions[0]
+	}
+
+	res := &ast.InfixExpression{
+		Token:    token.Token{Type: token.TOKEN_AMPERSAND, Literal: "&", Line: p.cur.Line},
+		Left:     expressions[0],
+		Operator: "&",
+		Right:    expressions[1],
+	}
+
+	for i := 2; i < len(expressions); i++ {
+		res = &ast.InfixExpression{
+			Token:    token.Token{Type: token.TOKEN_AMPERSAND, Literal: "&", Line: p.cur.Line},
+			Left:     res,
+			Operator: "&",
+			Right:    expressions[i],
+		}
+	}
+
+	return res
 }
 
 func (p *Parser) parseIntegerLiteral() ast.Expression {
@@ -982,25 +1115,28 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 
 func (p *Parser) parseMemberCallExpression(left ast.Expression) ast.Expression {
 	exp := &ast.MemberCallExpression{Token: p.cur, Object: left}
-	// 允许 接着, 否则, 函数 以及其他标识符作为成员名
+
 	if !p.isMemberName(p.peek.Type) {
-		p.errors = append(p.errors, fmt.Sprintf("预期下一个 Token 为成员名，但实际得到 %s", p.peek.Type))
+		p.errors = append(p.errors, "预期下一个 Token 为成员名，但实际得到 "+string(p.peek.Type))
 		return nil
 	}
 	p.nextToken()
+
 	exp.Member = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 
 	if p.peek.Type == token.TOKEN_LPAREN {
-		p.nextToken() // cur: (
+		p.nextToken()
 		exp.Arguments = p.parseCallArguments()
 	}
+
 	return exp
 }
 
 func (p *Parser) isMemberName(t token.TokenType) bool {
 	switch t {
 	case token.TOKEN_IDENT, token.TOKEN_THEN, token.TOKEN_ELSE, token.TOKEN_FUNCTION,
-		token.TOKEN_INT_TYPE, token.TOKEN_STRING_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_FLOAT_TYPE:
+		token.TOKEN_INT_TYPE, token.TOKEN_STRING_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_FLOAT_TYPE,
+		token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
 		return true
 	default:
 		return false

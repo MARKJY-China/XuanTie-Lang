@@ -51,18 +51,18 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 			return val
 		}
 		if _, ok := env[n.Name]; !ok {
+			// 检查是否在修改 '此' 的属性
+			if self, ok := env["__SELF__"]; ok {
+				if instance, ok := self.(*object.Instance); ok {
+					if _, ok := instance.Fields[n.Name]; ok {
+						instance.Fields[n.Name] = val
+						return val
+					}
+				}
+			}
 			return newError(n.GetLine(), "未定义的变量: %s", n.Name)
 		}
 		env[n.Name] = val
-
-		// 如果在实例方法中，同步修改实例字段
-		if self, ok := env["__SELF__"]; ok {
-			if instance, ok := self.(*object.Instance); ok {
-				if _, ok := instance.Fields[n.Name]; ok {
-					instance.Fields[n.Name] = val
-				}
-			}
-		}
 		return val
 	case *ast.VarStatement:
 		val := EvalContext(n.Value, env, true)
@@ -186,7 +186,7 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 				return &object.Result{IsSuccess: false, Error: args[0]}
 			}
 		}
-		function := Eval(n.Function, env)
+		function := EvalContext(n.Function, env, isAssignment)
 		if isError(function) {
 			return function
 		}
@@ -206,6 +206,14 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 	case *ast.MemberCallExpression:
 		return evalMemberCallExpression(n, env)
 	case *ast.MemberAssignStatement:
+		obj := EvalContext(n.Object, env, true)
+		if isError(obj) {
+			return obj
+		}
+		val := EvalContext(n.Value, env, true)
+		if isError(val) {
+			return val
+		}
 		return evalMemberAssignStatement(n, env)
 	case *ast.IndexExpression:
 		left := Eval(n.Left, env)
@@ -236,6 +244,12 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 	case *ast.TypeLiteral:
 		return &object.String{Value: n.Value}
 	case *ast.Identifier:
+		if n.Value == "此" {
+			if self, ok := env["__SELF__"]; ok {
+				return self
+			}
+			return newError(n.GetLine(), "关键字 '此' 只能在类方法中使用")
+		}
 		return evalIdentifier(n, env)
 	case *ast.InfixExpression:
 		if n.Operator == "且" {
@@ -1029,6 +1043,21 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 				elements[i] = &object.String{Value: p}
 			}
 			return &object.Array{Elements: elements}
+		case "替换":
+			if len(args) != 2 {
+				return newError(mce.GetLine(), "替换期望 2 个参数 (旧串, 新串)")
+			}
+			oldStr := args[0].Inspect()
+			if s, ok := args[0].(*object.String); ok {
+				oldStr = s.Value
+			}
+			newStr := args[1].Inspect()
+			if s, ok := args[1].(*object.String); ok {
+				newStr = s.Value
+			}
+			return &object.String{Value: strings.ReplaceAll(str.Value, oldStr, newStr)}
+		case "修剪":
+			return &object.String{Value: strings.TrimSpace(str.Value)}
 		}
 	}
 
@@ -1140,7 +1169,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		case "映射":
 			memberVal = &object.Builtin{
 				Fn: func(fArgs ...object.Object) object.Object {
-					if len(fArgs) != 1 {
+					if len(fArgs) < 1 {
 						return newError(mce.GetLine(), "映射期望 1 个参数 (回调函数)")
 					}
 					fn := fArgs[0]
@@ -1158,7 +1187,7 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 		case "过滤":
 			memberVal = &object.Builtin{
 				Fn: func(fArgs ...object.Object) object.Object {
-					if len(fArgs) != 1 {
+					if len(fArgs) < 1 {
 						return newError(mce.GetLine(), "过滤期望 1 个参数 (谓词函数)")
 					}
 					fn := fArgs[0]
@@ -1187,6 +1216,42 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 	// 处理字典/模块的成员调用
 	if dict, ok := obj.(*object.Dict); ok {
+		// 字典内置方法
+		switch mce.Member.Value {
+		case "键":
+			keys := make([]object.Object, 0, len(dict.Pairs))
+			for k := range dict.Pairs {
+				keys = append(keys, &object.String{Value: k})
+			}
+			return &object.Array{Elements: keys}
+		case "值":
+			values := make([]object.Object, 0, len(dict.Pairs))
+			for _, v := range dict.Pairs {
+				values = append(values, v)
+			}
+			return &object.Array{Elements: values}
+		case "含":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "含期望 1 个参数 (键)")
+			}
+			key := args[0].Inspect()
+			if s, ok := args[0].(*object.String); ok {
+				key = s.Value
+			}
+			_, ok := dict.Pairs[key]
+			return &object.Boolean{Value: ok}
+		case "删":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "删期望 1 个参数 (键)")
+			}
+			key := args[0].Inspect()
+			if s, ok := args[0].(*object.String); ok {
+				key = s.Value
+			}
+			delete(dict.Pairs, key)
+			return dict
+		}
+
 		if val, ok := dict.Pairs[mce.Member.Value]; ok {
 			// 特殊处理 '外' 模块的调用
 			if self, ok := dict.Pairs["__NAME__"]; ok && self.Inspect() == "外" {

@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 	"xuantie/object"
@@ -32,7 +33,20 @@ var Builtins = map[string]object.Object{
 					if len(args) != 1 {
 						return &object.Error{Message: fmt.Sprintf("期望 1 个参数，得到 %d", len(args))}
 					}
-					return &object.String{Value: "FILE_HANDLE_MOCK"}
+					path, ok := args[0].(*object.String)
+					if !ok {
+						return &object.Error{Message: fmt.Sprintf("参数必须是字符串，得到 %s", args[0].Type())}
+					}
+					_, err := os.Open(path.Value)
+					if err != nil {
+						return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+					}
+					// 返回一个包装了 *os.File 的字典
+					res := &object.Dict{Pairs: make(map[string]object.Object)}
+					res.Pairs["__HANDLE__"] = &object.String{Value: "FILE"}
+					res.Pairs["路径"] = path
+					// 暂时用 Mock 值代表底层句柄，实际操作通过 stdlib 的方法进行
+					return &object.Result{IsSuccess: true, Value: res}
 				},
 			},
 			"关": &object.Builtin{
@@ -161,6 +175,22 @@ var Builtins = map[string]object.Object{
 					return &object.Array{Elements: elements}
 				},
 			},
+			"替换": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 3 {
+						return &object.Error{Message: "期望 3 个参数 (源串, 旧串, 新串)"}
+					}
+					return &object.String{Value: strings.ReplaceAll(args[0].Inspect(), args[1].Inspect(), args[2].Inspect())}
+				},
+			},
+			"修剪": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.String{Value: strings.TrimSpace(args[0].Inspect())}
+				},
+			},
 		},
 	},
 	"数学": &object.Dict{
@@ -182,6 +212,78 @@ var Builtins = map[string]object.Object{
 						return &object.Float{Value: math.Abs(val.Value)}
 					}
 					return &object.Error{Message: "参数必须是数字"}
+				},
+			},
+			"正弦": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.Float{Value: math.Sin(getFloat(args[0]))}
+				},
+			},
+			"余弦": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.Float{Value: math.Cos(getFloat(args[0]))}
+				},
+			},
+			"平方根": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.Float{Value: math.Sqrt(getFloat(args[0]))}
+				},
+			},
+			"幂次": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 2 {
+						return &object.Error{Message: "期望 2 个参数 (底数, 指数)"}
+					}
+					return &object.Float{Value: math.Pow(getFloat(args[0]), getFloat(args[1]))}
+				},
+			},
+			"对数": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.Float{Value: math.Log(getFloat(args[0]))}
+				},
+			},
+			"最大值": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 2 {
+						return &object.Error{Message: "期望 2 个参数"}
+					}
+					return &object.Float{Value: math.Max(getFloat(args[0]), getFloat(args[1]))}
+				},
+			},
+			"最小值": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 2 {
+						return &object.Error{Message: "期望 2 个参数"}
+					}
+					return &object.Float{Value: math.Min(getFloat(args[0]), getFloat(args[1]))}
+				},
+			},
+			"向上取整": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.Integer{Value: int64(math.Ceil(getFloat(args[0])))}
+				},
+			},
+			"向下取整": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: "期望 1 个参数"}
+					}
+					return &object.Integer{Value: int64(math.Floor(getFloat(args[0])))}
 				},
 			},
 		},
@@ -206,6 +308,56 @@ var Builtins = map[string]object.Object{
 					return &object.Integer{Value: time.Now().UnixNano() / int64(time.Millisecond)}
 				},
 			},
+		},
+	},
+	"整": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return &object.Error{Message: "期望 1 个参数"}
+			}
+			switch arg := args[0].(type) {
+			case *object.Integer:
+				return arg
+			case *object.Float:
+				return &object.Integer{Value: int64(arg.Value)}
+			case *object.String:
+				val, err := strconv.ParseInt(arg.Value, 0, 64)
+				if err != nil {
+					return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+				}
+				return &object.Result{IsSuccess: true, Value: &object.Integer{Value: val}}
+			default:
+				return &object.Error{Message: fmt.Sprintf("无法转换为整数: %s", arg.Type())}
+			}
+		},
+	},
+	"小数": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return &object.Error{Message: "期望 1 个参数"}
+			}
+			switch arg := args[0].(type) {
+			case *object.Integer:
+				return &object.Float{Value: float64(arg.Value)}
+			case *object.Float:
+				return arg
+			case *object.String:
+				val, err := strconv.ParseFloat(arg.Value, 64)
+				if err != nil {
+					return &object.Result{IsSuccess: false, Error: &object.Error{Message: err.Error()}}
+				}
+				return &object.Result{IsSuccess: true, Value: &object.Float{Value: val}}
+			default:
+				return &object.Error{Message: fmt.Sprintf("无法转换为小数: %s", arg.Type())}
+			}
+		},
+	},
+	"字": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return &object.Error{Message: "期望 1 个参数"}
+			}
+			return &object.String{Value: args[0].Inspect()}
 		},
 	},
 	"外": &object.Dict{
@@ -263,4 +415,14 @@ var Builtins = map[string]object.Object{
 			},
 		},
 	},
+}
+
+func getFloat(obj object.Object) float64 {
+	if i, ok := obj.(*object.Integer); ok {
+		return float64(i.Value)
+	}
+	if f, ok := obj.(*object.Float); ok {
+		return f.Value
+	}
+	return 0
 }

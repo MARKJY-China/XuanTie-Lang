@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.10.0"
+var version = "0.11.2"
 
 const (
 	colorReset = "\033[0m"
@@ -65,6 +65,7 @@ func printHelp() {
 	fmt.Println("用法:")
 	fmt.Println("  xuantie <源文件>          解释执行脚本")
 	fmt.Println("  xuantie zao <源文件>      编译为独立可执行文件 (或用 build/造)")
+	fmt.Println("  xuantie tie <源文件>      使用 LLVM 编译为原生二进制文件 (里程碑特性)")
 	fmt.Println("")
 	fmt.Println("选项:")
 	fmt.Println("  --pt <os>      目标操作系统 (windows, linux, darwin)")
@@ -83,6 +84,7 @@ func main() {
 	}
 
 	isBuild := false
+	isNative := false
 	filename := ""
 	targetOS := ""
 	targetArch := ""
@@ -93,6 +95,8 @@ func main() {
 		switch arg {
 		case "build", "zao", "造":
 			isBuild = true
+		case "tie", "铁":
+			isNative = true
 		case "--平台", "--pt":
 			if i+1 < len(os.Args) {
 				targetOS = os.Args[i+1]
@@ -162,6 +166,51 @@ func main() {
 				}
 			}
 		}
+		return
+	}
+
+	if isNative {
+		fmt.Printf("正在使用 LLVM 编译 %s -> 原生二进制文件 (平台: %s, 架构: %s) ...\n", filename, runtime.GOOS, runtime.GOARCH)
+		c := compiler.NewLLVMCompiler(program)
+		llvmIR := c.Compile()
+
+		// 1. 写入 LLVM IR 到临时文件
+		tmpDir := os.TempDir()
+		irFile := filepath.Join(tmpDir, fmt.Sprintf("xt_native_%d.ll", os.Getpid()))
+		err := ioutil.WriteFile(irFile, []byte(llvmIR), 0644)
+		if err != nil {
+			fmt.Printf("创建 LLVM IR 文件失败: %v\n", err)
+			return
+		}
+		// defer os.Remove(irFile) // 暂时保留以供调试
+
+		// 2. 编译 C 运行时
+		// 我们假设运行时源代码在执行路径下的 runtime 目录
+		exePath, _ := os.Executable()
+		runtimeDir := filepath.Join(filepath.Dir(exePath), "runtime")
+		// 如果是 go run 运行，则在当前目录找
+		if strings.Contains(exePath, "go-build") {
+			runtimeDir = "runtime"
+		}
+
+		rtC := filepath.Join(runtimeDir, "xt_runtime.c")
+
+		// 使用 clang 编译运行时和 IR
+		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
+		if runtime.GOOS == "windows" {
+			outputName += ".exe"
+		}
+
+		cmd := exec.Command("clang", "-O3", irFile, rtC, "-o", outputName)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			fmt.Printf("LLVM 编译失败 (请确保已安装 LLVM/Clang): %v\n", err)
+			fmt.Printf("生成的 LLVM IR 已保存至: %s\n", irFile)
+			fmt.Printf("错误详情: %s\n", string(out))
+			return
+		}
+
+		fmt.Printf("原生编译完成: %s\n", outputName)
 		return
 	}
 

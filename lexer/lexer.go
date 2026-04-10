@@ -60,39 +60,45 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_EOF, Literal: "", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '=':
 		if l.peekChar() == '=' {
-			ch := l.ch
 			l.readChar()
-			literal := string(ch) + string(l.ch)
-			tok = token.Token{Type: token.TOKEN_EQ, Literal: literal, Line: line, Column: col, HasSpaceBefore: hasSpace}
+			tok = token.Token{Type: token.TOKEN_EQ, Literal: "==", Line: line, Column: col, HasSpaceBefore: hasSpace}
 		} else {
-			tok = token.Token{Type: token.TOKEN_ASSIGN, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+			tok = token.Token{Type: token.TOKEN_ASSIGN, Literal: "=", Line: line, Column: col, HasSpaceBefore: hasSpace}
 		}
 	case '+':
-		tok = token.Token{Type: token.TOKEN_PLUS, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		tok = token.Token{Type: token.TOKEN_PLUS, Literal: "+", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '-':
-		tok = token.Token{Type: token.TOKEN_MINUS, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		tok = token.Token{Type: token.TOKEN_MINUS, Literal: "-", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '*':
-		tok = token.Token{Type: token.TOKEN_MUL, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		tok = token.Token{Type: token.TOKEN_MUL, Literal: "*", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '%':
-		tok = token.Token{Type: token.TOKEN_MOD, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		tok = token.Token{Type: token.TOKEN_MOD, Literal: "%", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '/':
 		if l.peekChar() == '/' {
 			l.skipComment()
 			return l.NextToken()
 		}
-		tok = token.Token{Type: token.TOKEN_DIV, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		tok = token.Token{Type: token.TOKEN_DIV, Literal: "/", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '<':
-		tok = token.Token{Type: token.TOKEN_LT, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = token.Token{Type: token.TOKEN_LE, Literal: "<=", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		} else {
+			tok = token.Token{Type: token.TOKEN_LT, Literal: "<", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		}
 	case '>':
-		tok = token.Token{Type: token.TOKEN_GT, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		if l.peekChar() == '=' {
+			l.readChar()
+			tok = token.Token{Type: token.TOKEN_GE, Literal: ">=", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		} else {
+			tok = token.Token{Type: token.TOKEN_GT, Literal: ">", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		}
 	case '!':
 		if l.peekChar() == '=' {
-			ch := l.ch
 			l.readChar()
-			literal := string(ch) + string(l.ch)
-			tok = token.Token{Type: token.TOKEN_NEQ, Literal: literal, Line: line, Column: col, HasSpaceBefore: hasSpace}
+			tok = token.Token{Type: token.TOKEN_NEQ, Literal: "!=", Line: line, Column: col, HasSpaceBefore: hasSpace}
 		} else {
-			tok = token.Token{Type: token.TOKEN_ILLEGAL, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+			tok = token.Token{Type: token.TOKEN_ILLEGAL, Literal: "!", Line: line, Column: col, HasSpaceBefore: hasSpace}
 		}
 	case '(':
 		tok = token.Token{Type: token.TOKEN_LPAREN, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
@@ -283,6 +289,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_IS
 	case "等于":
 		return token.TOKEN_EQ
+	case "此":
+		return token.TOKEN_THIS
 	case "结果":
 		return token.TOKEN_RESULT_TYPE
 	case "字", "字符串":
@@ -325,33 +333,36 @@ func isDigit(ch rune) bool {
 }
 
 func (l *Lexer) readString() string {
-	l.readChar() // 跳过开头的 "
 	var out strings.Builder
-	for l.ch != '"' && l.ch != 0 {
+	for {
+		l.readChar()
+		if l.ch == '"' || l.ch == 0 {
+			break
+		}
 		if l.ch == '\\' {
 			l.readChar()
 			switch l.ch {
 			case 'n':
 				out.WriteRune('\n')
-			case 't':
-				out.WriteRune('\t')
 			case 'r':
 				out.WriteRune('\r')
-			case 'b':
-				out.WriteRune('\b')
-			case 'f':
-				out.WriteRune('\f')
+			case 't':
+				out.WriteRune('\t')
 			case '"':
 				out.WriteRune('"')
 			case '\\':
 				out.WriteRune('\\')
+			case '$': // Support \$ escaping
+				out.WriteRune('$')
+			case '{': // Support \{ escaping
+				out.WriteRune('{')
 			default:
+				out.WriteRune('\\')
 				out.WriteRune(l.ch)
 			}
 		} else {
 			out.WriteRune(l.ch)
 		}
-		l.readChar()
 	}
 	return out.String()
 }
