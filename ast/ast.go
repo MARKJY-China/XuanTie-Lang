@@ -478,6 +478,42 @@ func (ce *ChannelExpression) TokenLiteral() string { return ce.Token.Literal }
 func (ce *ChannelExpression) GetLine() int         { return ce.Token.Line }
 func (ce *ChannelExpression) String() string       { return "道" }
 
+// MatchStatement 模式匹配语句
+type MatchStatement struct {
+	Token token.Token // "匹配"
+	Value Expression
+	Cases []*MatchCase
+}
+
+func (ms *MatchStatement) statementNode()       {}
+func (ms *MatchStatement) TokenLiteral() string { return ms.Token.Literal }
+func (ms *MatchStatement) GetLine() int         { return ms.Token.Line }
+func (ms *MatchStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("匹配 " + ms.Value.String() + " { ")
+	for _, c := range ms.Cases {
+		out.WriteString(c.String())
+	}
+	out.WriteString("}")
+	return out.String()
+}
+
+type MatchCase struct {
+	Token   token.Token // "->"
+	Pattern Expression  // Literal, Identifier (for _), or IS expression
+	Body    []Statement
+}
+
+func (mc *MatchCase) String() string {
+	var out bytes.Buffer
+	out.WriteString(mc.Pattern.String() + " -> { ")
+	for _, s := range mc.Body {
+		out.WriteString(s.String())
+	}
+	out.WriteString(" } ")
+	return out.String()
+}
+
 // ParallelExpression 并行执行表达式
 type ParallelExpression struct {
 	Token  token.Token // "并行"
@@ -772,6 +808,14 @@ func Walk(node Node, fn func(Node)) {
 		Walk(n.Condition, fn)
 		for _, s := range n.Block {
 			Walk(s, fn)
+		}
+	case *MatchStatement:
+		Walk(n.Value, fn)
+		for _, c := range n.Cases {
+			Walk(c.Pattern, fn)
+			for _, s := range c.Body {
+				Walk(s, fn)
+			}
 		}
 	case *FunctionLiteral:
 		for _, s := range n.Body {

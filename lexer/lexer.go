@@ -69,7 +69,12 @@ func (l *Lexer) NextToken() token.Token {
 	case '+':
 		tok = token.Token{Type: token.TOKEN_PLUS, Literal: "+", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '-':
-		tok = token.Token{Type: token.TOKEN_MINUS, Literal: "-", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		if l.peekChar() == '>' {
+			l.readChar()
+			tok = token.Token{Type: token.TOKEN_ARROW, Literal: "->", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		} else {
+			tok = token.Token{Type: token.TOKEN_MINUS, Literal: "-", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		}
 	case '*':
 		tok = token.Token{Type: token.TOKEN_MUL, Literal: "*", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '%':
@@ -232,6 +237,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_FALSE
 	case "空":
 		return token.TOKEN_NULL
+	case "匹配":
+		return token.TOKEN_MATCH
 	case "尝试":
 		return token.TOKEN_TRY
 	case "捕捉":

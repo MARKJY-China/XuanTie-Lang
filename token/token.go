@@ -36,6 +36,7 @@ const (
 	TOKEN_DOT       TokenType = "."
 	TOKEN_PIPE      TokenType = "|"
 	TOKEN_QUESTION  TokenType = "?"
+	TOKEN_ARROW     TokenType = "->"
 
 	TOKEN_PRINT    TokenType = "示"
 	TOKEN_VAR      TokenType = "设"
@@ -54,6 +55,7 @@ const (
 	TOKEN_TRUE     TokenType = "真"
 	TOKEN_FALSE    TokenType = "假"
 	TOKEN_NULL     TokenType = "空"
+	TOKEN_MATCH    TokenType = "匹配"
 
 	TOKEN_TRY         TokenType = "尝试"
 	TOKEN_CATCH       TokenType = "捕捉"

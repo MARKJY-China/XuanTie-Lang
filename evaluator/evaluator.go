@@ -105,6 +105,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalWhileExpression(n, env)
 	case *ast.LoopStatement:
 		return evalLoopExpression(n, env)
+	case *ast.MatchStatement:
+		return evalMatchStatement(n, env)
 	case *ast.ForStatement:
 		return evalForStatement(n, env)
 	case *ast.BreakStatement:
@@ -524,6 +526,47 @@ func evalLoopExpression(le *ast.LoopStatement, env map[string]object.Object) obj
 		}
 	}
 	return &object.Null{}
+}
+
+func evalMatchStatement(ms *ast.MatchStatement, env map[string]object.Object) object.Object {
+	val := Eval(ms.Value, env)
+	if isError(val) {
+		return val
+	}
+
+	for _, c := range ms.Cases {
+		if matchPattern(val, c.Pattern, env) {
+			return evalBlock(c.Body, env)
+		}
+	}
+
+	return &object.Null{}
+}
+
+func matchPattern(val object.Object, pattern ast.Expression, env map[string]object.Object) bool {
+	// 1. 处理默认分支 '_'
+	if ident, ok := pattern.(*ast.Identifier); ok && ident.Value == "_" {
+		return true
+	}
+
+	// 2. 处理类型匹配 '是 类型'
+	if prefix, ok := pattern.(*ast.PrefixExpression); ok && prefix.Operator == "是" {
+		expectedType := prefix.Right.String()
+		return checkType(expectedType, val, env) == nil
+	}
+
+	// 3. 处理值匹配
+	patternVal := Eval(pattern, env)
+	if isError(patternVal) {
+		return false
+	}
+
+	res := evalInfixExpression(0, "==", val, patternVal)
+	if b, ok := res.(*object.Boolean); ok {
+		return b.Value
+	}
+
+	return false
 }
 
 func evalForStatement(fs *ast.ForStatement, env map[string]object.Object) object.Object {

@@ -89,6 +89,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseIfStatement()
 	case token.TOKEN_WHILE:
 		return p.parseWhileStatement()
+	case token.TOKEN_MATCH:
+		return p.parseMatchStatement()
 	case token.TOKEN_LOOP:
 		return p.parseLoopStatement()
 	case token.TOKEN_FOR:
@@ -291,6 +293,50 @@ func (p *Parser) parseWhileStatement() *ast.WhileStatement {
 	}
 	stmt.Block = p.parseBlock()
 	return stmt
+}
+
+func (p *Parser) parseMatchStatement() *ast.MatchStatement {
+	stmt := &ast.MatchStatement{Token: p.cur}
+
+	p.nextToken() // match value
+	stmt.Value = p.parseExpression(LOWEST)
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+
+	for p.peek.Type != token.TOKEN_RBRACE && p.peek.Type != token.TOKEN_EOF {
+		p.nextToken()
+		caseNode := p.parseMatchCase()
+		if caseNode != nil {
+			stmt.Cases = append(stmt.Cases, caseNode)
+		}
+	}
+
+	if !p.expectPeek(token.TOKEN_RBRACE) {
+		return nil
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseMatchCase() *ast.MatchCase {
+	mc := &ast.MatchCase{}
+
+	// Pattern can be a literal, or '是 类型'
+	mc.Pattern = p.parseExpression(LOWEST)
+
+	if !p.expectPeek(token.TOKEN_ARROW) {
+		return nil
+	}
+	mc.Token = p.cur
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+
+	mc.Body = p.parseBlock()
+	return mc
 }
 
 func (p *Parser) parseLoopStatement() *ast.LoopStatement {
@@ -509,7 +555,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.ChannelExpression{Token: p.cur}
 	case token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
 		leftExp = p.parseResultLiteral()
-	case token.TOKEN_NOT, token.TOKEN_MINUS:
+	case token.TOKEN_NOT, token.TOKEN_MINUS, token.TOKEN_IS:
 		leftExp = p.parsePrefixExpression()
 	case token.TOKEN_LBRACKET:
 		leftExp = p.parseArrayLiteral()
