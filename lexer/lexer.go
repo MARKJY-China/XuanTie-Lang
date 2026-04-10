@@ -25,6 +25,7 @@ func New(input string) *Lexer {
 func (l *Lexer) readChar() {
 	if l.readPosition >= len(l.input) {
 		l.ch = 0 // EOF
+		l.position = len(l.input)
 	} else {
 		r, size := utf8.DecodeRuneInString(l.input[l.readPosition:])
 		l.ch = r

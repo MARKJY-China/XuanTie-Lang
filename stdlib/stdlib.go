@@ -26,6 +26,16 @@ var Builtins = map[string]object.Object{
 			return &object.String{Value: strings.TrimSpace(text)}
 		},
 	},
+	"输": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) > 0 {
+				fmt.Print(args[0].Inspect())
+			}
+			reader := bufio.NewReader(os.Stdin)
+			text, _ := reader.ReadString('\n')
+			return &object.String{Value: strings.TrimSpace(text)}
+		},
+	},
 	"文件": &object.Dict{
 		Pairs: map[string]object.Object{
 			"开": &object.Builtin{
