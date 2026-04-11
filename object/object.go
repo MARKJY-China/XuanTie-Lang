@@ -35,7 +35,15 @@ const (
 	HTTP_RES_OBJ     ObjectType = "HTTP_RES"
 	BYTES_OBJ        ObjectType = "BYTES"
 	FFI_FUNCTION_OBJ ObjectType = "FFI_FUNCTION"
+	INTERNAL_ENV_OBJ ObjectType = "INTERNAL_ENV"
 )
+
+type InternalEnv struct {
+	Value map[string]Object
+}
+
+func (ie *InternalEnv) Type() ObjectType { return INTERNAL_ENV_OBJ }
+func (ie *InternalEnv) Inspect() string  { return "<internal env>" }
 
 type Object interface {
 	Type() ObjectType
@@ -115,15 +123,19 @@ type Function struct {
 	Env           map[string]Object
 	OwnerClass    *Class    // 所属类（用于权限校验）
 	Receiver      *Instance // 绑定的实例（如果是方法）
+	DocComment    string    // 文档注释
 }
 
 func (f *Function) Type() ObjectType { return FUNCTION_OBJ }
 func (f *Function) Inspect() string {
+	var out strings.Builder
+	if f.DocComment != "" {
+		out.WriteString(f.DocComment + "\n")
+	}
 	params := []string{}
 	for _, p := range f.Parameters {
 		params = append(params, p.Name.Value)
 	}
-	var out strings.Builder
 	out.WriteString("函数")
 	if len(f.GenericParams) > 0 {
 		out.WriteString("<")

@@ -69,21 +69,72 @@ func (p *Parser) Errors() []string {
 
 func (p *Parser) ParseProgram() *ast.Program {
 	program := &ast.Program{Statements: []ast.Statement{}}
+	var docComments []string
+
 	for p.cur.Type != token.TOKEN_EOF {
+		// 识别文档注释
+		if p.cur.Type == token.TOKEN_STRING && strings.HasPrefix(p.cur.Literal, "///") {
+			docComments = append(docComments, p.cur.Literal)
+			p.nextToken()
+			continue
+		}
+
 		stmt := p.parseStatement()
 		if stmt != nil {
+			// 如果是函数定义，挂载文档注释
+			if fs, ok := stmt.(*ast.FunctionStatement); ok {
+				if len(docComments) > 0 {
+					fs.DocComment = strings.Join(docComments, "\n")
+				}
+			}
 			program.Statements = append(program.Statements, stmt)
 		}
+		docComments = nil
 		p.nextToken()
 	}
 	return program
+}
+
+func (p *Parser) parseBlock() []ast.Statement {
+	var statements []ast.Statement
+	var docComments []string
+
+	p.nextToken() // skip {
+
+	for p.cur.Type != token.TOKEN_RBRACE && p.cur.Type != token.TOKEN_EOF {
+		// 识别文档注释
+		if p.cur.Type == token.TOKEN_STRING && strings.HasPrefix(p.cur.Literal, "///") {
+			docComments = append(docComments, p.cur.Literal)
+			p.nextToken()
+			continue
+		}
+
+		stmt := p.parseStatement()
+		if stmt != nil {
+			// 如果是函数定义，挂载文档注释
+			if fs, ok := stmt.(*ast.FunctionStatement); ok {
+				if len(docComments) > 0 {
+					fs.DocComment = strings.Join(docComments, "\n")
+				}
+			}
+			statements = append(statements, stmt)
+		}
+		docComments = nil
+		p.nextToken()
+	}
+
+	return statements
 }
 
 func (p *Parser) parseStatement() ast.Statement {
 	switch p.cur.Type {
 	case token.TOKEN_PRINT:
 		return p.parsePrintStatement()
+	case token.TOKEN_TRY:
+		return p.parseTryCatchStatement()
 	case token.TOKEN_VAR, token.TOKEN_CONST, token.TOKEN_PRIVATE, token.TOKEN_PUBLIC, token.TOKEN_PROTECTED:
+		return p.parseMemberStatement()
+	case token.TOKEN_OVERRIDE:
 		return p.parseMemberStatement()
 	case token.TOKEN_IF:
 		return p.parseIfStatement()
@@ -95,12 +146,12 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseLoopStatement()
 	case token.TOKEN_FOR:
 		return p.parseForStatement()
+	case token.TOKEN_TEST:
+		return p.parseTestStatement()
 	case token.TOKEN_BREAK:
 		return &ast.BreakStatement{Token: p.cur}
 	case token.TOKEN_CONTINUE:
 		return &ast.ContinueStatement{Token: p.cur}
-	case token.TOKEN_TRY:
-		return p.parseTryCatchStatement()
 	case token.TOKEN_RETURN:
 		return p.parseReturnStatement()
 	case token.TOKEN_IMPORT:
@@ -111,7 +162,7 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseInterfaceStatement("")
 	case token.TOKEN_FUNCTION:
 		if p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_NEW {
-			return p.parseFunctionStatement("")
+			return p.parseFunctionStatement("", false)
 		}
 		return p.parseExpressionStatement()
 	case token.TOKEN_IDENT:
@@ -119,9 +170,30 @@ func (p *Parser) parseStatement() ast.Statement {
 			return p.parseAssignStatement()
 		}
 		return p.parseExpressionStatement()
+	case token.TOKEN_ASYNC:
+		return p.parseExpressionStatement()
+	case token.TOKEN_PARALLEL:
+		return p.parseExpressionStatement()
 	default:
 		return p.parseExpressionStatement()
 	}
+}
+
+func (p *Parser) parseTestStatement() *ast.TestStatement {
+	stmt := &ast.TestStatement{Token: p.cur}
+
+	if !p.expectPeek(token.TOKEN_STRING) {
+		return nil
+	}
+	stmt.Name = p.cur.Literal
+
+	if !p.expectPeek(token.TOKEN_LBRACE) {
+		return nil
+	}
+
+	stmt.Body = p.parseBlock()
+
+	return stmt
 }
 
 func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
@@ -154,10 +226,12 @@ func (p *Parser) parseImportExpression() ast.Expression {
 
 func (p *Parser) parsePrintStatement() *ast.PrintStatement {
 	stmt := &ast.PrintStatement{Token: p.cur}
-	if !p.expectPeek(token.TOKEN_LPAREN) {
+	if p.peek.Type != token.TOKEN_LPAREN {
+		p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 示 后面必须跟括号", p.cur.Line, p.cur.Column))
 		return nil
 	}
-	p.nextToken()
+	p.nextToken() // skip 示
+	p.nextToken() // skip (
 	stmt.Value = p.parseExpression(LOWEST)
 	if !p.expectPeek(token.TOKEN_RPAREN) {
 		return nil
@@ -167,13 +241,20 @@ func (p *Parser) parsePrintStatement() *ast.PrintStatement {
 
 func (p *Parser) parseMemberStatement() ast.Statement {
 	visibility := token.TokenType("")
+	isOverride := false
+
+	if p.cur.Type == token.TOKEN_OVERRIDE {
+		isOverride = true
+		p.nextToken()
+	}
+
 	if p.cur.Type == token.TOKEN_PRIVATE || p.cur.Type == token.TOKEN_PUBLIC || p.cur.Type == token.TOKEN_PROTECTED {
 		visibility = p.cur.Type
 		p.nextToken()
 	}
 
 	if p.cur.Type == token.TOKEN_FUNCTION {
-		return p.parseFunctionStatement(visibility)
+		return p.parseFunctionStatement(visibility, isOverride)
 	}
 
 	if p.cur.Type == token.TOKEN_TYPE_DEF {
@@ -423,31 +504,34 @@ func (p *Parser) parseInterfaceStatement(visibility token.TokenType) *ast.Interf
 
 func (p *Parser) parseTryCatchStatement() *ast.TryCatchStatement {
 	stmt := &ast.TryCatchStatement{Token: p.cur}
+
 	if !p.expectPeek(token.TOKEN_LBRACE) {
 		return nil
 	}
+
 	stmt.TryBlock = p.parseBlock()
 
-	if !p.expectPeek(token.TOKEN_CATCH) {
-		return nil
-	}
-	stmt.CatchToken = p.cur
+	if p.peek.Type == token.TOKEN_CATCH {
+		p.nextToken() // cur: 捕捉
 
-	if !p.expectPeek(token.TOKEN_LPAREN) {
-		return nil
-	}
-	if !p.expectPeek(token.TOKEN_IDENT) {
-		return nil
-	}
-	stmt.CatchVar = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
-	if !p.expectPeek(token.TOKEN_RPAREN) {
-		return nil
+		if p.peek.Type == token.TOKEN_LPAREN {
+			p.nextToken() // cur: (
+			if !p.expectPeek(token.TOKEN_IDENT) {
+				return nil
+			}
+			stmt.CatchVar = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+			if !p.expectPeek(token.TOKEN_RPAREN) {
+				return nil
+			}
+		}
+
+		if !p.expectPeek(token.TOKEN_LBRACE) {
+			return nil
+		}
+
+		stmt.CatchBlock = p.parseBlock()
 	}
 
-	if !p.expectPeek(token.TOKEN_LBRACE) {
-		return nil
-	}
-	stmt.CatchBlock = p.parseBlock()
 	return stmt
 }
 
@@ -483,33 +567,25 @@ func (p *Parser) parseParallelExpression() *ast.ParallelExpression {
 	return exp
 }
 
-func (p *Parser) parseBlock() []ast.Statement {
-	statements := []ast.Statement{}
-	p.nextToken() // skip {
-	for p.cur.Type != token.TOKEN_RBRACE && p.cur.Type != token.TOKEN_EOF {
-		stmt := p.parseStatement()
-		if stmt != nil {
-			statements = append(statements, stmt)
-		}
-		p.nextToken()
-	}
-	return statements
-}
-
 func (p *Parser) parseExpressionStatement() ast.Statement {
 	exp := p.parseExpression(LOWEST)
 
-	// 处理成员赋值 (obj.member = value)
-	if mce, ok := exp.(*ast.MemberCallExpression); ok && p.peek.Type == token.TOKEN_ASSIGN {
-		stmt := &ast.MemberAssignStatement{
-			Token:  p.peek,
-			Object: mce.Object,
-			Member: mce.Member,
+	// 支持索引赋值或成员赋值: exp = value
+	if p.peek.Type == token.TOKEN_ASSIGN {
+		// 检查 exp 是否是可赋值的 (Identifier, IndexExpression, MemberCallExpression)
+		switch exp.(type) {
+		case *ast.Identifier, *ast.IndexExpression, *ast.MemberCallExpression:
+			p.nextToken() // cur: =
+			token := p.cur
+			p.nextToken() // cur: start of value
+			val := p.parseExpression(LOWEST)
+			// 我们需要一个新的 AST 节点支持复杂的赋值，或者扩展 AssignStatement
+			return &ast.ComplexAssignStatement{
+				Token: token,
+				Left:  exp,
+				Right: val,
+			}
 		}
-		p.nextToken() // cur: =
-		p.nextToken() // cur: start of expression
-		stmt.Value = p.parseExpression(LOWEST)
-		return stmt
 	}
 
 	return &ast.ExpressionStatement{Token: p.cur, Expression: exp}
@@ -521,7 +597,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	switch p.cur.Type {
 	case token.TOKEN_IDENT:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
-	case token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE:
+	case token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE,
+		token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE, token.TOKEN_RESULT_TYPE:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_NUMBER:
 		leftExp = p.parseIntegerLiteral()
@@ -854,8 +931,8 @@ func (p *Parser) parseTypeDefinitionStatement(visibility token.TokenType) *ast.T
 	return stmt
 }
 
-func (p *Parser) parseFunctionStatement(visibility token.TokenType) *ast.FunctionStatement {
-	stmt := &ast.FunctionStatement{Token: p.cur, Visibility: visibility}
+func (p *Parser) parseFunctionStatement(visibility token.TokenType, isOverride bool) *ast.FunctionStatement {
+	stmt := &ast.FunctionStatement{Token: p.cur, Visibility: visibility, IsOverride: isOverride}
 	p.nextToken() // skip 函
 
 	if p.cur.Type != token.TOKEN_IDENT && p.cur.Type != token.TOKEN_NEW {
@@ -1190,7 +1267,9 @@ func (p *Parser) isMemberName(t token.TokenType) bool {
 	switch t {
 	case token.TOKEN_IDENT, token.TOKEN_THEN, token.TOKEN_ELSE, token.TOKEN_FUNCTION,
 		token.TOKEN_INT_TYPE, token.TOKEN_STRING_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_FLOAT_TYPE,
-		token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
+		token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE,
+		token.TOKEN_SUCCESS, token.TOKEN_FAILURE, token.TOKEN_EXECUTE, token.TOKEN_OR, token.TOKEN_AND,
+		token.TOKEN_NULL:
 		return true
 	default:
 		return false

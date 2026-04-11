@@ -48,6 +48,26 @@ func (l *Lexer) peekChar() rune {
 	return r
 }
 
+func (l *Lexer) peekNextChar() rune {
+	if l.readPosition >= len(l.input) {
+		return 0
+	}
+	_, size := utf8.DecodeRuneInString(l.input[l.readPosition:])
+	if l.readPosition+size >= len(l.input) {
+		return 0
+	}
+	r, _ := utf8.DecodeRuneInString(l.input[l.readPosition+size:])
+	return r
+}
+
+func (l *Lexer) readDocComment() string {
+	start := l.position
+	for l.ch != '\n' && l.ch != 0 {
+		l.readChar()
+	}
+	return l.input[start:l.position]
+}
+
 func (l *Lexer) NextToken() token.Token {
 	hasSpace := l.skipWhitespace()
 
@@ -81,6 +101,11 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_MOD, Literal: "%", Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '/':
 		if l.peekChar() == '/' {
+			if l.peekNextChar() == '/' {
+				// 文档注释 ///
+				tok = token.Token{Type: token.TOKEN_STRING, Literal: l.readDocComment(), Line: line, Column: col, HasSpaceBefore: hasSpace}
+				return tok
+			}
 			l.skipComment()
 			return l.NextToken()
 		}
@@ -128,6 +153,17 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_RBRACKET, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case ':':
 		tok = token.Token{Type: token.TOKEN_COLON, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+	case '覆':
+		tok = token.Token{Type: token.TOKEN_OVERRIDE, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+	case '测':
+		if l.peekChar() == '试' {
+			l.readChar()
+			tok = token.Token{Type: token.TOKEN_TEST, Literal: "测试", Line: line, Column: col, HasSpaceBefore: hasSpace}
+		} else {
+			literal := l.readIdentifier()
+			tok = token.Token{Type: lookupKeyword(literal), Literal: literal, Line: line, Column: col, HasSpaceBefore: hasSpace}
+			return tok
+		}
 	case '&':
 		tok = token.Token{Type: token.TOKEN_AMPERSAND, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '|':
@@ -192,6 +228,9 @@ func (l *Lexer) skipComment() bool {
 func (l *Lexer) readIdentifier() string {
 	start := l.position
 	for isLetter(l.ch) || isDigit(l.ch) {
+		l.readChar()
+	}
+	if l.ch == '?' {
 		l.readChar()
 	}
 	return l.input[start:l.position]
@@ -315,6 +354,10 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_DICT_TYPE
 	case "字节":
 		return token.TOKEN_BYTES_TYPE
+	case "测试":
+		return token.TOKEN_TEST
+	case "覆":
+		return token.TOKEN_OVERRIDE
 	default:
 		return token.TOKEN_IDENT
 	}

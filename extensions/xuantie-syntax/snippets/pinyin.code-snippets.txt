@@ -1,0 +1,292 @@
+{
+    "Set": {
+        "prefix": ["she", "shezhi"],
+        "body": "设 ${1:名字} = ${2:值}",
+        "description": "设 (she -> 设)"
+    },
+    "Const": {
+        "prefix": ["chang", "changliang"],
+        "body": "常 ${1:名字} = ${2:值}",
+        "description": "常 (chang -> 常)"
+    },
+    "Show": {
+        "prefix": ["shi", "shichu"],
+        "body": "示(${1:内容})",
+        "description": "示 (shi -> 示)"
+    },
+    "Type": {
+        "prefix": ["xing", "leixing"],
+        "body": [
+            "型 ${1:名字} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "型 (xing -> 型)"
+    },
+    "Func": {
+        "prefix": ["han", "hanshu"],
+        "body": [
+            "函 ${1:名字}(${2:参数}) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "函 (han -> 函)"
+    },
+    "New": {
+        "prefix": ["zao", "gouzao"],
+        "body": "造 ${1:类型}($0)",
+        "description": "造 (zao -> 造)"
+    },
+    "Import": {
+        "prefix": ["yin", "yinyong"],
+        "body": "引 \"${1:路径}\" 予 ${2:别名}",
+        "description": "引 (yin -> 引)"
+    },
+    "Public": {
+        "prefix": ["gong", "gongyou"],
+        "body": "公 ",
+        "description": "公 (gong -> 公)"
+    },
+    "Private": {
+        "prefix": ["si", "siyou"],
+        "body": "私 ",
+        "description": "私 (si -> 私)"
+    },
+    "Protected": {
+        "prefix": ["hu", "baohu"],
+        "body": "护 ",
+        "description": "护 (hu -> 护)"
+    },
+    "Inherit": {
+        "prefix": ["cheng", "jicheng"],
+        "body": "承 ${1:父类}",
+        "description": "承 (cheng -> 承)"
+    },
+    "Interface": {
+        "prefix": ["kou", "jiekou"],
+        "body": [
+            "口 ${1:名字} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "口 (kou -> 口)"
+    },
+    "If": {
+        "prefix": ["ruo"],
+        "body": [
+            "若 ${1:条件} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "若 (ruo -> 若)"
+    },
+    "ElseIf": {
+        "prefix": ["yi"],
+        "body": [
+            "抑 ${1:条件} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "抑 (yi -> 抑)"
+    },
+    "Else": {
+        "prefix": ["fou"],
+        "body": [
+            "否 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "否 (fou -> 否)"
+    },
+    "While": {
+        "prefix": ["dang"],
+        "body": [
+            "当 ${1:条件} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "当 (dang -> 当)"
+    },
+    "Loop": {
+        "prefix": ["xun", "xunhuan"],
+        "body": [
+            "循 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "循 (xun -> 循)"
+    },
+    "ForIn": {
+        "prefix": ["bl", "bianli"],
+        "body": [
+            "遍历 ${1:元素} 于 ${2:容器} {",
+            "\t$0",
+            "}"
+        ],
+        "description": "遍历 (bianli -> 遍历)"
+    },
+    "Break": {
+        "prefix": ["duan", "duankai"],
+        "body": "断",
+        "description": "断 (duan -> 断)"
+    },
+    "Continue": {
+        "prefix": ["xu", "xuxie"],
+        "body": "续",
+        "description": "续 (xu -> 续)"
+    },
+    "Return": {
+        "prefix": ["fan", "fanhui"],
+        "body": "返 $0",
+        "description": "返 (fan -> 返)"
+    },
+    "Serialize": {
+        "prefix": ["hua", "huxia"],
+        "body": "化(${1:对象})",
+        "description": "化 (hua -> 化)"
+    },
+    "Deserialize": {
+        "prefix": ["jie", "jiexie"],
+        "body": "解(${1:字符串})",
+        "description": "解 (jie -> 解)"
+    },
+    "Request": {
+        "prefix": ["qiu", "qingqiu"],
+        "body": "求(\"${1:URL}\")",
+        "description": "求 (qiu -> 求)"
+    },
+    "Listen": {
+        "prefix": ["ting", "jianting"],
+        "body": [
+            "听(${1:端口}, 函(${2:参数}) {",
+            "\t$0",
+            "})"
+        ],
+        "description": "听 (ting -> 听)"
+    },
+    "Connect": {
+        "prefix": ["lian", "lianjie"],
+        "body": "连(\"${1:地址}\")",
+        "description": "连 (lian -> 连)"
+    },
+    "Execute": {
+        "prefix": ["zhi", "zhixing"],
+        "body": "执(\"${1:命令}\")",
+        "description": "执 (zhi -> 执)"
+    },
+    "Channel": {
+        "prefix": ["dao", "tongdao"],
+        "body": "道",
+        "description": "道 (dao -> 道)"
+    },
+    "Async": {
+        "prefix": ["yb", "yibu"],
+        "body": [
+            "异步 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "异步 (yibu -> 异步)"
+    },
+    "Await": {
+        "prefix": ["dd", "dengdai"],
+        "body": "等待(${1:任务})",
+        "description": "等待 (dd -> 等待)"
+    },
+    "Parallel": {
+        "prefix": ["bx", "bingxing"],
+        "body": [
+            "并行 {",
+            "\t{ $1 },",
+            "\t{ $0 }",
+            "}"
+        ],
+        "description": "并行 (bx -> 并行)"
+    },
+    "Try": {
+        "prefix": ["cs", "changshi"],
+        "body": [
+            "尝试 {",
+            "\t$1",
+            "} 捕捉 (${2:错误}) {",
+            "\t$0",
+            "}"
+        ],
+        "description": "尝试 (cs -> 尝试)"
+    },
+    "Catch": {
+        "prefix": ["bz", "buzhuo"],
+        "body": "捕捉",
+        "description": "捕捉 (bz -> 捕捉)"
+    },
+    "Success": {
+        "prefix": ["cg", "chenggong"],
+        "body": "成功(${1:值})",
+        "description": "成功 (cg -> 成功)"
+    },
+    "Failure": {
+        "prefix": ["sb", "shibai"],
+        "body": "失败(${1:错误})",
+        "description": "失败 (sb -> 失败)"
+    },
+    "True": {
+        "prefix": ["z", "zhen"],
+        "body": "真",
+        "description": "真 (z -> 真)"
+    },
+    "False": {
+        "prefix": ["j", "jia"],
+        "body": "假",
+        "description": "假 (j -> 假)"
+    },
+    "Null": {
+        "prefix": ["k", "kong"],
+        "body": "空",
+        "description": "空 (k -> 空)"
+    },
+    "Int": {
+        "prefix": ["zs", "zheng"],
+        "body": "整",
+        "description": "整 (zs -> 整)"
+    },
+    "Float": {
+        "prefix": ["xs", "xiaoshu"],
+        "body": "小数",
+        "description": "小数 (xs -> 小数)"
+    },
+    "Word": {
+        "prefix": ["zi", "zifu"],
+        "body": "字",
+        "description": "字 (zi -> 字)"
+    },
+    "Logic": {
+        "prefix": ["l", "luo"],
+        "body": "逻",
+        "description": "逻 (l -> 逻)"
+    },
+    "Array": {
+        "prefix": ["sz", "shuzu"],
+        "body": "数组",
+        "description": "数组 (sz -> 数组)"
+    },
+    "Dict": {
+        "prefix": ["zd", "zidian"],
+        "body": "字典",
+        "description": "字典 (zd -> 字典)"
+    },
+    "Byte": {
+        "prefix": ["zj", "zijie"],
+        "body": "字节",
+        "description": "字节 (zj -> 字节)"
+    },
+    "Result": {
+        "prefix": ["jg", "jieguo"],
+        "body": "结果",
+        "description": "结果 (jg -> 结果)"
+    },
+    "Task": {
+        "prefix": ["rw", "renwu"],
+        "body": "任务",
+        "description": "任务 (rw -> 任务)"
+    }
+}

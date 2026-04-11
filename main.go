@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.11.5"
+var version = "0.13.1"
 
 const (
 	colorReset = "\033[0m"
@@ -174,9 +174,8 @@ func main() {
 		c := compiler.NewLLVMCompiler(program)
 		llvmIR := c.Compile()
 
-		// 1. 写入 LLVM IR 到临时文件
-		tmpDir := os.TempDir()
-		irFile := filepath.Join(tmpDir, fmt.Sprintf("xt_native_%d.ll", os.Getpid()))
+		// 1. 写入 LLVM IR 到本地文件以供调试
+		irFile := strings.TrimSuffix(filename, ".xt") + ".ll"
 		err := ioutil.WriteFile(irFile, []byte(llvmIR), 0644)
 		if err != nil {
 			fmt.Printf("创建 LLVM IR 文件失败: %v\n", err)
@@ -276,6 +275,12 @@ func main() {
 
 	env := make(map[string]object.Object)
 	evaluator.RegisterStdLib(env)
+
+	// 设置环境变量，支持相对路径引用
+	absPath, _ := filepath.Abs(filename)
+	env["__FILE__"] = &object.String{Value: absPath}
+	env["__DIR__"] = &object.String{Value: filepath.Dir(absPath)}
+
 	result := evaluator.Eval(program, env)
 	if result != nil && result.Type() == object.ERROR_OBJ {
 		if useColor {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -50,20 +51,51 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		if isError(val) {
 			return val
 		}
-		if _, ok := env[n.Name]; !ok {
+		if !updateEnv(env, n.Name, val) {
 			// 检查是否在修改 '此' 的属性
-			if self, ok := env["__SELF__"]; ok {
+			if self, ok := lookupEnv(env, "__SELF__"); ok {
 				if instance, ok := self.(*object.Instance); ok {
-					if _, ok := instance.Fields[n.Name]; ok {
-						instance.Fields[n.Name] = val
-						return val
-					}
+					// 总是允许修改实例字段
+					instance.Fields[n.Name] = val
+					return val
 				}
 			}
 			return newError(n.GetLine(), "未定义的变量: %s", n.Name)
 		}
-		env[n.Name] = val
 		return val
+	case *ast.ComplexAssignStatement:
+		val := Eval(n.Right, env)
+		if isError(val) {
+			return val
+		}
+
+		switch left := n.Left.(type) {
+		case *ast.MemberCallExpression:
+			obj := Eval(left.Object, env)
+			if isError(obj) {
+				return obj
+			}
+			if instance, ok := obj.(*object.Instance); ok {
+				instance.Fields[left.Member.Value] = val
+				return val
+			}
+			return newError(n.GetLine(), "不支持成员赋值的类型: %s", obj.Type())
+
+		case *ast.Identifier:
+			if !updateEnv(env, left.Value, val) {
+				// 检查是否在修改 '此' 的属性
+				if self, ok := lookupEnv(env, "__SELF__"); ok {
+					if instance, ok := self.(*object.Instance); ok {
+						instance.Fields[left.Value] = val
+						return val
+					}
+				}
+				return newError(n.GetLine(), "未定义的变量: %s", left.Value)
+			}
+			return val
+		default:
+			return evalComplexAssignStatement(n, env)
+		}
 	case *ast.VarStatement:
 		val := EvalContext(n.Value, env, true)
 		if isError(val) {
@@ -109,6 +141,8 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalMatchStatement(n, env)
 	case *ast.ForStatement:
 		return evalForStatement(n, env)
+	case *ast.TestStatement:
+		return evalTestStatement(n, env)
 	case *ast.BreakStatement:
 		return &object.Break{}
 	case *ast.ContinueStatement:
@@ -122,6 +156,7 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 			ReturnType:    n.ReturnType,
 			Body:          n.Body,
 			Env:           env,
+			DocComment:    n.DocComment,
 		}
 		env[n.Name.Value] = fn
 
@@ -247,12 +282,33 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return &object.String{Value: n.Value}
 	case *ast.Identifier:
 		if n.Value == "此" {
-			if self, ok := env["__SELF__"]; ok {
+			if self, ok := lookupEnv(env, "__SELF__"); ok {
 				return self
 			}
 			return newError(n.GetLine(), "关键字 '此' 只能在类方法中使用")
 		}
-		return evalIdentifier(n, env)
+		// 1. 优先从环境找（局部变量、参数、闭包捕获）
+		if val, ok := lookupEnv(env, n.Value); ok {
+			return val
+		}
+		// 2. 其次检查实例属性或方法 (隐式此)
+		if self, ok := lookupEnv(env, "__SELF__"); ok {
+			if instance, ok := self.(*object.Instance); ok {
+				// 优先查找方法
+				if method, ok := findMethod(instance.Class, n.Value); ok {
+					return bindInstance(instance, method)
+				}
+				// 其次查找字段
+				if val, ok := instance.Fields[n.Value]; ok {
+					return val
+				}
+			}
+		}
+		// 3. 最后找内置全局变量/函数
+		if builtin, ok := stdlib.Builtins[n.Value]; ok {
+			return builtin
+		}
+		return newError(n.GetLine(), "未定义的变量: %s", n.Value)
 	case *ast.InfixExpression:
 		if n.Operator == "且" {
 			left := Eval(n.Left, env)
@@ -429,6 +485,11 @@ func evalImportExpression(ie *ast.ImportExpression, env map[string]object.Object
 	// 处理别名绑定
 	if ie.Alias != nil {
 		env[ie.Alias.Value] = exportsDict
+	} else {
+		// 如果没有别名，则合并到当前环境
+		for k, v := range exportsDict.Pairs {
+			env[k] = v
+		}
 	}
 
 	return exportsDict
@@ -655,6 +716,18 @@ func evalForStatement(fs *ast.ForStatement, env map[string]object.Object) object
 	return &object.Null{}
 }
 
+func evalTestStatement(ts *ast.TestStatement, env map[string]object.Object) object.Object {
+	fmt.Printf("运行测试: [%s] ... ", ts.Name)
+	testEnv := extendEnv(env)
+	result := evalBlock(ts.Body, testEnv)
+	if isError(result) {
+		fmt.Printf("失败!\n")
+		return result
+	}
+	fmt.Printf("通过.\n")
+	return &object.Null{}
+}
+
 func evalTryCatchStatement(ts *ast.TryCatchStatement, env map[string]object.Object) object.Object {
 	// 创建局部环境
 	tryEnv := extendEnv(env)
@@ -663,8 +736,19 @@ func evalTryCatchStatement(ts *ast.TryCatchStatement, env map[string]object.Obje
 	if isError(result) {
 		catchEnv := extendEnv(env)
 		if ts.CatchVar != nil {
-			// 将错误对象转换为字符串，避免在 Catch 块中继续触发错误传播
-			catchEnv[ts.CatchVar.Value] = &object.String{Value: result.Inspect()}
+			errObj := result.(*object.Error)
+			// 创建结构化错误对象
+			errorDict := &object.Dict{Pairs: make(map[string]object.Object)}
+			errorDict.Pairs["消息"] = &object.String{Value: errObj.Message}
+
+			stackArr := make([]object.Object, len(errObj.Trace))
+			for i, t := range errObj.Trace {
+				stackArr[i] = &object.String{Value: t}
+			}
+			errorDict.Pairs["堆栈"] = &object.Array{Elements: stackArr}
+			errorDict.Pairs["文本"] = &object.String{Value: errObj.Inspect()}
+
+			catchEnv[ts.CatchVar.Value] = errorDict
 		}
 		return evalBlock(ts.CatchBlock, catchEnv)
 	}
@@ -680,6 +764,9 @@ func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[strin
 		Visibilities:  make(map[string]token.TokenType),
 		Env:           env,
 	}
+
+	// 提前加入环境，支持递归引用
+	env[tds.Name.Value] = class
 
 	// 1. 绑定父类
 	if tds.Parent != nil {
@@ -730,7 +817,45 @@ func evalTypeDefinitionStatement(tds *ast.TypeDefinitionStatement, env map[strin
 			}
 			classEnv[s.Name.Value] = val
 		case *ast.FunctionStatement:
-			fn := &object.Function{Parameters: s.Parameters, ReturnType: s.ReturnType, Body: s.Body, Env: classEnv, OwnerClass: class}
+			// 校验 '覆' (Override) 关键字
+			if s.IsOverride {
+				if class.Parent == nil {
+					return newError(s.GetLine(), "方法 '%s' 使用了 '覆'，但类 '%s' 没有父类", s.Name.Value, class.Name)
+				}
+				// 检查父类是否存在该方法
+				found := false
+				curr := class.Parent
+				for curr != nil {
+					if _, ok := curr.Methods[s.Name.Value]; ok {
+						found = true
+						break
+					}
+					curr = curr.Parent
+				}
+				if !found {
+					return newError(s.GetLine(), "方法 '%s' 标注了 '覆'，但在父类继承链中未找到同名方法", s.Name.Value)
+				}
+			} else {
+				// 如果没写 '覆'，但父类有同名方法，报警告（暂时报错误以强化契约）
+				if class.Parent != nil {
+					curr := class.Parent
+					for curr != nil {
+						if _, ok := curr.Methods[s.Name.Value]; ok {
+							return newError(s.GetLine(), "方法 '%s' 重写了父类方法，必须使用 '覆' 关键字声明", s.Name.Value)
+						}
+						curr = curr.Parent
+					}
+				}
+			}
+
+			fn := &object.Function{
+				Parameters: s.Parameters,
+				ReturnType: s.ReturnType,
+				Body:       s.Body,
+				Env:        classEnv,
+				OwnerClass: class,
+				DocComment: s.DocComment,
+			}
 			class.Methods[s.Name.Value] = fn
 			if s.Visibility != "" {
 				class.Visibilities[s.Name.Value] = s.Visibility
@@ -778,14 +903,14 @@ func evalInterfaceStatement(is *ast.InterfaceStatement, env map[string]object.Ob
 }
 
 func evalNewExpression(ne *ast.NewExpression, env map[string]object.Object) object.Object {
-	obj := Eval(ne.Type, env)
-	if isError(obj) {
-		return obj
+	classObj := Eval(ne.Type, env)
+	if isError(classObj) {
+		return classObj
 	}
 
-	class, ok := obj.(*object.Class)
+	class, ok := classObj.(*object.Class)
 	if !ok {
-		return newError(ne.GetLine(), "不是类型: %s", obj.Type())
+		return newError(ne.GetLine(), "不是类型: %s", classObj.Type())
 	}
 
 	instance := &object.Instance{
@@ -1023,11 +1148,14 @@ func evalAwaitExpression(ae *ast.AwaitExpression, env map[string]object.Object) 
 
 func bindInstance(instance *object.Instance, fn *object.Function) *object.Function {
 	return &object.Function{
-		Parameters: fn.Parameters,
-		Body:       fn.Body,
-		Env:        fn.Env,
-		OwnerClass: fn.OwnerClass,
-		Receiver:   instance,
+		Parameters:    fn.Parameters,
+		GenericParams: fn.GenericParams,
+		ReturnType:    fn.ReturnType,
+		Body:          fn.Body,
+		Env:           fn.Env,
+		OwnerClass:    fn.OwnerClass,
+		Receiver:      instance,
+		DocComment:    fn.DocComment,
 	}
 }
 
@@ -1069,6 +1197,34 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 				return &object.Result{IsSuccess: true, Value: res}
 			}
 			return result
+		case "映射":
+			if result.IsSuccess {
+				res := applyFunctionWithName(mce.GetLine(), "映射", args[0], []object.Object{result.Value})
+				return &object.Result{IsSuccess: true, Value: res}
+			}
+			return result
+		case "复原":
+			if !result.IsSuccess {
+				res := applyFunctionWithName(mce.GetLine(), "复原", args[0], []object.Object{result.Error})
+				return &object.Result{IsSuccess: true, Value: res}
+			}
+			return result
+		case "执行":
+			applyFunctionWithName(mce.GetLine(), "执行", args[0], []object.Object{result.Value, result.Error})
+			return result
+		case "解包", "断言":
+			if result.IsSuccess {
+				return result.Value
+			}
+			return newError(mce.GetLine(), "解包失败: %s", result.Error.Inspect())
+		case "或":
+			if result.IsSuccess {
+				return result.Value
+			}
+			if len(args) > 0 {
+				return args[0]
+			}
+			return &object.Null{}
 		}
 	}
 
@@ -1115,6 +1271,85 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			return &object.String{Value: strings.ReplaceAll(str.Value, oldStr, newStr)}
 		case "修剪":
 			return &object.String{Value: strings.TrimSpace(str.Value)}
+		case "大写":
+			return &object.String{Value: strings.ToUpper(str.Value)}
+		case "小写":
+			return &object.String{Value: strings.ToLower(str.Value)}
+		case "开头是":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "开头是期望 1 个参数")
+			}
+			return &object.Boolean{Value: strings.HasPrefix(str.Value, args[0].Inspect())}
+		case "结尾是":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "结尾是期望 1 个参数")
+			}
+			return &object.Boolean{Value: strings.HasSuffix(str.Value, args[0].Inspect())}
+		case "索引":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "索引期望 1 个参数")
+			}
+			return &object.Integer{Value: int64(strings.Index(str.Value, args[0].Inspect()))}
+		case "最后索引":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "最后索引期望 1 个参数")
+			}
+			return &object.Integer{Value: int64(strings.LastIndex(str.Value, args[0].Inspect()))}
+		case "重复":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "重复期望 1 个参数 (次数)")
+			}
+			count, ok := args[0].(*object.Integer)
+			if !ok {
+				return newError(mce.GetLine(), "重复次数必须是整数")
+			}
+			return &object.String{Value: strings.Repeat(str.Value, int(count.Value))}
+		case "修剪开头":
+			if len(args) == 0 {
+				return &object.String{Value: strings.TrimLeft(str.Value, " \t\n\r")}
+			}
+			return &object.String{Value: strings.TrimPrefix(str.Value, args[0].Inspect())}
+		case "修剪结尾":
+			if len(args) == 0 {
+				return &object.String{Value: strings.TrimRight(str.Value, " \t\n\r")}
+			}
+			return &object.String{Value: strings.TrimSuffix(str.Value, args[0].Inspect())}
+		case "空?":
+			return &object.Boolean{Value: len(str.Value) == 0}
+		case "非空?":
+			return &object.Boolean{Value: len(str.Value) > 0}
+		case "包含?":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "包含?期望 1 个参数")
+			}
+			return &object.Boolean{Value: strings.Contains(str.Value, args[0].Inspect())}
+		case "截取":
+			if len(args) < 1 {
+				return newError(mce.GetLine(), "截取期望至少 1 个参数 (起始索引)")
+			}
+			start, ok := args[0].(*object.Integer)
+			if !ok {
+				return newError(mce.GetLine(), "起始索引必须是整数")
+			}
+			s := int(start.Value)
+			e := len(str.Value)
+			if len(args) >= 2 {
+				end, ok := args[1].(*object.Integer)
+				if !ok {
+					return newError(mce.GetLine(), "结束索引必须是整数")
+				}
+				e = int(end.Value)
+			}
+			if s < 0 {
+				s = 0
+			}
+			if e > len(str.Value) {
+				e = len(str.Value)
+			}
+			if s > e {
+				return &object.String{Value: ""}
+			}
+			return &object.String{Value: str.Value[s:e]}
 		}
 	}
 
@@ -1261,6 +1496,118 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 					return &object.Array{Elements: newElements}
 				},
 			}
+		case "包含":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) < 1 {
+						return newError(mce.GetLine(), "包含期望 1 个参数 (元素)")
+					}
+					target := fArgs[0]
+					for _, e := range arr.Elements {
+						res := evalInfixExpression(mce.GetLine(), "==", e, target)
+						if b, ok := res.(*object.Boolean); ok && b.Value {
+							return &object.Boolean{Value: true}
+						}
+					}
+					return &object.Boolean{Value: false}
+				},
+			}
+		case "包含?":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) < 1 {
+						return newError(mce.GetLine(), "包含?期望 1 个参数 (元素)")
+					}
+					target := fArgs[0]
+					for _, e := range arr.Elements {
+						res := evalInfixExpression(mce.GetLine(), "==", e, target)
+						if b, ok := res.(*object.Boolean); ok && b.Value {
+							return &object.Boolean{Value: true}
+						}
+					}
+					return &object.Boolean{Value: false}
+				},
+			}
+		case "空?":
+			memberVal = &object.Boolean{Value: len(arr.Elements) == 0}
+		case "非空?":
+			memberVal = &object.Boolean{Value: len(arr.Elements) > 0}
+		case "归纳":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					if len(fArgs) < 1 {
+						return newError(mce.GetLine(), "归纳期望至少 1 个参数 (回调函数, [初值])")
+					}
+					fn := fArgs[0]
+					var accumulator object.Object
+					startIdx := 0
+					if len(fArgs) >= 2 {
+						accumulator = fArgs[1]
+					} else {
+						if len(arr.Elements) == 0 {
+							return newError(mce.GetLine(), "对空数组进行归纳必须提供初值")
+						}
+						accumulator = arr.Elements[0]
+						startIdx = 1
+					}
+					for i := startIdx; i < len(arr.Elements); i++ {
+						accumulator = applyFunction(mce.GetLine(), fn, []object.Object{accumulator, arr.Elements[i], &object.Integer{Value: int64(i)}})
+						if isError(accumulator) {
+							return accumulator
+						}
+					}
+					return accumulator
+				},
+			}
+		case "去重":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					seen := make(map[string]bool)
+					newElements := []object.Object{}
+					for _, e := range arr.Elements {
+						key := e.Inspect()
+						if !seen[key] {
+							seen[key] = true
+							newElements = append(newElements, e)
+						}
+					}
+					return &object.Array{Elements: newElements}
+				},
+			}
+		case "展平":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					newElements := []object.Object{}
+					var flatten func(object.Object)
+					flatten = func(o object.Object) {
+						if a, ok := o.(*object.Array); ok {
+							for _, e := range a.Elements {
+								flatten(e)
+							}
+						} else {
+							newElements = append(newElements, o)
+						}
+					}
+					flatten(arr)
+					return &object.Array{Elements: newElements}
+				},
+			}
+		case "排序":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					newElements := make([]object.Object, len(arr.Elements))
+					copy(newElements, arr.Elements)
+					sort.Slice(newElements, func(i, j int) bool {
+						if len(fArgs) >= 1 {
+							res := applyFunction(mce.GetLine(), fArgs[0], []object.Object{newElements[i], newElements[j]})
+							return isTruthy(res)
+						}
+						res := evalInfixExpression(mce.GetLine(), "<", newElements[i], newElements[j])
+						return isTruthy(res)
+					})
+					return &object.Array{Elements: newElements}
+				},
+			}
 		}
 
 		if memberVal != nil {
@@ -1273,6 +1620,41 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 	// 处理字典/模块的成员调用
 	if dict, ok := obj.(*object.Dict); ok {
+		if val, ok := dict.Pairs[mce.Member.Value]; ok {
+			// 特殊处理 '外' 模块的调用
+			if self, ok := dict.Pairs["__NAME__"]; ok && self.Inspect() == "外" {
+				switch mce.Member.Value {
+				case "加载":
+					if len(args) != 1 {
+						return newError(mce.GetLine(), "加载期望 1 个参数")
+					}
+					libPath := args[0].Inspect()
+					dll, err := syscall.LoadDLL(libPath)
+					if err != nil {
+						return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
+					}
+					// 返回一个包装了 DLL 句柄的字典
+					res := &object.Dict{Pairs: make(map[string]object.Object)}
+					res.Pairs["__HANDLE__"] = &object.String{Value: "DLL"} // 标记类型
+					res.Pairs["__PTR__"] = &object.Integer{Value: int64(uintptr(dll.Handle))}
+					res.Pairs["__PATH__"] = &object.String{Value: libPath}
+					return &object.Result{IsSuccess: true, Value: res}
+				}
+			}
+
+			// 如果是类，不要在这里执行（即便有括号），让外部的 '造' 或其他逻辑处理
+			if val.Type() == object.CLASS_OBJ {
+				return val
+			}
+
+			// 如果有参数或者是函数类型，尝试执行
+			if mce.Arguments != nil || val.Type() == object.FUNCTION_OBJ || val.Type() == object.BUILTIN_OBJ {
+				return applyFunctionWithName(mce.GetLine(), mce.Member.Value, val, args)
+			}
+			// 否则作为属性直接返回
+			return val
+		}
+
 		// 字典内置方法
 		switch mce.Member.Value {
 		case "键":
@@ -1307,41 +1689,38 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			}
 			delete(dict.Pairs, key)
 			return dict
-		}
-
-		if val, ok := dict.Pairs[mce.Member.Value]; ok {
-			// 特殊处理 '外' 模块的调用
-			if self, ok := dict.Pairs["__NAME__"]; ok && self.Inspect() == "外" {
-				switch mce.Member.Value {
-				case "加载":
-					if len(args) != 1 {
-						return newError(mce.GetLine(), "加载期望 1 个参数")
-					}
-					libPath := args[0].Inspect()
-					dll, err := syscall.LoadDLL(libPath)
-					if err != nil {
-						return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
-					}
-					// 返回一个包装了 DLL 句柄的字典
-					res := &object.Dict{Pairs: make(map[string]object.Object)}
-					res.Pairs["__HANDLE__"] = &object.String{Value: "DLL"} // 标记类型
-					res.Pairs["__PTR__"] = &object.Integer{Value: int64(uintptr(dll.Handle))}
-					res.Pairs["__PATH__"] = &object.String{Value: libPath}
-					return &object.Result{IsSuccess: true, Value: res}
-				}
+		case "大小", "长度":
+			return &object.Integer{Value: int64(len(dict.Pairs))}
+		case "空?":
+			return &object.Boolean{Value: len(dict.Pairs) == 0}
+		case "非空?":
+			return &object.Boolean{Value: len(dict.Pairs) > 0}
+		case "含?":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "含?期望 1 个参数 (键)")
 			}
-
-			// 如果是类，不要在这里执行（即便有括号），让外部的 '造' 或其他逻辑处理
-			if val.Type() == object.CLASS_OBJ {
-				return val
+			key := args[0].Inspect()
+			if s, ok := args[0].(*object.String); ok {
+				key = s.Value
 			}
-
-			// 如果有参数或者是函数类型，尝试执行
-			if mce.Arguments != nil || val.Type() == object.FUNCTION_OBJ || val.Type() == object.BUILTIN_OBJ {
-				return applyFunctionWithName(mce.GetLine(), mce.Member.Value, val, args)
+			_, ok := dict.Pairs[key]
+			return &object.Boolean{Value: ok}
+		case "合并":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "合并期望 1 个参数 (字典)")
 			}
-			// 否则作为属性直接返回
-			return val
+			other, ok := args[0].(*object.Dict)
+			if !ok {
+				return newError(mce.GetLine(), "合并参数必须是字典")
+			}
+			newPairs := make(map[string]object.Object)
+			for k, v := range dict.Pairs {
+				newPairs[k] = v
+			}
+			for k, v := range other.Pairs {
+				newPairs[k] = v
+			}
+			return &object.Dict{Pairs: newPairs}
 		}
 	}
 
@@ -1791,10 +2170,35 @@ func evalBytesIndexExpression(line int, bytes, index object.Object) object.Objec
 
 func extendEnv(outer map[string]object.Object) map[string]object.Object {
 	env := make(map[string]object.Object)
-	for k, v := range outer {
-		env[k] = v
-	}
+	// 我们不拷贝，而是通过特殊的键记录父环境，实现作用域链
+	env["__PARENT_ENV__"] = &object.InternalEnv{Value: outer}
 	return env
+}
+
+func lookupEnv(env map[string]object.Object, name string) (object.Object, bool) {
+	val, ok := env[name]
+	if ok {
+		return val, true
+	}
+	if parent, ok := env["__PARENT_ENV__"]; ok {
+		if pEnv, ok := parent.(*object.InternalEnv); ok {
+			return lookupEnv(pEnv.Value, name)
+		}
+	}
+	return nil, false
+}
+
+func updateEnv(env map[string]object.Object, name string, val object.Object) bool {
+	if _, ok := env[name]; ok {
+		env[name] = val
+		return true
+	}
+	if parent, ok := env["__PARENT_ENV__"]; ok {
+		if pEnv, ok := parent.(*object.InternalEnv); ok {
+			return updateEnv(pEnv.Value, name, val)
+		}
+	}
+	return false
 }
 
 func evalBlock(block []ast.Statement, env map[string]object.Object) object.Object {
@@ -1926,41 +2330,8 @@ func applyFunctionWithGenerics(line int, name string, fn object.Object, args []o
 				extendedEnv["__OWNER__"] = function.OwnerClass
 			}
 
-			// 注入可见成员
-			// 1. 本类定义的成员
-			if function.OwnerClass != nil {
-				for k, v := range function.OwnerClass.Methods {
-					extendedEnv[k] = bindInstance(instance, v)
-				}
-				for k := range function.OwnerClass.Fields {
-					if val, ok := instance.Fields[k]; ok {
-						extendedEnv[k] = val
-					}
-				}
-
-				// 2. 祖先类定义的成员
-				var injectVisibleAncestors func(*object.Class)
-				injectVisibleAncestors = func(c *object.Class) {
-					if c.Parent != nil {
-						injectVisibleAncestors(c.Parent)
-					}
-					for k, v := range c.Methods {
-						if vis := c.Visibilities[k]; vis == token.TOKEN_PROTECTED || vis == token.TOKEN_PUBLIC || vis == "" {
-							extendedEnv[k] = bindInstance(instance, v)
-						}
-					}
-					for k := range c.Fields {
-						if vis := c.Visibilities[k]; vis == token.TOKEN_PROTECTED || vis == token.TOKEN_PUBLIC || vis == "" {
-							if val, ok := instance.Fields[k]; ok {
-								extendedEnv[k] = val
-							}
-						}
-					}
-				}
-				if function.OwnerClass.Parent != nil {
-					injectVisibleAncestors(function.OwnerClass.Parent)
-				}
-			}
+			// 不再直接注入成员到 extendedEnv，而是通过 Identifier 的 lookupEnv Fallback 处理
+			// 这样可以避免成员覆盖函数参数
 		}
 
 		evaluated := evalBlock(function.Body, extendedEnv)
@@ -2029,7 +2400,7 @@ func applyFunctionWithGenerics(line int, name string, fn object.Object, args []o
 
 func extendFunctionEnvWithGenerics(fn *object.Function, args []object.Object, boundTypeArgs map[string]string) object.Object {
 	env := make(map[string]object.Object)
-	// Copy outer env (not efficient but simple for now)
+	// Copy outer env
 	for k, v := range fn.Env {
 		env[k] = v
 	}
@@ -2044,7 +2415,7 @@ func extendFunctionEnvWithGenerics(fn *object.Function, args []object.Object, bo
 		}
 		env[param.Name.Value] = val
 	}
-	return &object.Dict{Pairs: env} // 返回一个包装了 env 的对象，方便 applyFunction 处理错误
+	return &object.Dict{Pairs: env}
 }
 
 func unwrapReturnValue(obj object.Object) object.Object {
@@ -2055,13 +2426,47 @@ func unwrapReturnValue(obj object.Object) object.Object {
 }
 
 func evalIdentifier(node *ast.Identifier, env map[string]object.Object) object.Object {
-	if val, ok := env[node.Value]; ok {
+	if val, ok := lookupEnv(env, node.Value); ok {
 		return val
 	}
+
+	// 检查是否是 '此' 的属性
+	if self, ok := lookupEnv(env, "__SELF__"); ok {
+		if instance, ok := self.(*object.Instance); ok {
+			if val, ok := instance.Fields[node.Value]; ok {
+				return val
+			}
+		}
+	}
+
 	return newError(node.GetLine(), "未定义的变量: "+node.Value)
 }
 
 func evalInfixExpression(line int, op string, left, right object.Object) object.Object {
+	// 运算符重载逻辑
+	if instance, ok := left.(*object.Instance); ok {
+		var magicMethod string
+		switch op {
+		case "+":
+			magicMethod = "_加_"
+		case "-":
+			magicMethod = "_减_"
+		case "*":
+			magicMethod = "_乘_"
+		case "/":
+			magicMethod = "_除_"
+		case "==":
+			magicMethod = "_等_"
+		}
+
+		if magicMethod != "" {
+			// 查找方法（包含继承链）
+			if method, ok := findMethod(instance.Class, magicMethod); ok {
+				return applyFunctionWithName(line, magicMethod, bindInstance(instance, method), []object.Object{right})
+			}
+		}
+	}
+
 	if op == "&" {
 		return &object.String{Value: left.Inspect() + right.Inspect()}
 	}
@@ -2128,6 +2533,10 @@ func evalIntegerInfixExpression(line int, op string, left, right object.Object) 
 		return &object.Boolean{Value: leftVal < rightVal}
 	case ">":
 		return &object.Boolean{Value: leftVal > rightVal}
+	case "<=":
+		return &object.Boolean{Value: leftVal <= rightVal}
+	case ">=":
+		return &object.Boolean{Value: leftVal >= rightVal}
 	case "==", "等于":
 		return &object.Boolean{Value: leftVal == rightVal}
 	case "是":
@@ -2192,6 +2601,14 @@ func evalStringInfixExpression(line int, op string, left, right object.Object) o
 		return &object.Boolean{Value: leftVal == rightVal}
 	case "!=":
 		return &object.Boolean{Value: leftVal != rightVal}
+	case "<":
+		return &object.Boolean{Value: leftVal < rightVal}
+	case ">":
+		return &object.Boolean{Value: leftVal > rightVal}
+	case "<=":
+		return &object.Boolean{Value: leftVal <= rightVal}
+	case ">=":
+		return &object.Boolean{Value: leftVal >= rightVal}
 	default:
 		return newError(line, "未知的字符串操作符: %s", op)
 	}
@@ -2619,4 +3036,69 @@ func checkTypeWithGenerics(expectedType string, val object.Object, env map[strin
 	}
 
 	return &object.Error{Message: fmt.Sprintf("类型不匹配: 期望 %s，实际得到 %s", expectedType, actualType)}
+}
+
+func evalComplexAssignStatement(cas *ast.ComplexAssignStatement, env map[string]object.Object) object.Object {
+	val := EvalContext(cas.Right, env, true)
+	if isError(val) {
+		return val
+	}
+
+	switch left := cas.Left.(type) {
+	case *ast.Identifier:
+		if !updateEnv(env, left.Value, val) {
+			if self, ok := lookupEnv(env, "__SELF__"); ok {
+				if instance, ok := self.(*object.Instance); ok {
+					instance.Fields[left.Value] = val
+					return val
+				}
+			}
+			return newError(cas.GetLine(), "未定义的变量: %s", left.Value)
+		}
+		return val
+
+	case *ast.IndexExpression:
+		leftObj := Eval(left.Left, env)
+		if isError(leftObj) {
+			return leftObj
+		}
+
+		index := Eval(left.Index, env)
+		if isError(index) {
+			return index
+		}
+
+		switch container := leftObj.(type) {
+		case *object.Array:
+			idx, ok := index.(*object.Integer)
+			if !ok {
+				return newError(cas.GetLine(), "数组索引必须是整数")
+			}
+			if idx.Value < 0 || idx.Value >= int64(len(container.Elements)) {
+				return newError(cas.GetLine(), "索引越界")
+			}
+			container.Elements[idx.Value] = val
+			return val
+		case *object.Dict:
+			key := index.Inspect()
+			container.Pairs[key] = val
+			return val
+		default:
+			return newError(cas.GetLine(), "不支持索引赋值的类型: %s", leftObj.Type())
+		}
+
+	case *ast.MemberCallExpression:
+		obj := Eval(left.Object, env)
+		if isError(obj) {
+			return obj
+		}
+
+		if instance, ok := obj.(*object.Instance); ok {
+			instance.Fields[left.Member.Value] = val
+			return val
+		}
+		return newError(cas.GetLine(), "不支持成员赋值的类型: %s", obj.Type())
+	}
+
+	return newError(cas.GetLine(), "不支持的赋值左值类型")
 }

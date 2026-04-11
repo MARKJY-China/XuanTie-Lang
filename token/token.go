@@ -81,6 +81,8 @@ const (
 	TOKEN_PRIVATE     TokenType = "私"
 	TOKEN_PUBLIC      TokenType = "公"
 	TOKEN_PROTECTED   TokenType = "护"
+	TOKEN_OVERRIDE    TokenType = "覆"
+	TOKEN_TEST        TokenType = "测试"
 
 	TOKEN_AND TokenType = "且"
 	TOKEN_OR  TokenType = "或"

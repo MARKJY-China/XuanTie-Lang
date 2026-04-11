@@ -114,6 +114,20 @@ func (as *AssignStatement) String() string {
 	return out.String()
 }
 
+// ComplexAssignStatement 复杂赋值语句 (支持索引、成员等)
+type ComplexAssignStatement struct {
+	Token token.Token // '='
+	Left  Expression  // Identifier, IndexExpression, MemberCallExpression
+	Right Expression  // Value
+}
+
+func (cas *ComplexAssignStatement) statementNode()       {}
+func (cas *ComplexAssignStatement) TokenLiteral() string { return cas.Token.Literal }
+func (cas *ComplexAssignStatement) GetLine() int         { return cas.Token.Line }
+func (cas *ComplexAssignStatement) String() string {
+	return cas.Left.String() + " = " + cas.Right.String()
+}
+
 // MemberAssignStatement 成员赋值语句 (obj.member = value)
 type MemberAssignStatement struct {
 	Token  token.Token // '='
@@ -622,6 +636,26 @@ func (fl *FloatLiteral) String() string {
 	return strconv.FormatFloat(fl.Value, 'g', -1, 64)
 }
 
+// TestStatement 测试语句
+type TestStatement struct {
+	Token token.Token // "测试"
+	Name  string      // 测试用例名称
+	Body  []Statement // 测试体
+}
+
+func (ts *TestStatement) statementNode()       {}
+func (ts *TestStatement) TokenLiteral() string { return ts.Token.Literal }
+func (ts *TestStatement) GetLine() int         { return ts.Token.Line }
+func (ts *TestStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("测试 \"" + ts.Name + "\" { ")
+	for _, s := range ts.Body {
+		out.WriteString(s.String())
+	}
+	out.WriteString(" }")
+	return out.String()
+}
+
 // StringLiteral 字符串字面量
 type StringLiteral struct {
 	Token token.Token
@@ -890,6 +924,8 @@ type FunctionStatement struct {
 	ReturnType    string // 可选返回类型
 	Body          []Statement
 	Visibility    token.TokenType // TOKEN_PRIVATE, TOKEN_PUBLIC, TOKEN_PROTECTED
+	IsOverride    bool            // 是否是重写方法
+	DocComment    string          // 文档注释
 }
 
 func (fs *FunctionStatement) statementNode()       {}
@@ -897,9 +933,15 @@ func (fs *FunctionStatement) TokenLiteral() string { return fs.Token.Literal }
 func (fs *FunctionStatement) GetLine() int         { return fs.Token.Line }
 func (fs *FunctionStatement) String() string {
 	var out bytes.Buffer
+	if fs.DocComment != "" {
+		out.WriteString(fs.DocComment + "\n")
+	}
 	params := []string{}
 	for _, p := range fs.Parameters {
 		params = append(params, p.String())
+	}
+	if fs.IsOverride {
+		out.WriteString("覆 ")
 	}
 	if fs.Visibility != "" {
 		out.WriteString(string(fs.Visibility) + " ")
