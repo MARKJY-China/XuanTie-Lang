@@ -67,6 +67,13 @@ func (p *Parser) Errors() []string {
 	return p.errors
 }
 
+func (p *Parser) consumeTerminator() {
+	if p.peek.Type == token.TOKEN_SEMICOLON {
+		p.nextToken()
+	}
+	p.nextToken()
+}
+
 func (p *Parser) ParseProgram() *ast.Program {
 	program := &ast.Program{Statements: []ast.Statement{}}
 	var docComments []string
@@ -81,16 +88,20 @@ func (p *Parser) ParseProgram() *ast.Program {
 
 		stmt := p.parseStatement()
 		if stmt != nil {
-			// 如果是函数定义，挂载文档注释
-			if fs, ok := stmt.(*ast.FunctionStatement); ok {
-				if len(docComments) > 0 {
-					fs.DocComment = strings.Join(docComments, "\n")
+			// 挂载文档注释到支持的语句类型
+			if len(docComments) > 0 {
+				switch s := stmt.(type) {
+				case *ast.FunctionStatement:
+					s.DocComment = strings.Join(docComments, "\n")
 				}
 			}
 			program.Statements = append(program.Statements, stmt)
+			p.nextToken()
+		} else if p.cur.Type != token.TOKEN_EOF {
+			// 如果不是因为碰到结束符而返回 nil，说明是解析错误，跳过当前标记以继续
+			p.nextToken()
 		}
 		docComments = nil
-		p.nextToken()
 	}
 	return program
 }
@@ -111,72 +122,89 @@ func (p *Parser) parseBlock() []ast.Statement {
 
 		stmt := p.parseStatement()
 		if stmt != nil {
-			// 如果是函数定义，挂载文档注释
-			if fs, ok := stmt.(*ast.FunctionStatement); ok {
-				if len(docComments) > 0 {
-					fs.DocComment = strings.Join(docComments, "\n")
+			// 挂载文档注释到支持的语句类型
+			if len(docComments) > 0 {
+				switch s := stmt.(type) {
+				case *ast.FunctionStatement:
+					s.DocComment = strings.Join(docComments, "\n")
 				}
 			}
 			statements = append(statements, stmt)
+			p.nextToken()
+		} else if p.cur.Type != token.TOKEN_RBRACE && p.cur.Type != token.TOKEN_EOF {
+			// 如果不是因为碰到结束符而返回 nil，说明是解析错误，跳过当前标记以继续
+			p.nextToken()
 		}
 		docComments = nil
-		p.nextToken()
 	}
 
 	return statements
 }
 
 func (p *Parser) parseStatement() ast.Statement {
+	// 跳过空语句/多余的分号
+	for p.cur.Type == token.TOKEN_SEMICOLON {
+		p.nextToken()
+	}
+	if p.cur.Type == token.TOKEN_EOF || p.cur.Type == token.TOKEN_RBRACE {
+		return nil
+	}
+
+	var stmt ast.Statement
 	switch p.cur.Type {
 	case token.TOKEN_PRINT:
-		return p.parsePrintStatement()
+		stmt = p.parsePrintStatement()
 	case token.TOKEN_TRY:
-		return p.parseTryCatchStatement()
+		stmt = p.parseTryCatchStatement()
 	case token.TOKEN_VAR, token.TOKEN_CONST, token.TOKEN_PRIVATE, token.TOKEN_PUBLIC, token.TOKEN_PROTECTED:
-		return p.parseMemberStatement()
+		stmt = p.parseMemberStatement()
 	case token.TOKEN_OVERRIDE:
-		return p.parseMemberStatement()
+		stmt = p.parseMemberStatement()
 	case token.TOKEN_IF:
-		return p.parseIfStatement()
+		stmt = p.parseIfStatement()
 	case token.TOKEN_WHILE:
-		return p.parseWhileStatement()
+		stmt = p.parseWhileStatement()
 	case token.TOKEN_MATCH:
-		return p.parseMatchStatement()
+		stmt = p.parseMatchStatement()
 	case token.TOKEN_LOOP:
-		return p.parseLoopStatement()
+		stmt = p.parseLoopStatement()
 	case token.TOKEN_FOR:
-		return p.parseForStatement()
+		stmt = p.parseForStatement()
 	case token.TOKEN_TEST:
-		return p.parseTestStatement()
+		stmt = p.parseTestStatement()
 	case token.TOKEN_BREAK:
-		return &ast.BreakStatement{Token: p.cur}
+		stmt = &ast.BreakStatement{Token: p.cur}
 	case token.TOKEN_CONTINUE:
-		return &ast.ContinueStatement{Token: p.cur}
+		stmt = &ast.ContinueStatement{Token: p.cur}
 	case token.TOKEN_RETURN:
-		return p.parseReturnStatement()
+		stmt = p.parseReturnStatement()
 	case token.TOKEN_IMPORT:
-		return p.parseExpressionStatement()
+		stmt = p.parseExpressionStatement()
 	case token.TOKEN_TYPE_DEF:
-		return p.parseTypeDefinitionStatement("")
+		stmt = p.parseTypeDefinitionStatement("")
 	case token.TOKEN_INTERFACE:
-		return p.parseInterfaceStatement("")
+		stmt = p.parseInterfaceStatement("")
 	case token.TOKEN_FUNCTION:
 		if p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_NEW {
-			return p.parseFunctionStatement("", false)
+			stmt = p.parseFunctionStatement("", false)
+		} else {
+			stmt = p.parseExpressionStatement()
 		}
-		return p.parseExpressionStatement()
 	case token.TOKEN_IDENT:
 		if p.peek.Type == token.TOKEN_ASSIGN {
-			return p.parseAssignStatement()
+			stmt = p.parseAssignStatement()
+		} else {
+			stmt = p.parseExpressionStatement()
 		}
-		return p.parseExpressionStatement()
 	case token.TOKEN_ASYNC:
-		return p.parseExpressionStatement()
+		stmt = p.parseExpressionStatement()
 	case token.TOKEN_PARALLEL:
-		return p.parseExpressionStatement()
+		stmt = p.parseExpressionStatement()
 	default:
-		return p.parseExpressionStatement()
+		stmt = p.parseExpressionStatement()
 	}
+
+	return stmt
 }
 
 func (p *Parser) parseTestStatement() *ast.TestStatement {
@@ -1330,7 +1358,7 @@ func (p *Parser) expectPeek(t token.TokenType) bool {
 		p.nextToken()
 		return true
 	}
-	p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 预期下一个 Token 为 %s，但实际得到 %s (%s)",
+	p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 预期下一个标记为 %s，但实际得到 %s (%s)",
 		p.peek.Line, p.peek.Column, t, p.peek.Type, p.peek.Literal))
 	return false
 }

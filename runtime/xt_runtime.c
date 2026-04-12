@@ -10,15 +10,24 @@ void xt_print_int(int64_t val) {
     printf("%lld\n", val);
 }
 
-XTInt* xt_int_new(int64_t val) {
-    XTInt* obj = (XTInt*)xt_malloc(sizeof(XTInt), XT_TYPE_INT);
+XTValue xt_int_new(int64_t val) {
+    return XT_FROM_INT(val);
+}
+
+void* xt_float_new(double val) {
+    typedef struct { XTObject header; double value; } XTFloat;
+    XTFloat* obj = (XTFloat*)xt_malloc(sizeof(XTFloat), XT_TYPE_FLOAT);
     obj->value = val;
-    return obj;
+    return (void*)obj;
+}
+
+XTValue xt_bool_new(int val) {
+    return XT_FROM_BOOL(val);
 }
 
 XTString* xt_string_new(const char* data) {
     XTString* str = (XTString*)malloc(sizeof(XTString));
-    str->header.ref_count = 1;
+    atomic_init(&str->header.ref_count, 1);
     str->header.type_id = XT_TYPE_STRING;
     str->length = strlen(data);
     str->data = strdup(data);
@@ -44,44 +53,54 @@ void xt_print_float(double val) {
 void* xt_malloc(size_t size, uint32_t type_id) {
     XTObject* obj = (XTObject*)malloc(size);
     if (!obj) return NULL;
-    obj->ref_count = 1;
+    atomic_init(&obj->ref_count, 1);
     obj->type_id = type_id;
     return (void*)obj;
 }
 
-void xt_retain(void* ptr) {
-    if (!ptr) return;
-    XTObject* obj = (XTObject*)ptr;
-    obj->ref_count++;
-}
-
-void xt_release(void* ptr) {
-    if (!ptr) return;
-    XTObject* obj = (XTObject*)ptr;
-    obj->ref_count--;
-    if (obj->ref_count == 0) {
-        if (obj->type_id == XT_TYPE_STRING) {
-            XTString* s = (XTString*)ptr;
-            free(s->data);
-        } else if (obj->type_id == XT_TYPE_ARRAY) {
-            XTArray* arr = (XTArray*)ptr;
-            for (size_t i = 0; i < arr->length; i++) {
-                xt_release(arr->elements[i]);
-            }
-            free(arr->elements);
-        } else if (obj->type_id == XT_TYPE_INSTANCE) {
-            XTInstance* inst = (XTInstance*)ptr;
-            free(inst->fields);
-        }
-        free(obj);
+void xt_retain(XTValue val) {
+    if (XT_IS_PTR(val) && val != XT_NULL && val != XT_TRUE && val != XT_FALSE) {
+        XTObject* obj = (XTObject*)val;
+        atomic_fetch_add_explicit(&obj->ref_count, 1, memory_order_relaxed);
     }
 }
 
-int64_t xt_to_int(void* obj) {
-    if (!obj) return 0;
-    XTObject* header = (XTObject*)obj;
-    if (header->type_id == XT_TYPE_INT) {
-        return ((XTInt*)obj)->value;
+void xt_release(XTValue val) {
+    if (XT_IS_PTR(val) && val != XT_NULL && val != XT_TRUE && val != XT_FALSE) {
+        XTObject* obj = (XTObject*)val;
+        if (atomic_fetch_sub_explicit(&obj->ref_count, 1, memory_order_release) == 1) {
+            atomic_thread_fence(memory_order_acquire);
+            if (obj->type_id == XT_TYPE_STRING) {
+                XTString* s = (XTString*)val;
+                free(s->data);
+            } else if (obj->type_id == XT_TYPE_ARRAY) {
+                XTArray* arr = (XTArray*)val;
+                for (size_t i = 0; i < arr->length; i++) {
+                    xt_release((XTValue)arr->elements[i]);
+                }
+                free(arr->elements);
+            } else if (obj->type_id == XT_TYPE_INSTANCE) {
+                XTInstance* inst = (XTInstance*)val;
+                free(inst->fields);
+            } else if (obj->type_id == XT_TYPE_RESULT) {
+                XTResult* res = (XTResult*)val;
+                if (res->value) xt_release((XTValue)res->value);
+                if (res->error) xt_release((XTValue)res->error);
+            }
+            free(obj);
+        }
+    }
+}
+
+int64_t xt_to_int(XTValue val) {
+    if (XT_IS_INT(val)) return XT_TO_INT(val);
+    if (val == XT_TRUE) return 1;
+    if (val == XT_FALSE) return 0;
+    if (XT_IS_PTR(val) && val != XT_NULL) {
+        XTObject* header = (XTObject*)val;
+        if (header->type_id == XT_TYPE_INT) {
+            return ((XTInt*)val)->value;
+        }
     }
     return 0;
 }
@@ -94,13 +113,13 @@ XTArray* xt_array_new(size_t capacity) {
     return arr;
 }
 
-void xt_array_append(XTArray* arr, void* element) {
+void xt_array_append(XTArray* arr, XTValue element) {
     if (arr->length >= arr->capacity) {
         arr->capacity *= 2;
         if (arr->capacity == 0) arr->capacity = 4;
         arr->elements = (void**)realloc(arr->elements, sizeof(void*) * arr->capacity);
     }
-    arr->elements[arr->length++] = element;
+    arr->elements[arr->length++] = (void*)element;
     xt_retain(element);
 }
 
@@ -110,6 +129,16 @@ XTInstance* xt_instance_new(void* class_ptr, size_t field_count) {
     inst->fields = (void**)malloc(sizeof(void*) * field_count);
     memset(inst->fields, 0, sizeof(void*) * field_count);
     return inst;
+}
+
+void* xt_result_new(int is_success, void* value, void* error) {
+    XTResult* res = (XTResult*)xt_malloc(sizeof(XTResult), XT_TYPE_RESULT);
+    res->is_success = is_success;
+    res->value = value;
+    res->error = error;
+    if (value) xt_retain((XTValue)value);
+    if (error) xt_retain((XTValue)error);
+    return (void*)res;
 }
 
 XTString* xt_string_concat(XTString* s1, XTString* s2) {
@@ -127,8 +156,63 @@ XTString* xt_string_concat(XTString* s1, XTString* s2) {
     return res;
 }
 
+void xt_print_value(XTValue val) {
+    if (XT_IS_INT(val)) {
+        printf("%lld\n", XT_TO_INT(val));
+    } else if (val == XT_TRUE) {
+        printf("真\n");
+    } else if (val == XT_FALSE) {
+        printf("假\n");
+    } else if (val == XT_NULL) {
+        printf("空\n");
+    } else {
+        XTObject* obj = (XTObject*)val;
+        switch (obj->type_id) {
+            case XT_TYPE_STRING:
+                xt_print_string((XTString*)val);
+                break;
+            case XT_TYPE_FLOAT:
+                xt_print_float(((struct { XTObject h; double v; }*)val)->v);
+                break;
+            default:
+                printf("实例对象\n");
+        }
+    }
+}
+
 XTString* xt_int_to_string(int64_t val) {
     char buf[32];
     sprintf(buf, "%lld", val);
     return xt_string_new(buf);
+}
+
+XTString* xt_obj_to_string(XTValue val) {
+    if (XT_IS_INT(val)) {
+        return xt_int_to_string(XT_TO_INT(val));
+    }
+    if (val == XT_TRUE) return xt_string_new("真");
+    if (val == XT_FALSE) return xt_string_new("假");
+    if (val == XT_NULL) return xt_string_new("空");
+
+    XTObject* header = (XTObject*)val;
+    switch (header->type_id) {
+        case XT_TYPE_INT: // 兼容旧的装箱整数
+            return xt_int_to_string(((XTInt*)val)->value);
+        case XT_TYPE_STRING:
+            return (XTString*)val;
+        case XT_TYPE_BOOL:
+            return xt_string_new(((XTInt*)val)->value ? "真" : "假");
+        case XT_TYPE_INSTANCE:
+            return xt_string_new("实例对象");
+        case XT_TYPE_RESULT: {
+            XTResult* r = (XTResult*)val;
+            if (r->is_success) {
+                return xt_string_concat(xt_string_new("成功("), xt_string_concat(xt_obj_to_string((XTValue)r->value), xt_string_new(")")));
+            } else {
+                return xt_string_concat(xt_string_new("失败("), xt_string_concat(xt_obj_to_string((XTValue)r->error), xt_string_new(")")));
+            }
+        }
+        default:
+            return xt_string_new("未知对象");
+    }
 }

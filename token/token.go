@@ -27,6 +27,7 @@ const (
 	TOKEN_LPAREN    TokenType = "("
 	TOKEN_RPAREN    TokenType = ")"
 	TOKEN_COMMA     TokenType = ","
+	TOKEN_SEMICOLON TokenType = ";"
 	TOKEN_LBRACE    TokenType = "{"
 	TOKEN_RBRACE    TokenType = "}"
 	TOKEN_LBRACKET  TokenType = "["

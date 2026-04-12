@@ -1350,6 +1350,18 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 				return &object.String{Value: ""}
 			}
 			return &object.String{Value: str.Value[s:e]}
+		case "到整数":
+			val, err := strconv.ParseInt(str.Value, 10, 64)
+			if err != nil {
+				return newError(mce.GetLine(), "无法转换为整数: %s", str.Value)
+			}
+			return &object.Integer{Value: val}
+		case "到小数":
+			val, err := strconv.ParseFloat(str.Value, 64)
+			if err != nil {
+				return newError(mce.GetLine(), "无法转换为小数: %s", str.Value)
+			}
+			return &object.Float{Value: val}
 		}
 	}
 

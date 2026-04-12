@@ -137,9 +137,17 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_RPAREN, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case ',':
 		tok = token.Token{Type: token.TOKEN_COMMA, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+	case ';':
+		tok = token.Token{Type: token.TOKEN_SEMICOLON, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '"':
 		tok.Type = token.TOKEN_STRING
-		tok.Literal = l.readString()
+		tok.Literal = l.readString('"')
+		tok.Line = line
+		tok.Column = col
+		tok.HasSpaceBefore = hasSpace
+	case '\'':
+		tok.Type = token.TOKEN_STRING
+		tok.Literal = l.readString('\'')
 		tok.Line = line
 		tok.Column = col
 		tok.HasSpaceBefore = hasSpace
@@ -383,11 +391,11 @@ func isDigit(ch rune) bool {
 	return unicode.IsDigit(ch)
 }
 
-func (l *Lexer) readString() string {
+func (l *Lexer) readString(quote rune) string {
 	var out strings.Builder
 	for {
 		l.readChar()
-		if l.ch == '"' || l.ch == 0 {
+		if l.ch == quote || l.ch == 0 {
 			break
 		}
 		if l.ch == '\\' {
