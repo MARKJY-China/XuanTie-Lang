@@ -86,6 +86,19 @@ void xt_release(XTValue val) {
                 XTResult* res = (XTResult*)val;
                 if (res->value) xt_release((XTValue)res->value);
                 if (res->error) xt_release((XTValue)res->error);
+            } else if (obj->type_id == XT_TYPE_DICT) {
+                XTDict* dict = (XTDict*)val;
+                for (size_t i = 0; i < dict->capacity; i++) {
+                    XTDictEntry* entry = dict->buckets[i];
+                    while (entry) {
+                        XTDictEntry* next = entry->next;
+                        xt_release(entry->key);
+                        xt_release(entry->value);
+                        free(entry);
+                        entry = next;
+                    }
+                }
+                free(dict->buckets);
             }
             free(obj);
         }
@@ -174,6 +187,18 @@ void xt_print_value(XTValue val) {
             case XT_TYPE_FLOAT:
                 xt_print_float(((struct { XTObject h; double v; }*)val)->v);
                 break;
+            case XT_TYPE_ARRAY:
+                printf("数组(%zu)\n", ((XTArray*)val)->length);
+                break;
+            case XT_TYPE_DICT:
+                printf("字典(%zu)\n", ((XTDict*)val)->size);
+                break;
+            case XT_TYPE_RESULT: {
+                XTString* s = xt_obj_to_string(val);
+                printf("%s\n", s->data);
+                xt_release((XTValue)s);
+                break;
+            }
             default:
                 printf("实例对象\n");
         }
@@ -199,6 +224,7 @@ XTString* xt_obj_to_string(XTValue val) {
         case XT_TYPE_INT: // 兼容旧的装箱整数
             return xt_int_to_string(((XTInt*)val)->value);
         case XT_TYPE_STRING:
+            xt_retain(val);
             return (XTString*)val;
         case XT_TYPE_BOOL:
             return xt_string_new(((XTInt*)val)->value ? "真" : "假");
@@ -206,13 +232,150 @@ XTString* xt_obj_to_string(XTValue val) {
             return xt_string_new("实例对象");
         case XT_TYPE_RESULT: {
             XTResult* r = (XTResult*)val;
-            if (r->is_success) {
-                return xt_string_concat(xt_string_new("成功("), xt_string_concat(xt_obj_to_string((XTValue)r->value), xt_string_new(")")));
-            } else {
-                return xt_string_concat(xt_string_new("失败("), xt_string_concat(xt_obj_to_string((XTValue)r->error), xt_string_new(")")));
-            }
+            XTString* prefix = r->is_success ? xt_string_new("成功(") : xt_string_new("失败(");
+            XTString* inner = xt_obj_to_string((XTValue)(r->is_success ? r->value : r->error));
+            XTString* suffix = xt_string_new(")");
+            XTString* res1 = xt_string_concat(prefix, inner);
+            XTString* res2 = xt_string_concat(res1, suffix);
+            xt_release((XTValue)prefix);
+            xt_release((XTValue)inner);
+            xt_release((XTValue)suffix);
+            xt_release((XTValue)res1);
+            return res2;
         }
+        case XT_TYPE_DICT:
+            return xt_string_new("字典对象");
+        case XT_TYPE_ARRAY:
+            return xt_string_new("数组对象");
         default:
             return xt_string_new("未知对象");
     }
+}
+
+// --- 字典 (Hash Map) 实现 ---
+
+static uint64_t xt_hash_value(XTValue val) {
+    if (XT_IS_INT(val)) return (uint64_t)XT_TO_INT(val);
+    if (val == XT_TRUE) return 4;
+    if (val == XT_FALSE) return 2;
+    if (val == XT_NULL) return 0;
+
+    XTObject* obj = (XTObject*)val;
+    if (obj->type_id == XT_TYPE_STRING) {
+        XTString* s = (XTString*)val;
+        uint64_t hash = 5381;
+        for (size_t i = 0; i < s->length; i++) {
+            hash = ((hash << 5) + hash) + s->data[i];
+        }
+        return hash;
+    }
+    return (uint64_t)val; // 默认地址哈希
+}
+
+static int xt_values_equal(XTValue a, XTValue b) {
+    if (a == b) return 1;
+    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_TO_INT(a) == XT_TO_INT(b);
+    
+    if (XT_IS_PTR(a) && XT_IS_PTR(b) && a != XT_NULL && b != XT_NULL) {
+        XTObject* oa = (XTObject*)a;
+        XTObject* ob = (XTObject*)b;
+        if (oa->type_id == XT_TYPE_STRING && ob->type_id == XT_TYPE_STRING) {
+            XTString* sa = (XTString*)a;
+            XTString* sb = (XTString*)b;
+            if (sa->length != sb->length) return 0;
+            return memcmp(sa->data, sb->data, sa->length) == 0;
+        }
+    }
+    return 0;
+}
+
+XTDict* xt_dict_new(size_t capacity) {
+    if (capacity < 8) capacity = 8;
+    XTDict* dict = (XTDict*)xt_malloc(sizeof(XTDict), XT_TYPE_DICT);
+    dict->capacity = capacity;
+    dict->size = 0;
+    dict->buckets = (XTDictEntry**)calloc(capacity, sizeof(XTDictEntry*));
+    return dict;
+}
+
+void xt_dict_set(XTDict* dict, XTValue key, XTValue value) {
+    uint64_t hash = xt_hash_value(key);
+    size_t idx = hash % dict->capacity;
+
+    XTDictEntry* entry = dict->buckets[idx];
+    while (entry) {
+        if (xt_values_equal(entry->key, key)) {
+            xt_release(entry->value);
+            entry->value = value;
+            xt_retain(value);
+            return;
+        }
+        entry = entry->next;
+    }
+
+    // 新增条目
+    entry = (XTDictEntry*)malloc(sizeof(XTDictEntry));
+    entry->key = key;
+    entry->value = value;
+    entry->next = dict->buckets[idx];
+    dict->buckets[idx] = entry;
+    dict->size++;
+    xt_retain(key);
+    xt_retain(value);
+}
+
+XTValue xt_dict_get(XTDict* dict, XTValue key) {
+    if (!dict) return XT_NULL;
+    uint64_t hash = xt_hash_value(key);
+    size_t idx = hash % dict->capacity;
+
+    XTDictEntry* entry = dict->buckets[idx];
+    while (entry) {
+        if (xt_values_equal(entry->key, key)) {
+            return entry->value;
+        }
+        entry = entry->next;
+    }
+    return XT_NULL;
+}
+
+// --- 文件 I/O 实现 ---
+
+XTValue xt_file_read(XTValue path_val) {
+    if (XT_IS_INT(path_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    XTString* path = (XTString*)path_val;
+    
+    FILE* f = fopen(path->data, "rb");
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法打开文件"));
+
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    char* buf = (char*)malloc(size + 1);
+    fread(buf, 1, size, f);
+    buf[size] = '\0';
+    fclose(f);
+
+    XTString* content = xt_string_new(buf);
+    free(buf);
+    return (XTValue)xt_result_new(1, (void*)content, NULL);
+}
+
+XTValue xt_file_write(XTValue path_val, XTValue content_val) {
+    if (XT_IS_INT(path_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    XTString* path = (XTString*)path_val;
+    XTString* content = xt_obj_to_string(content_val);
+
+    FILE* f = fopen(path->data, "wb");
+    if (!f) {
+        xt_release((XTValue)content);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入文件"));
+    }
+
+    fwrite(content->data, 1, content->length, f);
+    fclose(f);
+    xt_release((XTValue)content);
+
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
 }

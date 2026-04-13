@@ -80,8 +80,10 @@ func (c *LLVMCompiler) Compile() string {
 	c.emit("")
 
 	// 3. 外部运行时函数声明
+	c.emit("%%XTObject = type { i32, i32 }")
 	c.emit("%%XTString = type { i32, i32, i8*, i64 }")
 	c.emit("%%XTArray = type { i32, i32, i8**, i64, i64 }")
+	c.emit("%%XTDict = type { i32, i32, i8***, i64, i64 }")
 	c.emit("%%XTInstance = type { i32, i32, i8*, i8** }")
 	c.emit("%%XTResult = type { i32, i32, i1, i8*, i8* }")
 	c.emit("declare void @xt_init()")
@@ -96,6 +98,9 @@ func (c *LLVMCompiler) Compile() string {
 	c.emit("declare %%XTString* @xt_string_new(i8*)")
 	c.emit("declare %%XTArray* @xt_array_new(i64)")
 	c.emit("declare void @xt_array_append(%%XTArray*, i64)")
+	c.emit("declare %%XTDict* @xt_dict_new(i64)")
+	c.emit("declare void @xt_dict_set(%%XTDict*, i64, i64)")
+	c.emit("declare i64 @xt_dict_get(%%XTDict*, i64)")
 	c.emit("declare %%XTInstance* @xt_instance_new(i8*, i64)")
 	c.emit("declare i8* @xt_result_new(i1, i8*, i8*)")
 	c.emit("declare %%XTString* @xt_string_concat(%%XTString*, %%XTString*)")
@@ -104,6 +109,8 @@ func (c *LLVMCompiler) Compile() string {
 	c.emit("declare void @xt_retain(i64)")
 	c.emit("declare void @xt_release(i64)")
 	c.emit("declare i64 @xt_to_int(i64)")
+	c.emit("declare i64 @xt_file_read(i64)")
+	c.emit("declare i64 @xt_file_write(i64, i64)")
 	c.emit("")
 
 	// 4. 写入全局变量定义
@@ -550,26 +557,142 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		for _, el := range e.Elements {
 			valReg, valType, _ := c.compileExpression(el)
 			objReg, _ := c.convertToObj(valReg, valType)
-			c.emit("  call void @xt_array_append(%%XTArray* %s, i8* %s)", reg, objReg)
+			xtValReg := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", xtValReg, objReg)
+			c.emit("  call void @xt_array_append(%%XTArray* %s, i64 %s)", reg, xtValReg)
 		}
 		return reg, "%XTArray*", ""
+	case *ast.DictLiteral:
+		reg := c.nextReg()
+		c.emit("  %s = call %%XTDict* @xt_dict_new(i64 %d)", reg, len(e.Pairs)*2)
+		for k, v := range e.Pairs {
+			kReg, kType, _ := c.compileExpression(k)
+			kObj, _ := c.convertToObj(kReg, kType)
+			kXtVal := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", kXtVal, kObj)
+
+			vReg, vType, _ := c.compileExpression(v)
+			vObj, _ := c.convertToObj(vReg, vType)
+			vXtVal := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", vXtVal, vObj)
+
+			c.emit("  call void @xt_dict_set(%%XTDict* %s, i64 %s, i64 %s)", reg, kXtVal, vXtVal)
+		}
+		return reg, "%XTDict*", ""
 	case *ast.IndexExpression:
 		leftReg, leftType, _ := c.compileExpression(e.Left)
-		idxReg, _, _ := c.compileExpression(e.Index)
+		idxReg, idxType, _ := c.compileExpression(e.Index)
 		if leftType == "%XTArray*" {
 			elemPtrPtr := c.nextReg()
 			c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 2", elemPtrPtr, leftReg)
 			elemsPtr := c.nextReg()
 			c.emit("  %s = load i8**, i8*** %s", elemsPtr, elemPtrPtr)
+
+			// Untag index if it's a tagged int
+			idxUntag := c.nextReg()
+			if idxType == "i64" {
+				c.emit("  %s = ashr i64 %s, 1", idxUntag, idxReg)
+			} else {
+				c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, idxReg)
+			}
+
 			elemPtr := c.nextReg()
-			c.emit("  %s = getelementptr i8*, i8** %s, i64 %s", elemPtr, elemsPtr, idxReg)
+			c.emit("  %s = getelementptr i8*, i8** %s, i64 %s", elemPtr, elemsPtr, idxUntag)
 			valPtr := c.nextReg()
 			c.emit("  %s = load i8*, i8** %s", valPtr, elemPtr)
 			return valPtr, "i8*", ""
+		} else if leftType == "%XTDict*" {
+			idxObj, _ := c.convertToObj(idxReg, idxType)
+			idxXtVal := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", idxXtVal, idxObj)
+
+			resXtVal := c.nextReg()
+			c.emit("  %s = call i64 @xt_dict_get(%%XTDict* %s, i64 %s)", resXtVal, leftReg, idxXtVal)
+			return resXtVal, "i64", ""
 		}
 		return "0", "i64", ""
 	case *ast.MemberCallExpression:
+		// 特殊处理内置对象 文件
+		if ident, ok := e.Object.(*ast.Identifier); ok && ident.Value == "文件" {
+			if e.Member.Value == "读" {
+				valReg, valType, _ := c.compileExpression(e.Arguments[0])
+				objReg, _ := c.convertToObj(valReg, valType)
+				xtVal := c.nextReg()
+				c.emit("  %s = ptrtoint i8* %s to i64", xtVal, objReg)
+				res := c.nextReg()
+				c.emit("  %s = call i64 @xt_file_read(i64 %s)", res, xtVal)
+				return res, "i64", ""
+			} else if e.Member.Value == "写" {
+				pathReg, pathType, _ := c.compileExpression(e.Arguments[0])
+				pathObj, _ := c.convertToObj(pathReg, pathType)
+				pathXtVal := c.nextReg()
+				c.emit("  %s = ptrtoint i8* %s to i64", pathXtVal, pathObj)
+
+				contReg, contType, _ := c.compileExpression(e.Arguments[1])
+				contObj, _ := c.convertToObj(contReg, contType)
+				contXtVal := c.nextReg()
+				c.emit("  %s = ptrtoint i8* %s to i64", contXtVal, contObj)
+
+				res := c.nextReg()
+				c.emit("  %s = call i64 @xt_file_write(i64 %s, i64 %s)", res, pathXtVal, contXtVal)
+				return res, "i64", ""
+			}
+		}
+
 		objReg, objType, objClass := c.compileExpression(e.Object)
+
+		// 优先处理已知类型的成员 (如 Result.解包, Array.长度, Dict.大小)
+		if e.Member.Value == "解包" {
+			resPtr := c.nextReg()
+			if objType == "i64" {
+				c.emit("  %s = inttoptr i64 %s to %%XTResult*", resPtr, objReg)
+			} else {
+				c.emit("  %s = bitcast %s %s to %%XTResult*", resPtr, objType, objReg)
+			}
+
+			isSuccPtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 2", isSuccPtr, resPtr)
+			isSucc := c.nextReg()
+			c.emit("  %s = load i1, i1* %s", isSucc, isSuccPtr)
+
+			valReg := c.nextReg()
+			errReg := c.nextReg()
+			resReg := c.nextReg()
+
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 3", valReg, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 4", errReg, resPtr)
+
+			vPtr := c.nextReg()
+			c.emit("  %s = load i8*, i8** %s", vPtr, valReg)
+			ePtr := c.nextReg()
+			c.emit("  %s = load i8*, i8** %s", ePtr, errReg)
+
+			c.emit("  %s = select i1 %s, i8* %s, i8* %s", resReg, isSucc, vPtr, ePtr)
+			return resReg, "i8*", ""
+		} else if e.Member.Value == "长度" && objType == "%XTArray*" {
+			lenPtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", lenPtr, objReg)
+			lenVal := c.nextReg()
+			c.emit("  %s = load i64, i64* %s", lenVal, lenPtr)
+			// Tag the result
+			resShift := c.nextReg()
+			resReg := c.nextReg()
+			c.emit("  %s = shl i64 %s, 1", resShift, lenVal)
+			c.emit("  %s = or i64 %s, 1", resReg, resShift)
+			return resReg, "i64", ""
+		} else if e.Member.Value == "大小" && objType == "%XTDict*" {
+			sizePtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTDict, %%XTDict* %s, i32 0, i32 4", sizePtr, objReg)
+			sizeVal := c.nextReg()
+			c.emit("  %s = load i64, i64* %s", sizeVal, sizePtr)
+			// Tag the result
+			resShift := c.nextReg()
+			resReg := c.nextReg()
+			c.emit("  %s = shl i64 %s, 1", resShift, sizeVal)
+			c.emit("  %s = or i64 %s, 1", resReg, resShift)
+			return resReg, "i64", ""
+		}
+
 		// 如果是 i8* 或 i64，尝试转为 %XTInstance*
 		if objType == "i8*" || objType == "ptr" || objType == "i64" {
 			newReg := c.nextReg()
@@ -658,9 +781,14 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		rightReg, rightType, _ := c.compileExpression(e.Right)
 
 		// 如果是对象，尝试转为整数 (针对 + - * / 等)
-		if leftType == "i8*" || leftType == "ptr" || strings.HasSuffix(leftType, "*") {
+		isArithmeticOrCompare := false
+		switch e.Operator {
+		case "+", "-", "*", "/", "==", "!=", "<", ">", "<=", ">=":
+			isArithmeticOrCompare = true
+		}
+
+		if isArithmeticOrCompare && (leftType == "i8*" || leftType == "ptr" || strings.HasSuffix(leftType, "*")) {
 			// 只有在不是运算符重载的情况下才转为整数
-			// 但我们现在无法确定是否是重载，所以先尝试查找
 			magicMethod := ""
 			switch e.Operator {
 			case "+":
@@ -715,7 +843,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				}
 			}
 		}
-		if rightType == "i8*" || rightType == "ptr" || strings.HasSuffix(rightType, "*") {
+		if isArithmeticOrCompare && (rightType == "i8*" || rightType == "ptr" || strings.HasSuffix(rightType, "*")) {
 			reg := c.nextReg()
 			c.emit("  %s = call i64 @xt_to_int(i8* %s)", reg, rightReg)
 			rightReg = reg
@@ -870,6 +998,55 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 
 		if ident, ok := cas.Pattern.(*ast.Identifier); ok && ident.Value == "_" {
 			c.emit("  br label %%%s", bodyLabel)
+		} else if prefix, ok := cas.Pattern.(*ast.PrefixExpression); ok && prefix.Operator == "是" {
+			// 处理 '是 类型' 或 '是 成功/失败'
+			if ident, ok := prefix.Right.(*ast.Identifier); ok {
+				if ident.Value == "成功" || ident.Value == "失败" {
+					// 检查是否是 Result 类型且匹配成功/失败
+					// 1. 检查 type_id == XT_TYPE_RESULT
+					// 2. 检查 is_success == 1 (成功) 或 0 (失败)
+
+					objPtr := c.nextReg()
+					if valType == "i64" {
+						c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, valReg)
+					} else {
+						c.emit("  %s = bitcast %s %s to %%XTObject*", objPtr, valType, valReg)
+					}
+
+					typeIdPtr := c.nextReg()
+					c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+					typeId := c.nextReg()
+					c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
+
+					isResult := c.nextReg()
+					c.emit("  %s = icmp eq i32 %s, 8", isResult, typeId) // XT_TYPE_RESULT = 8
+
+					resLabel := c.nextLabel("match.is_result")
+					c.emit("  br i1 %s, label %%%s, label %%%s", isResult, resLabel, nextCaseLabel)
+
+					c.emit("%s:", resLabel)
+					resPtr := c.nextReg()
+					c.emit("  %s = bitcast %%XTObject* %s to %%XTResult*", resPtr, objPtr)
+
+					isSuccPtr := c.nextReg()
+					c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 2", isSuccPtr, resPtr)
+					isSucc := c.nextReg()
+					c.emit("  %s = load i1, i1* %s", isSucc, isSuccPtr)
+
+					condReg := c.nextReg()
+					if ident.Value == "成功" {
+						c.emit("  %s = icmp eq i1 %s, 1", condReg, isSucc)
+					} else {
+						c.emit("  %s = icmp eq i1 %s, 0", condReg, isSucc)
+					}
+					c.emit("  br i1 %s, label %%%s, label %%%s", condReg, bodyLabel, nextCaseLabel)
+				} else {
+					// 其他类型判断 (暂不实现)
+					c.emit("  br label %%%s", nextCaseLabel)
+				}
+			} else {
+				c.emit("  br label %%%s", nextCaseLabel)
+			}
 		} else {
 			patReg, patType, _ := c.compileExpression(cas.Pattern)
 			condReg := c.nextReg()
@@ -973,16 +1150,34 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		}
 	case *ast.IndexExpression:
 		leftReg, leftType, _ := c.compileExpression(left.Left)
-		idxReg, _, _ := c.compileExpression(left.Index)
+		idxReg, idxType, _ := c.compileExpression(left.Index)
 		if leftType == "%XTArray*" {
 			elemPtrPtr := c.nextReg()
 			c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 2", elemPtrPtr, leftReg)
 			elemsPtr := c.nextReg()
 			c.emit("  %s = load i8**, i8*** %s", elemsPtr, elemPtrPtr)
+
+			idxUntag := c.nextReg()
+			if idxType == "i64" {
+				c.emit("  %s = ashr i64 %s, 1", idxUntag, idxReg)
+			} else {
+				c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, idxReg)
+			}
+
 			elemPtr := c.nextReg()
-			c.emit("  %s = getelementptr i8*, i8** %s, i64 %s", elemPtr, elemsPtr, idxReg)
+			c.emit("  %s = getelementptr i8*, i8** %s, i64 %s", elemPtr, elemsPtr, idxUntag)
 			objReg, _ := c.convertToObj(valReg, valType)
 			c.emit("  store i8* %s, i8** %s", objReg, elemPtr)
+		} else if leftType == "%XTDict*" {
+			idxObj, _ := c.convertToObj(idxReg, idxType)
+			idxXtVal := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", idxXtVal, idxObj)
+
+			valObj, _ := c.convertToObj(valReg, valType)
+			valXtVal := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", valXtVal, valObj)
+
+			c.emit("  call void @xt_dict_set(%%XTDict* %s, i64 %s, i64 %s)", leftReg, idxXtVal, valXtVal)
 		}
 	case *ast.MemberCallExpression:
 		objReg, objType, objClass := c.compileExpression(left.Object)

@@ -1318,14 +1318,11 @@ func (p *Parser) parseAwaitExpression() ast.Expression {
 }
 
 func (p *Parser) parseResultLiteral() ast.Expression {
-	// 成功(val) 或 失败(err) 实际上会被解析为类似 CallExpression
-	// 但为了方便后续处理，我们可以直接复用 CallExpression 的逻辑，
-	// 或者在 Evaluator 中特殊处理这两个关键字。
-	// 这里简单处理：把它当成一个特殊的标识符调用。
 	ident := &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
-	if !p.expectPeek(token.TOKEN_LPAREN) {
-		return nil
+	if p.peek.Type != token.TOKEN_LPAREN {
+		return ident
 	}
+	p.nextToken()
 	return p.parseCallExpression(ident)
 }
 

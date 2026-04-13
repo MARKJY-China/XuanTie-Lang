@@ -81,6 +81,19 @@ typedef struct {
     void* error;
 } XTResult;
 
+typedef struct XTDictEntry {
+    XTValue key;
+    XTValue value;
+    struct XTDictEntry* next;
+} XTDictEntry;
+
+typedef struct {
+    XTObject header;
+    XTDictEntry** buckets;
+    size_t capacity;
+    size_t size;
+} XTDict;
+
 // 运行时接口
 void xt_init();
 void xt_print_int(int64_t val);
@@ -93,6 +106,11 @@ XTValue xt_int_new(int64_t val);    // 返回 XTValue
 void* xt_float_new(double val);
 XTValue xt_bool_new(int val);      // 返回 XTValue
 XTString* xt_string_new(const char* data);
+XTArray* xt_array_new(size_t capacity);
+void xt_array_append(XTArray* arr, XTValue element);
+XTDict* xt_dict_new(size_t capacity);
+void xt_dict_set(XTDict* dict, XTValue key, XTValue value);
+XTValue xt_dict_get(XTDict* dict, XTValue key);
 void* xt_malloc(size_t size, uint32_t type_id);
 
 void xt_retain(XTValue val);       // 参数改为 XTValue
@@ -102,6 +120,10 @@ int64_t xt_to_int(XTValue val);    // 参数改为 XTValue
 XTString* xt_string_concat(XTString* s1, XTString* s2);
 XTString* xt_int_to_string(int64_t val);
 XTString* xt_obj_to_string(XTValue val); // 参数改为 XTValue
+
+// 文件 I/O
+XTValue xt_file_read(XTValue path);
+XTValue xt_file_write(XTValue path, XTValue content);
 
 // 运算接口
 void* xt_add(void* a, void* b);
