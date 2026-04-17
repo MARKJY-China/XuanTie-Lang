@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.13.3"
+var version = "0.14.3"
 
 const (
 	colorReset = "\033[0m"
@@ -200,11 +200,13 @@ func main() {
 			outputName += ".exe"
 		}
 
-		cmd := exec.Command("clang", "-O3", irFile, rtC, "-o", outputName)
+		cmd := exec.Command("clang", "-O0", irFile, rtC, "-o", outputName)
 		out, err := cmd.CombinedOutput()
+		fmt.Printf("生成的 LLVM IR 已保存至: %s\n", irFile)
+
+		// 编译失败时输出详细信息
 		if err != nil {
 			fmt.Printf("LLVM 编译失败 (请确保已安装 LLVM/Clang): %v\n", err)
-			fmt.Printf("生成的 LLVM IR 已保存至: %s\n", irFile)
 			fmt.Printf("错误详情: %s\n", string(out))
 			return
 		}

@@ -72,6 +72,7 @@ typedef struct {
     XTObject header;
     void* class_ptr;
     void** fields;
+    size_t field_count;
 } XTInstance;
 
 typedef struct {
@@ -106,6 +107,7 @@ XTValue xt_int_new(int64_t val);    // 返回 XTValue
 void* xt_float_new(double val);
 XTValue xt_bool_new(int val);      // 返回 XTValue
 XTString* xt_string_new(const char* data);
+XTString* xt_string_from_char(char c);
 XTArray* xt_array_new(size_t capacity);
 void xt_array_append(XTArray* arr, XTValue element);
 XTDict* xt_dict_new(size_t capacity);

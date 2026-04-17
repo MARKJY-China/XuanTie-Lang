@@ -1,0 +1,11 @@
+package main
+import (
+	"io/ioutil"
+	"strings"
+)
+func main() {
+	b, _ := ioutil.ReadFile("xuantie_compiler/词法.xt")
+	s := string(b)
+	s = strings.ReplaceAll(s, "} 否 若", "} 抑")
+	ioutil.WriteFile("xuantie_compiler/词法.xt", []byte(s), 0644)
+}
