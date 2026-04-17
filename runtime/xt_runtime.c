@@ -16,9 +16,9 @@ static void print_pool_stats() {
 
 void xt_print_pool_stats() {
     printf("--- Memory Pool Stats ---\n");
-    printf("Pool Allocations: %d\n", pool_alloc_count);
-    printf("Pool Frees:       %d\n", pool_free_count);
-    printf("Malloc Fallbacks: %d\n", malloc_fallback_count);
+    // printf("Pool Allocations: %d\n", pool_alloc_count);
+    // printf("Pool Frees:       %d\n", pool_free_count);
+    // printf("Malloc Fallbacks: %d\n", malloc_fallback_count);
     printf("-------------------------\n");
 }
 
@@ -54,7 +54,11 @@ XTString* xt_string_new(const char* data) {
     XTString* s = (XTString*)xt_malloc(sizeof(XTString), XT_TYPE_STRING);
     s->length = strlen(data);
     s->data = (char*)malloc(s->length + 1);
+#ifdef _WIN32
+    strcpy_s(s->data, s->length + 1, data);
+#else
     strcpy(s->data, data);
+#endif
     XT_DEBUG_PRINT("xt_string_new [%s] at %p\n", data, (void*)s);
     return s;
 }
@@ -337,8 +341,13 @@ XTString* xt_string_concat(XTString* s1, XTString* s2) {
     XT_DEBUG_PRINT("concat [%s] and [%s]\n", s1->data, s2->data);
     size_t new_len = s1->length + s2->length;
     char* new_data = (char*)malloc(new_len + 1);
+#ifdef _WIN32
+    strcpy_s(new_data, new_len + 1, s1->data);
+    strcat_s(new_data, new_len + 1, s2->data);
+#else
     strcpy(new_data, s1->data);
     strcat(new_data, s2->data);
+#endif
     
     XTString* res = xt_string_new(new_data);
     free(new_data);
@@ -541,7 +550,12 @@ XTValue xt_file_read(XTValue path_val) {
     if (XT_IS_INT(path_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
     XTString* path = (XTString*)path_val;
     
-    FILE* f = fopen(path->data, "rb");
+    FILE* f;
+#ifdef _WIN32
+    fopen_s(&f, path->data, "rb");
+#else
+    f = fopen(path->data, "rb");
+#endif
     if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法打开文件"));
 
     fseek(f, 0, SEEK_END);
@@ -563,7 +577,12 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
     XTString* path = (XTString*)path_val;
     XTString* content = xt_obj_to_string(content_val);
 
-    FILE* f = fopen(path->data, "wb");
+    FILE* f;
+#ifdef _WIN32
+    fopen_s(&f, path->data, "wb");
+#else
+    f = fopen(path->data, "wb");
+#endif
     if (!f) {
         xt_release((XTValue)content);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入文件"));

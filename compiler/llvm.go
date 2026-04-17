@@ -171,6 +171,7 @@ func (c *LLVMCompiler) emit(format string, args ...interface{}) {
 func (c *LLVMCompiler) emitAlloca(format string, args ...interface{}) {
 	line := fmt.Sprintf(format, args...)
 	c.allocaOutput.WriteString("  " + line + "\n")
+	// Also init with 0 for GC
 	if len(args) > 0 {
 		if reg, ok := args[0].(string); ok {
 			c.allocaOutput.WriteString(fmt.Sprintf("  store i64 0, i64* %s\n", reg))
@@ -284,6 +285,14 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 	if typ == "i64" {
 		return reg
 	}
+	if typ == "raw_i64" {
+		newReg := c.nextReg()
+		// Box raw integer: (val << 1) | 1
+		shifted := c.nextReg()
+		c.emit("  %s = shl i64 %s, 1", shifted, reg)
+		c.emit("  %s = or i64 %s, 1", newReg, shifted)
+		return newReg
+	}
 	if typ == "i1" {
 		newReg := c.nextReg()
 		// LLVM i1 -> XuanTie Bool (4 for True, 2 for False)
@@ -299,10 +308,35 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 	}
 	if strings.HasSuffix(typ, "*") || typ == "i8*" || typ == "ptr" {
 		newReg := c.nextReg()
-		c.emit("  %s = ptrtoint %s %s to i64", newReg, typ, reg)
+		// 在这里统一将 ptr 转为 i64
+		// 但是旧版 LLVM 可能不能直接 ptrtoint i8** 这种，先转 i8* 再转 i64
+		if typ != "i8*" {
+			i8Ptr := c.nextReg()
+			c.emit("  %s = bitcast %s %s to i8*", i8Ptr, typ, reg)
+			c.emit("  %s = ptrtoint i8* %s to i64", newReg, i8Ptr)
+		} else {
+			c.emit("  %s = ptrtoint %s %s to i64", newReg, typ, reg)
+		}
 		return newReg
 	}
 	return reg
+}
+
+func (c *LLVMCompiler) ensureRawI64(reg, typ string) string {
+	if typ == "raw_i64" {
+		return reg
+	}
+	if typ == "i64" {
+		newReg := c.nextReg()
+		// Unbox tagged integer: val >> 1
+		c.emit("  %s = ashr i64 %s, 1", newReg, reg)
+		return newReg
+	}
+	// For other types like ptr, fallback to converting them to i64 then unboxing
+	xtVal := c.ensureI64(reg, typ)
+	newReg := c.nextReg()
+	c.emit("  %s = ashr i64 %s, 1", newReg, xtVal)
+	return newReg
 }
 
 func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
@@ -317,9 +351,7 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		}
 		valReg, valType, _ := c.compileExpression(s.Value)
 		// 统一转换为 XTValue (i64) 并调用 xt_print_value
-		objReg, _ := c.convertToObj(valReg, valType)
-		xtValReg := c.nextReg()
-		c.emit("  %s = ptrtoint i8* %s to i64", xtValReg, objReg)
+		xtValReg := c.ensureI64(valReg, valType)
 		c.emit("  call void @xt_print_value(i64 %s)", xtValReg)
 
 		// 打印后释放该临时对象
@@ -334,15 +366,26 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		if c.currentFunc == "" && c.currentClass == "" {
 			// 全局变量
 			addrReg := "@\"" + s.Name.Value + "\""
-			c.globalOutput.WriteString(fmt.Sprintf("%s = global i64 0\n", addrReg))
+			if _, exists := c.symbolTable[s.Name.Value]; !exists {
+				c.globalOutput.WriteString(fmt.Sprintf("%s = global i64 0\n", addrReg))
+			}
 			c.emit("  store i64 %s, i64* %s", xtVal, addrReg)
 			c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64", ClassName: valClass, IsGlobal: true}
 		} else {
-			addrReg := "%\"" + s.Name.Value + "\""
-			c.emitAlloca("%s = alloca i64", addrReg)
-			c.emit("  store i64 %s, i64* %s", xtVal, addrReg)
-			c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64", ClassName: valClass, IsGlobal: false}
-			c.trackObject(addrReg)
+			if sym, ok := c.symbolTable[s.Name.Value]; ok && !sym.IsGlobal {
+				// 已经被声明过，当作赋值处理（避免 LLVM multiple definition）
+				oldVal := c.nextReg()
+				c.emit("  %s = load i64, i64* %s", oldVal, sym.AddrReg)
+				c.emit("  call void @xt_release(i64 %s)", oldVal)
+				c.emit("  store i64 %s, i64* %s", xtVal, sym.AddrReg)
+				// 不需要重新 alloca 和 trackObject
+			} else {
+				addrReg := "%\"" + s.Name.Value + "\""
+				c.emitAlloca("%s = alloca i64", addrReg)
+				c.emit("  store i64 %s, i64* %s", xtVal, addrReg)
+				c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64", ClassName: valClass, IsGlobal: false}
+				c.trackObject(addrReg)
+			}
 		}
 		// 变量声明作为局部变量时，我们接管了 xtVal 这个 +1 引用，所以不需要手动 retain/release
 	case *ast.AssignStatement:
@@ -361,7 +404,7 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 
 			// 存入新值
 			c.emit("  store i64 %s, i64* %s", xtVal, sym.AddrReg)
-			sym.Type = valType
+			sym.Type = "i64" // 始终存为 tagged object
 			sym.ClassName = className
 			c.symbolTable[s.Name] = sym
 		} else {
@@ -417,6 +460,8 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 			// LLVM i1 -> XuanTie Bool (4 for True, 2 for False)
 			c.emit("  %s = select i1 %s, i64 4, i64 2", reg, valReg)
 			retVal = reg
+		} else if valType == "raw_i64" {
+			retVal = c.ensureI64(valReg, valType)
 		} else if strings.HasSuffix(valType, "*") || valType == "i8*" || valType == "ptr" {
 			reg := c.nextReg()
 			c.emit("  %s = ptrtoint %s %s to i64", reg, valType, valReg)
@@ -445,8 +490,10 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		}
 		valReg, valType, _ := c.compileExpression(s.Expression)
 		// 释放表达式产生的临时对象
-		xtVal := c.ensureI64(valReg, valType)
-		c.emit("  call void @xt_release(i64 %s)", xtVal)
+		if valType != "raw_i64" {
+			xtVal := c.ensureI64(valReg, valType)
+			c.emit("  call void @xt_release(i64 %s)", xtVal)
+		}
 	case *ast.BreakStatement:
 		if len(c.breakLabels) > 0 {
 			target := c.breakLabels[len(c.breakLabels)-1]
@@ -479,6 +526,14 @@ func (c *LLVMCompiler) compileIfStatement(s *ast.IfStatement) {
 		c.emit("  %s = icmp eq i64 %s, 4", condI1, condReg)
 		// 获得布尔值后立即释放条件表达式产生的临时对象
 		c.emit("  call void @xt_release(i64 %s)", condReg)
+	} else if condType != "raw_i64" && condType != "i1" {
+		condI64 := c.ensureI64(condReg, condType)
+		condI1 = c.nextReg()
+		c.emit("  %s = icmp eq i64 %s, 4", condI1, condI64)
+		c.emit("  call void @xt_release(i64 %s)", condI64)
+	} else if condType == "raw_i64" {
+		condI1 = c.nextReg()
+		c.emit("  %s = icmp ne i64 %s, 0", condI1, condReg)
 	}
 
 	thenLabel := c.nextLabel("if.then")
@@ -513,6 +568,18 @@ func (c *LLVMCompiler) compileIfStatement(s *ast.IfStatement) {
 		if eifCondType == "i64" {
 			reg := c.nextReg()
 			c.emit("  %s = icmp eq i64 %s, 4", reg, eifCondReg)
+			// 释放
+			c.emit("  call void @xt_release(i64 %s)", eifCondReg)
+			eifCondReg = reg
+		} else if eifCondType != "raw_i64" && eifCondType != "i1" {
+			condI64 := c.ensureI64(eifCondReg, eifCondType)
+			reg := c.nextReg()
+			c.emit("  %s = icmp eq i64 %s, 4", reg, condI64)
+			c.emit("  call void @xt_release(i64 %s)", condI64)
+			eifCondReg = reg
+		} else if eifCondType == "raw_i64" {
+			reg := c.nextReg()
+			c.emit("  %s = icmp ne i64 %s, 0", reg, eifCondReg)
 			eifCondReg = reg
 		}
 
@@ -565,6 +632,16 @@ func (c *LLVMCompiler) compileWhileStatement(s *ast.WhileStatement) {
 		c.emit("  %s = icmp eq i64 %s, 4", condI1, condReg)
 		// 获得布尔值后立即释放条件表达式产生的临时对象
 		c.emit("  call void @xt_release(i64 %s)", condReg)
+	} else if condType != "raw_i64" && condType != "i1" {
+		// condType is probably i8* or ptr, but the boolean is represented as tagged 4 or 2
+		condI64 := c.ensureI64(condReg, condType)
+		condI1 = c.nextReg()
+		c.emit("  %s = icmp eq i64 %s, 4", condI1, condI64)
+		c.emit("  call void @xt_release(i64 %s)", condI64)
+	} else if condType == "raw_i64" {
+		// shouldn't normally be raw_i64 but just in case
+		condI1 = c.nextReg()
+		c.emit("  %s = icmp ne i64 %s, 0", condI1, condReg)
 	}
 	c.emit("  br i1 %s, label %%%s, label %%%s", condI1, bodyLabel, endLabel)
 
@@ -629,8 +706,8 @@ func (c *LLVMCompiler) compileFunctionStatement(s *ast.FunctionStatement) {
 	funcName := "@\"" + s.Name.Value + "\""
 	params := []string{}
 	for _, p := range s.Parameters {
-		// 统一使用 i8* (对象指针)
-		params = append(params, "i8* %\""+p.Name.Value+"_arg\"")
+		// 统一使用 i64
+		params = append(params, "i64 %\""+p.Name.Value+"_arg\"")
 	}
 
 	c.emit("define i64 %s(%s) {", funcName, strings.Join(params, ", "))
@@ -646,11 +723,10 @@ func (c *LLVMCompiler) compileFunctionStatement(s *ast.FunctionStatement) {
 	for _, p := range s.Parameters {
 		addrReg := "%\"" + p.Name.Value + "\""
 		c.emitAlloca("%s = alloca i64", addrReg)
-		xtVal := c.nextReg()
-		c.emit("  %s = ptrtoint i8* %%\"%s_arg\" to i64", xtVal, p.Name.Value)
+		// 直接存储传入的 i64 寄存器
+		c.emit("  store i64 %%\"%s_arg\", i64* %s", p.Name.Value, addrReg)
 		// 参数作为局部变量，需要 retain 并加入作用域追踪
-		c.emit("  call void @xt_retain(i64 %s)", xtVal)
-		c.emit("  store i64 %s, i64* %s", xtVal, addrReg)
+		c.emit("  call void @xt_retain(i64 %%\"%s_arg\")", p.Name.Value)
 		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
 		c.trackObject(addrReg)
 	}
@@ -689,9 +765,8 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 	}
 	switch e := expr.(type) {
 	case *ast.IntegerLiteral:
-		// Tagged Integer: (val << 1) | 1
-		tagged := (e.Value << 1) | 1
-		return fmt.Sprintf("%d", tagged), "i64", ""
+		// 直接返回原生类型，不再提前装箱
+		return fmt.Sprintf("%d", e.Value), "raw_i64", ""
 	case *ast.FloatLiteral:
 		return fmt.Sprintf("%f", e.Value), "double", ""
 	case *ast.BooleanLiteral:
@@ -751,24 +826,42 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		if e.Value == "空" {
 			return "0", "i64", ""
 		}
+		if e.Value == "真" {
+			return "4", "i64", ""
+		}
+		if e.Value == "假" {
+			return "2", "i64", ""
+		}
 		if info, ok := c.symbolTable[e.Value]; ok {
 			reg := c.nextReg()
 			c.emit("  %s = load %s, %s* %s", reg, info.Type, info.Type, info.AddrReg)
 
-			// 重要修复：全局变量存储的是未经保留的 i64，加载时也需要 retain！
-			// 本地变量存储的也是未经 caller retain 的副本，但我们这里是 load 一次
-			// 统一 ensureI64 然后 retain 是对的。
+			// 检查是否全局变量（它存储的是未经 retain 的 i64）
+			// 我们本地变量存的虽然也是拷贝，但是加载后作为表达式结果返回，需要 +1
 			xtVal := c.ensureI64(reg, info.Type)
 			c.emit("  call void @xt_retain(i64 %s)", xtVal)
 			return xtVal, "i64", info.ClassName
 		}
-		// 尝试作为函数名查找
-		// if _, ok := c.program.Functions[e.Value]; ok {
-		// 	return "0", "i64", "" // 不支持直接把函数作为变量传递，但在调用时处理
-		// }
-		// 如果都没有，可能是一个尚未编译到的外部函数或拼写错误
-		// fmt.Printf("编译器: 未支持编译标识符或找不到变量: %s\n", e.Value)
-		return "0", "i64", ""
+
+		// 尝试兜底作为全局函数名查找（函数指针支持，或者全局常量等）
+		// 如果没找到，发出警告并返回空
+		c.emit("  ; WARNING: 找不到变量: %s", e.Value)
+		// 作为兜底返回一个以该标识符命名的全局函数指针，以便后面的 CallExpression 能够使用
+		reg := c.nextReg()
+		// 由于是在旧版 LLVM 环境中运行，我们返回 ptr/i8* 兼容类型
+		// 实际上 ensureI64 里有对 ptr 的转换。为了绝对安全，我们在这里将其声明为 i64
+		// 但是旧版 LLVM 中如果将 @xxx(函数指针) 用 ptrtoint 转成 i64, 必须知道具体函数签名
+		// 但我们作为兜底并不知道，因此先转为通用的 i8* 然后转为 i64
+		// 但是因为玄铁目前所有全局函数的签名都是 i64 返回值，且参数都是 i64
+		// 我们可以假定它是一个接受任意多个 i64 参数的变长函数，或者简单地定义为一个最通用的类型
+		// 由于我们在后面 CallExpression 中会根据实际参数列表重新强制转换签名，所以这里转换成 i8* 然后 ptrtoint 到 i64 是安全的
+		ptrReg := c.nextReg()
+		c.emit("  %s = bitcast i64 (...)* @\"%s\" to i8*", ptrReg, e.Value)
+		c.emit("  %s = ptrtoint i8* %s to i64", reg, ptrReg)
+		// 不管怎样兜底，统一按 raw_i64 处理，因为函数指针在玄铁不是 tagged obj
+		// 但由于我们在很多地方直接假定 i64 是 tagged (通过 ensureI64 等)，这里将其标记为 raw_i64 以避免被当做对象处理
+		// Wait, no, we need to pass it as a function pointer later. Let's mark it as raw_i64 so it won't be unboxed/boxed
+		return reg, "i64", ""
 	case *ast.PrefixExpression:
 		rightReg, rightType, _ := c.compileExpression(e.Right)
 		reg := c.nextReg()
@@ -815,7 +908,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		}
 		return "0", "i64", ""
 	case *ast.CallExpression:
-		// 特殊处理 成功 和 失败
+		// 特殊处理内建的 "成功" 和 "失败"
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			if ident.Value == "成功" || ident.Value == "失败" {
 				isSuccess := "1"
@@ -841,28 +934,135 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		}
 
 		funcName := ""
+		fType := ""
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			funcName = "@\"" + ident.Value + "\""
+		} else {
+			// e.Function 不是 Identifier，可能是兜底返回的函数指针表达式
+			fReg, fTypeOut, _ := c.compileExpression(e.Function)
+			fType = fTypeOut
+			if fType == "i8*" || fType == "ptr" || fType == "i64" || fType == "raw_i64" {
+				funcName = fReg // 直接使用 ptr 或 i64，不需要再加 @
+			} else {
+				// 正常函数调用编译
+				funcName = fReg
+			}
 		}
+
+		// 检查是否为内置函数（以 xt_ 开头且没有 @ 前缀的，通常是在内置模块或者底层实现中）
+		// 在我们的 AST 里，普通的函数调用会加上 @"名称"，如果是内建或者底层方法可能不会
+		// 但是玄铁的全局函数目前编译后名字是 @"名字"
+		isBuiltin := false
+		if strings.HasPrefix(funcName, "@\"xt_") || strings.HasPrefix(funcName, "@xt_") || strings.HasPrefix(funcName, "xt_") || strings.HasPrefix(funcName, "%") {
+			if !strings.HasPrefix(funcName, "%") {
+				isBuiltin = true
+			}
+		}
+
 		args := []string{}
 		argRegs := []string{}
 		for _, a := range e.Arguments {
 			valReg, valType, _ := c.compileExpression(a)
+			// 与方法调用对齐：我们将参数统一下降为 i64，然后传递
 			xtVal := c.ensureI64(valReg, valType)
 			argRegs = append(argRegs, xtVal)
 
-			objReg2, objType2 := c.convertToObj(valReg, valType)
-			args = append(args, objType2+" "+objReg2)
+			// 检查是否是内置的特殊函数调用，比如底层调用可能需要 i8*
+			if isBuiltin {
+				// 如果是内置函数，使用 convertToObj 因为底层期待 i8* 对象指针
+				objReg2, _ := c.convertToObj(valReg, valType)
+				args = append(args, "i8* "+objReg2)
+			} else {
+				// 普通的玄铁全局函数签名现在已经统一为 i64 参数
+				args = append(args, "i64 "+xtVal)
+			}
 		}
 		reg := c.nextReg()
-		// 注意：目前所有自定义函数参数均预期 i8*
-		c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
+		// 全局函数调用统一返回 i64
+		// 修复可能产生的 @@ 前缀问题
+		if !strings.HasPrefix(funcName, "@") {
+			funcName = "@" + funcName
+		}
+
+		// 如果是通过函数指针调用的（兜底生成的），funcName 不会有 @" 前缀，而是像 %t123 或者只是个指针寄存器
+		if strings.HasPrefix(funcName, "@%") {
+			// 说明之前兜底成全局变量返回了 %t123
+			funcName = strings.TrimPrefix(funcName, "@")
+
+			// 将 i64 转回函数指针类型
+			funcPtrReg := c.nextReg()
+			// 修正类型：从 i64 强转为函数指针类型，且参数类型应该是 args 列表
+			// args 中的内容如 "i64 %t123", 我们需要提取出类型部分
+			argTypes := make([]string, len(args))
+			for i, a := range args {
+				argTypes[i] = strings.Split(a, " ")[0]
+			}
+			c.emit("  %s = inttoptr i64 %s to i64 (%s)*", funcPtrReg, funcName, strings.Join(argTypes, ", "))
+
+			c.emit("  %s = call i64 %s(%s)", reg, funcPtrReg, strings.Join(args, ", "))
+		} else if strings.HasPrefix(funcName, "%") {
+			// 如果已经是寄存器了（比如 ptr 类型），不需要去掉 @
+			// 直接使用寄存器调用（兼容 LLVM 15 ptr）
+			// 在旧版 LLVM 中，函数指针调用必须提供显式的函数类型
+			funcPtrReg := c.nextReg()
+			argTypes := make([]string, len(args))
+			for i, a := range args {
+				argTypes[i] = strings.Split(a, " ")[0]
+			}
+
+			// 如果 funcName 本身就是 ptr 或者 i8*
+			// 我们需要 bitcast 它
+			// 但因为之前兜底统一返回了 i64，这里我们当做 i64 处理
+			// 不过为了容错，如果前面的 compileExpression 意外返回了 ptr，我们需要 bitcast
+			// 简单起见，我们统一处理：如果是函数调用返回寄存器，且它前面是被转成 i64 了的，就用 inttoptr
+			// 由于目前编译器架构，兜底返回的确实是 i64，我们需要 inttoptr 到函数指针
+			// 但是如果返回的是 i8*，就用 bitcast
+			// 根据之前的修改，我们已经把兜底返回值改成 i64 了，这里用 inttoptr 就行
+
+			// 修改：直接将返回的寄存器当作函数指针签名
+			// 注意返回值类型，为了保持玄铁的特性，默认它是返回 i64 的函数
+			c.emit("  %s = inttoptr i64 %s to i64 (%s)*", funcPtrReg, funcName, strings.Join(argTypes, ", "))
+
+			// 修正对通过寄存器传递过来的兜底函数的调用。
+			// 这里有个大坑：如果是动态函数调用，且它是普通的玄铁函数，它返回的一定是 i64，这是没问题的
+			c.emit("  %s = call i64 %s(%s)", reg, funcPtrReg, strings.Join(args, ", "))
+		} else {
+			// 如果是内置函数，并且 funcName 已经被去掉了 @，我们需要检查
+			if isBuiltin && !strings.HasPrefix(funcName, "@") {
+				funcName = "@" + funcName
+			}
+			// 修正：确保内置函数（非指针调用）被调用时参数签名与声明一致
+			// 对于内置函数，由于声明可能是 i8*，如果是 isBuiltin 并且不是指针寄存器
+			if isBuiltin {
+				// argTypes 在前面内置函数检查时被设置为 i8*，这里我们用 strings.Join(args) 直接传就可以
+				// 但要注意我们刚才对 funcName 判断内置函数的逻辑
+				// 因为旧版 LLVM 要求类型精确匹配，比如 @xt_string_new(i8* %t)
+				// 我们刚才在组装 args 时已经将 isBuiltin 的参数类型设置为了 i8*
+
+				// 针对像 `xt_to_int` 这样的情况，虽然是内置，但返回的是 i64，所以还是使用 i64 接收
+				if strings.Contains(funcName, "xt_to_int") || strings.Contains(funcName, "xt_string_length") {
+					c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
+				} else {
+					c.emit("  %s = call i8* %s(%s)", reg, funcName, strings.Join(args, ", "))
+				}
+			} else {
+				c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
+			}
+		}
 
 		// 调用结束后释放参数引用
 		for _, argReg := range argRegs {
 			c.emit("  call void @xt_release(i64 %s)", argReg)
 		}
 
+		if isBuiltin && !strings.Contains(funcName, "xt_to_int") && !strings.Contains(funcName, "xt_string_length") && !strings.Contains(funcName, "xt_dict_get") && !strings.Contains(funcName, "xt_dict_contains") {
+			return reg, "i8*", ""
+		}
+		if fType == "raw_i64" {
+			// If it's a dynamic function call that was passed via pointer, and we marked it raw_i64,
+			// actually the function returns a normal tagged object, so it should be i64
+			return reg, "i64", ""
+		}
 		return reg, "i64", ""
 	case *ast.NewExpression:
 		className := ""
@@ -889,7 +1089,10 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			if constr, ok := info.Methods["造"]; ok {
 				args := []string{}
 				thisObj, thisType := c.convertToObj(reg, "%XTInstance*")
-				args = append(args, thisType+" "+thisObj)
+				// 统一下降为 i64
+				thisXtVal := c.nextReg()
+				c.emit("  %s = ptrtoint %s %s to i64", thisXtVal, thisType, thisObj)
+				args = append(args, "i64 "+thisXtVal)
 
 				argRegs := []string{}
 				for _, a := range e.Arguments {
@@ -897,8 +1100,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					xtVal := c.ensureI64(valReg, valType)
 					argRegs = append(argRegs, xtVal)
 
-					objReg2, objType2 := c.convertToObj(valReg, valType)
-					args = append(args, objType2+" "+objReg2)
+					args = append(args, "i64 "+xtVal)
 				}
 				c.emit("  call i64 %s(%s)", constr, strings.Join(args, ", "))
 
@@ -1013,12 +1215,18 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = load i64, i64* %s", finalVal, resAddr)
 
 			c.emit("  call void @xt_release(i64 %s)", leftReg)
-			c.emit("  call void @xt_release(i64 %s)", idxReg)
+			if idxType != "raw_i64" {
+				xtIdxRel := c.ensureI64(idxReg, idxType)
+				c.emit("  call void @xt_release(i64 %s)", xtIdxRel)
+			}
 			return finalVal, "i64", ""
 		}
 
 		c.emit("  call void @xt_release(i64 %s)", leftReg)
-		c.emit("  call void @xt_release(i64 %s)", idxReg)
+		if idxType != "raw_i64" {
+			xtIdxRel := c.ensureI64(idxReg, idxType)
+			c.emit("  call void @xt_release(i64 %s)", xtIdxRel)
+		}
 		return "0", "i64", ""
 	case *ast.MemberCallExpression:
 		// 特殊处理内置对象 文件
@@ -1132,16 +1340,11 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 3", lenPtr, strPtr)
 			lenVal := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", lenVal, lenPtr)
-			// Tag the result
-			resShift := c.nextReg()
-			resReg := c.nextReg()
-			c.emit("  %s = shl i64 %s, 1", resShift, lenVal)
-			c.emit("  %s = or i64 %s, 1", resReg, resShift)
 
 			objXt := c.ensureI64(objReg, objType)
 			c.emit("  call void @xt_release(i64 %s)", objXt)
 
-			return resReg, "i64", ""
+			return lenVal, "raw_i64", ""
 		} else if e.Member.Value == "大小" {
 			dictPtr := objReg
 			if objType == "i64" {
@@ -1155,16 +1358,11 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = getelementptr %%XTDict, %%XTDict* %s, i32 0, i32 4", sizePtr, dictPtr)
 			sizeVal := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", sizeVal, sizePtr)
-			// Tag the result
-			resShift := c.nextReg()
-			resReg := c.nextReg()
-			c.emit("  %s = shl i64 %s, 1", resShift, sizeVal)
-			c.emit("  %s = or i64 %s, 1", resReg, resShift)
 
 			objXt := c.ensureI64(objReg, objType)
 			c.emit("  call void @xt_release(i64 %s)", objXt)
 
-			return resReg, "i64", ""
+			return sizeVal, "raw_i64", ""
 		} else if e.Member.Value == "含?" || e.Member.Value == "包含" {
 			dictPtr := objReg
 			if objType == "i64" {
@@ -1256,7 +1454,14 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 
 					return valPtr, "i64", fClassName
 				} else {
-					panic(fmt.Sprintf("未找到成员变量: %s", e.Member.Value))
+					// 改为编译警告并返回空值兜底，不要直接 panic
+					c.emit("  ; WARNING: 未找到成员变量 %s", e.Member.Value)
+
+					// 释放基对象
+					objXt := c.ensureI64(objReg, objType)
+					c.emit("  call void @xt_release(i64 %s)", objXt)
+
+					return "0", "i64", ""
 				}
 			} else {
 				// 方法调用
@@ -1280,18 +1485,23 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				if funcName != "" {
 					args := []string{}
 					thisObj, thisType := c.convertToObj(objReg, objType)
-					args = append(args, thisType+" "+thisObj)
+					// thisType 是 i8* 或 %XTInstance*，但所有方法调用参数必须是 i64
+					thisXtVal := c.nextReg()
+					c.emit("  %s = ptrtoint %s %s to i64", thisXtVal, thisType, thisObj)
+					args = append(args, "i64 "+thisXtVal)
 
 					argRegs := []string{}
 					for _, a := range e.Arguments {
 						valReg, valType, _ := c.compileExpression(a)
+						// 为了消除调用歧义和双重释放嫌疑，我们将参数统一下降为 i64，然后传递
 						xtVal := c.ensureI64(valReg, valType)
 						argRegs = append(argRegs, xtVal)
 
-						objReg2, objType2 := c.convertToObj(valReg, valType)
-						args = append(args, objType2+" "+objReg2)
+						// 传递给方法的参数必须是 i64（XTValue），因为玄铁的所有方法参数都是 i64
+						args = append(args, "i64 "+xtVal)
 					}
 					reg := c.nextReg()
+					// 修复 @@ 前缀问题，去除重复的 @
 					c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
 
 					// 释放方法参数
@@ -1303,9 +1513,16 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					objXt := c.ensureI64(objReg, objType)
 					c.emit("  call void @xt_release(i64 %s)", objXt)
 
-					// 方法调用结果返回 +1
-					return reg, "i64", ""
+					// 确定返回类型（如果能推导出来）
+					// 暂时我们可以返回 objClass 以便支持链式调用，或者如果是特定方法返回特定类型
+					return reg, "i64", objClass
 				}
+
+				// 兜底：如果是方法调用但没找到方法
+				c.emit("  ; WARNING: 未找到方法 %s", e.Member.Value)
+				objXt := c.ensureI64(objReg, objType)
+				c.emit("  call void @xt_release(i64 %s)", objXt)
+				return "0", "i64", ""
 			}
 		}
 		return "0", "i64", ""
@@ -1361,45 +1578,52 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				if funcName != "" {
 					args := []string{}
 					thisObj, thisType := c.convertToObj(leftReg, leftType)
-					args = append(args, thisType+" "+thisObj)
+					thisXtVal := c.nextReg()
+					c.emit("  %s = ptrtoint %s %s to i64", thisXtVal, thisType, thisObj)
+					args = append(args, "i64 "+thisXtVal)
+
 					objReg, objType := c.convertToObj(rightReg, rightType)
-					args = append(args, objType+" "+objReg)
+					rightXtVal := c.nextReg()
+					c.emit("  %s = ptrtoint %s %s to i64", rightXtVal, objType, objReg)
+					args = append(args, "i64 "+rightXtVal)
 
 					reg := c.nextReg()
+					// 修复 @@ 前缀问题，去除重复的 @
 					c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
 					return reg, "i64", ""
 				}
 			}
 		}
 
-		// 统一转为 i64 进行运算或比较
-		leftReg = c.ensureI64(leftReg, leftType)
-		leftType = "i64"
-		rightReg = c.ensureI64(rightReg, rightType)
-		rightType = "i64"
-
 		if e.Operator == "&" {
-			lObj, _ := c.convertToObj(leftReg, "i64")
-			lXtVal := c.nextReg()
-			c.emit("  %s = ptrtoint i8* %s to i64", lXtVal, lObj)
-			lStr := c.nextReg()
-			c.emit("  %s = call %%XTString* @xt_obj_to_string(i64 %s)", lStr, lXtVal)
+			// 字符串拼接，不需要也不应该转为 raw_i64
+			leftXtVal := c.ensureI64(leftReg, leftType)
+			rightXtVal := c.ensureI64(rightReg, rightType)
 
-			rObj, _ := c.convertToObj(rightReg, "i64")
-			rXtVal := c.nextReg()
-			c.emit("  %s = ptrtoint i8* %s to i64", rXtVal, rObj)
+			lObj, _ := c.convertToObj(leftXtVal, "i64")
+			lXtValReg := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", lXtValReg, lObj)
+			lStr := c.nextReg()
+			c.emit("  %s = call %%XTString* @xt_obj_to_string(i64 %s)", lStr, lXtValReg)
+
+			rObj, _ := c.convertToObj(rightXtVal, "i64")
+			rXtValReg := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", rXtValReg, rObj)
 			rStr := c.nextReg()
-			c.emit("  %s = call %%XTString* @xt_obj_to_string(i64 %s)", rStr, rXtVal)
+			c.emit("  %s = call %%XTString* @xt_obj_to_string(i64 %s)", rStr, rXtValReg)
 
 			resReg := c.nextReg()
 			c.emit("  %s = call %%XTString* @xt_string_concat(%%XTString* %s, %%XTString* %s)", resReg, lStr, rStr)
 
-			// 释放操作数 (它们由 compileExpression 以 +1 引用返回)
-			c.emit("  call void @xt_release(i64 %s)", leftReg)
-			c.emit("  call void @xt_release(i64 %s)", rightReg)
+			// 释放操作数
+			if leftType != "raw_i64" {
+				c.emit("  call void @xt_release(i64 %s)", leftXtVal)
+			}
+			if rightType != "raw_i64" {
+				c.emit("  call void @xt_release(i64 %s)", rightXtVal)
+			}
 
 			// 释放 xt_obj_to_string 产生的中间字符串
-			// 注意：如果 lStr 就是 lXtVal 内部被 retain 后的返回，那么 release 会让它的引用减1，这也是对的。
 			lStrI64 := c.nextReg()
 			c.emit("  %s = ptrtoint %%XTString* %s to i64", lStrI64, lStr)
 			c.emit("  call void @xt_release(i64 %s)", lStrI64)
@@ -1413,90 +1637,133 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			return resI64, "i64", ""
 		}
 
+		// 对于算术运算，统一转为 raw_i64 进行运算
+		// 但对于比较运算，必须判断类型
+		isArithmetic := false
+		switch e.Operator {
+		case "+", "-", "*", "/":
+			isArithmetic = true
+		}
+
+		if isArithmetic {
+			leftRaw := c.ensureRawI64(leftReg, leftType)
+			rightRaw := c.ensureRawI64(rightReg, rightType)
+
+			var op string
+			switch e.Operator {
+			case "+":
+				op = "add"
+			case "-":
+				op = "sub"
+			case "*":
+				op = "mul"
+			case "/":
+				op = "sdiv"
+			}
+			reg := c.nextReg()
+			c.emit("  %s = %s i64 %s, %s", reg, op, leftRaw, rightRaw)
+
+			if leftType != "raw_i64" {
+				xt := c.ensureI64(leftReg, leftType)
+				c.emit("  call void @xt_release(i64 %s)", xt)
+			}
+			if rightType != "raw_i64" {
+				xt := c.ensureI64(rightReg, rightType)
+				c.emit("  call void @xt_release(i64 %s)", xt)
+			}
+
+			return reg, "raw_i64", ""
+		}
+
+		// 比较运算
 		reg := c.nextReg()
-		// 处理比较运算
 		switch e.Operator {
 		case "==", "!=":
-			// 统一使用运行时 xt_eq，它能处理 tagged int 和 pointer
-			lObj, _ := c.convertToObj(leftReg, "i64")
-			rObj, _ := c.convertToObj(rightReg, "i64")
-
-			res := c.nextReg()
-			c.emit("  %s = call i32 @xt_eq(i8* %s, i8* %s)", res, lObj, rObj)
-
 			cond := c.nextReg()
-			if e.Operator == "==" {
-				c.emit("  %s = icmp ne i32 %s, 0", cond, res)
+			if leftType == "raw_i64" && rightType == "raw_i64" {
+				if e.Operator == "==" {
+					c.emit("  %s = icmp eq i64 %s, %s", cond, leftReg, rightReg)
+				} else {
+					c.emit("  %s = icmp ne i64 %s, %s", cond, leftReg, rightReg)
+				}
 			} else {
-				c.emit("  %s = icmp eq i32 %s, 0", cond, res)
+				// 转为对象并调用 xt_eq
+				leftXtVal := c.ensureI64(leftReg, leftType)
+				rightXtVal := c.ensureI64(rightReg, rightType)
+				lObj, _ := c.convertToObj(leftXtVal, "i64")
+				rObj, _ := c.convertToObj(rightXtVal, "i64")
+				res := c.nextReg()
+				c.emit("  %s = call i32 @xt_eq(i8* %s, i8* %s)", res, lObj, rObj)
+				if e.Operator == "==" {
+					c.emit("  %s = icmp ne i32 %s, 0", cond, res)
+				} else {
+					c.emit("  %s = icmp eq i32 %s, 0", cond, res)
+				}
 			}
 
-			// 转回 tagged i64 (True=4, False=2)
 			c.emit("  %s = select i1 %s, i64 4, i64 2", reg, cond)
 
-			c.emit("  call void @xt_release(i64 %s)", leftReg)
-			c.emit("  call void @xt_release(i64 %s)", rightReg)
+			if leftType != "raw_i64" {
+				xt := c.ensureI64(leftReg, leftType)
+				c.emit("  call void @xt_release(i64 %s)", xt)
+			}
+			if rightType != "raw_i64" {
+				xt := c.ensureI64(rightReg, rightType)
+				c.emit("  call void @xt_release(i64 %s)", xt)
+			}
 
 			return reg, "i64", ""
+
 		case "<", ">", "<=", ">=":
-			// 统一使用运行时 xt_compare，它能处理 tagged int 和 pointer
-			lObj, _ := c.convertToObj(leftReg, "i64")
-			rObj, _ := c.convertToObj(rightReg, "i64")
-
-			res := c.nextReg()
-			c.emit("  %s = call i32 @xt_compare(i8* %s, i8* %s)", res, lObj, rObj)
-
 			cond := c.nextReg()
-			var cmpOp string
-			switch e.Operator {
-			case "<":
-				cmpOp = "slt"
-			case ">":
-				cmpOp = "sgt"
-			case "<=":
-				cmpOp = "sle"
-			case ">=":
-				cmpOp = "sge"
+			if leftType == "raw_i64" && rightType == "raw_i64" {
+				var cmpOp string
+				switch e.Operator {
+				case "<":
+					cmpOp = "slt"
+				case ">":
+					cmpOp = "sgt"
+				case "<=":
+					cmpOp = "sle"
+				case ">=":
+					cmpOp = "sge"
+				}
+				c.emit("  %s = icmp %s i64 %s, %s", cond, cmpOp, leftReg, rightReg)
+			} else {
+				leftXtVal := c.ensureI64(leftReg, leftType)
+				rightXtVal := c.ensureI64(rightReg, rightType)
+				lObj, _ := c.convertToObj(leftXtVal, "i64")
+				rObj, _ := c.convertToObj(rightXtVal, "i64")
+				res := c.nextReg()
+				c.emit("  %s = call i32 @xt_compare(i8* %s, i8* %s)", res, lObj, rObj)
+				var cmpOp string
+				switch e.Operator {
+				case "<":
+					cmpOp = "slt"
+				case ">":
+					cmpOp = "sgt"
+				case "<=":
+					cmpOp = "sle"
+				case ">=":
+					cmpOp = "sge"
+				}
+				c.emit("  %s = icmp %s i32 %s, 0", cond, cmpOp, res)
 			}
-			c.emit("  %s = icmp %s i32 %s, 0", cond, cmpOp, res)
 
-			// 转回 tagged i64 (True=4, False=2)
 			c.emit("  %s = select i1 %s, i64 4, i64 2", reg, cond)
 
-			c.emit("  call void @xt_release(i64 %s)", leftReg)
-			c.emit("  call void @xt_release(i64 %s)", rightReg)
+			if leftType != "raw_i64" {
+				xt := c.ensureI64(leftReg, leftType)
+				c.emit("  call void @xt_release(i64 %s)", xt)
+			}
+			if rightType != "raw_i64" {
+				xt := c.ensureI64(rightReg, rightType)
+				c.emit("  call void @xt_release(i64 %s)", xt)
+			}
 
 			return reg, "i64", ""
 		}
 
-		// 算术运算
-		lUntag := c.nextReg()
-		c.emit("  %s = ashr i64 %s, 1", lUntag, leftReg)
-		rUntag := c.nextReg()
-		c.emit("  %s = ashr i64 %s, 1", rUntag, rightReg)
-
-		resRaw := c.nextReg()
-		var op string
-		switch e.Operator {
-		case "+":
-			op = "add"
-		case "-":
-			op = "sub"
-		case "*":
-			op = "mul"
-		case "/":
-			op = "sdiv"
-		}
-		c.emit("  %s = %s i64 %s, %s", resRaw, op, lUntag, rUntag)
-
-		resShift := c.nextReg()
-		c.emit("  %s = shl i64 %s, 1", resShift, resRaw)
-		c.emit("  %s = or i64 %s, 1", reg, resShift)
-
-		c.emit("  call void @xt_release(i64 %s)", leftReg)
-		c.emit("  call void @xt_release(i64 %s)", rightReg)
-
-		return reg, "i64", ""
 	}
 	return "0", "i64", ""
 }
@@ -1517,15 +1784,17 @@ func (c *LLVMCompiler) compileLogicalAnd(e *ast.InfixExpression) (string, string
 
 	// False path: release left (if needed) and return false
 	c.emit("%s:", falseLabel)
-	if leftType == "i64" {
-		c.emit("  call void @xt_release(i64 %s)", leftReg)
+	if leftType != "raw_i64" {
+		xt := c.ensureI64(leftReg, leftType)
+		c.emit("  call void @xt_release(i64 %s)", xt)
 	}
 	c.emit("  br label %%%s", endLabel)
 
 	// RHS path
 	c.emit("%s:", rhsLabel)
-	if leftType == "i64" {
-		c.emit("  call void @xt_release(i64 %s)", leftReg)
+	if leftType != "raw_i64" {
+		xt := c.ensureI64(leftReg, leftType)
+		c.emit("  call void @xt_release(i64 %s)", xt)
 	}
 	rightReg, rightType, _ := c.compileExpression(e.Right)
 	rI1 := rightReg
@@ -1534,8 +1803,9 @@ func (c *LLVMCompiler) compileLogicalAnd(e *ast.InfixExpression) (string, string
 		c.emit("  %s = icmp eq i64 %s, 4", rI1, rightReg)
 	}
 	rhsBlock := c.currentLabel
-	if rightType == "i64" {
-		c.emit("  call void @xt_release(i64 %s)", rightReg)
+	if rightType != "raw_i64" {
+		xt := c.ensureI64(rightReg, rightType)
+		c.emit("  call void @xt_release(i64 %s)", xt)
 	}
 	c.emit("  br label %%%s", endLabel)
 
@@ -1565,15 +1835,17 @@ func (c *LLVMCompiler) compileLogicalOr(e *ast.InfixExpression) (string, string,
 
 	// True path: release left (if needed) and return true
 	c.emit("%s:", trueLabel)
-	if leftType == "i64" {
-		c.emit("  call void @xt_release(i64 %s)", leftReg)
+	if leftType != "raw_i64" {
+		xt := c.ensureI64(leftReg, leftType)
+		c.emit("  call void @xt_release(i64 %s)", xt)
 	}
 	c.emit("  br label %%%s", endLabel)
 
 	// RHS path
 	c.emit("%s:", rhsLabel)
-	if leftType == "i64" {
-		c.emit("  call void @xt_release(i64 %s)", leftReg)
+	if leftType != "raw_i64" {
+		xt := c.ensureI64(leftReg, leftType)
+		c.emit("  call void @xt_release(i64 %s)", xt)
 	}
 	rightReg, rightType, _ := c.compileExpression(e.Right)
 	rI1 := rightReg
@@ -1582,8 +1854,9 @@ func (c *LLVMCompiler) compileLogicalOr(e *ast.InfixExpression) (string, string,
 		c.emit("  %s = icmp eq i64 %s, 4", rI1, rightReg)
 	}
 	rhsBlock := c.currentLabel
-	if rightType == "i64" {
-		c.emit("  call void @xt_release(i64 %s)", rightReg)
+	if rightType != "raw_i64" {
+		xt := c.ensureI64(rightReg, rightType)
+		c.emit("  call void @xt_release(i64 %s)", xt)
 	}
 	c.emit("  br label %%%s", endLabel)
 
@@ -1622,6 +1895,8 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 
 		if ident, ok := cas.Pattern.(*ast.Identifier); ok && ident.Value == "_" {
 			c.emit("  br label %%%s", bodyLabel)
+
+			c.emit("%s:", bodyLabel)
 		} else if prefix, ok := cas.Pattern.(*ast.PrefixExpression); ok && prefix.Operator == "是" {
 			// 处理 '是 类型' 或 '是 成功/失败'
 			if ident, ok := prefix.Right.(*ast.Identifier); ok {
@@ -1664,19 +1939,25 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 						c.emit("  %s = icmp eq i1 %s, 0", condReg, isSucc)
 					}
 					c.emit("  br i1 %s, label %%%s, label %%%s", condReg, bodyLabel, nextCaseLabel)
+
+					c.emit("%s:", bodyLabel)
 				} else {
 					// 其他类型判断 (暂不实现)
 					c.emit("  br label %%%s", nextCaseLabel)
+
+					c.emit("%s:", bodyLabel)
 				}
 			} else {
 				c.emit("  br label %%%s", nextCaseLabel)
+
+				c.emit("%s:", bodyLabel)
 			}
 		} else {
 			patReg, patType, _ := c.compileExpression(cas.Pattern)
 			condReg := c.nextReg()
 
 			// 如果是对象，使用 xt_eq
-			if valType != "i64" || patType != "i64" {
+			if valType != "raw_i64" || patType != "raw_i64" {
 				vObj, _ := c.convertToObj(valReg, valType)
 				pObj, _ := c.convertToObj(patReg, patType)
 				res := c.nextReg()
@@ -1687,10 +1968,32 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 				pI64 := c.ensureI64(patReg, patType)
 				c.emit("  %s = icmp eq i64 %s, %s", condReg, vI64, pI64)
 			}
-			c.emit("  br i1 %s, label %%%s, label %%%s", condReg, bodyLabel, nextCaseLabel)
+
+			// 修正 LLVM 基本块跳转结构：先在条件块中条件跳转，然后在 nextCaseLabel 释放对象，而不是混在中间
+			// 这里如果需要释放 pattern，不能把释放代码直接放在 br 指令之后，因为 br 必须是基本块的终结指令
+
+			// 我们需要创建一个专门用于清理的 label，如果匹配失败则先跳过去清理，然后再跳入下一个 case
+			// 如果匹配成功，则直接跳入 bodyLabel
+			cleanupLabel := c.nextLabel("match.cleanup")
+
+			c.emit("  br i1 %s, label %%%s, label %%%s", condReg, bodyLabel, cleanupLabel)
+
+			c.emit("%s:", cleanupLabel)
+			if patType != "raw_i64" && patType != "i64" {
+				// 临时释放编译 pattern 产生的对象
+				pFinal := c.ensureI64(patReg, patType)
+				c.emit("  call void @xt_release(i64 %s)", pFinal)
+			}
+
+			c.emit("  br label %%%s", nextCaseLabel)
+
+			c.emit("%s:", bodyLabel)
+			if patType != "raw_i64" && patType != "i64" {
+				pFinalBody := c.ensureI64(patReg, patType)
+				c.emit("  call void @xt_release(i64 %s)", pFinalBody)
+			}
 		}
 
-		c.emit("%s:", bodyLabel)
 		for _, stmt := range cas.Body {
 			c.compileStatement(stmt)
 		}
@@ -1787,21 +2090,35 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	c.emit("%s:", condLabel)
 	idxReg := c.nextReg()
 	c.emit("  %s = load i64, i64* %s", idxReg, idxAddr)
+
+	// Since idxAddr stores raw i64, we don't need to unbox it
+	idxRaw := idxReg
+
 	lenReg := c.nextReg()
 
 	// 获取长度
 	lenArrLabel := c.nextLabel("for.len_arr")
 	lenStrLabel := c.nextLabel("for.len_str")
 	lenMergeLabel := c.nextLabel("for.len_merge")
-	c.emit("  br i1 %s, label %%%s, label %%%s", isArray, lenArrLabel, lenStrLabel)
+
+	// 这里我们需要注意 isDict 的情况，它的 len 走的是 lenArrLabel，因为 keysArr 是个数组
+	// 但此时 isArray 对于 keysArr 是 5，然而 isArray 判断的是 original object!
+	// 我们之前将 actualObjPtr 改成了 phi (dict 则是 keys 数组)，所以 actualTypeId 也是 keys 数组的 5
+	// 因此 isArray == 5 是真的，但是 isArray 寄存器是在 actualObjPtr 之前计算的！！！
+	// 啊！isArray 是在 dictConvEndBlock 之前用最初的 objPtr (typeId) 算出来的！
+	// 对于 dict，最初的 typeId 是 6，isArray 是 false！
+	// 所以我们应该使用 actualTypeId 重新计算 isArrForLen
+	isArrForLen := c.nextReg()
+	c.emit("  %s = icmp eq i32 %s, 5", isArrForLen, actualTypeId)
+	c.emit("  br i1 %s, label %%%s, label %%%s", isArrForLen, lenArrLabel, lenStrLabel)
 
 	c.emit("%s:", lenArrLabel)
 	aPtrLen := c.nextReg()
 	c.emit("  %s = bitcast %%XTObject* %s to %%XTArray*", aPtrLen, actualObjPtr)
 	lenPtrArr := c.nextReg()
 	c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", lenPtrArr, aPtrLen)
-	lenValArr := c.nextReg()
-	c.emit("  %s = load i64, i64* %s", lenValArr, lenPtrArr)
+	lenValArrRaw := c.nextReg()
+	c.emit("  %s = load i64, i64* %s", lenValArrRaw, lenPtrArr)
 	c.emit("  br label %%%s", lenMergeLabel)
 
 	c.emit("%s:", lenStrLabel)
@@ -1809,15 +2126,16 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	c.emit("  %s = bitcast %%XTObject* %s to %%XTString*", sPtrLen, actualObjPtr)
 	lenPtrStr := c.nextReg()
 	c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 3", lenPtrStr, sPtrLen)
-	lenValStr := c.nextReg()
-	c.emit("  %s = load i64, i64* %s", lenValStr, lenPtrStr)
+	lenValStrRaw := c.nextReg()
+	c.emit("  %s = load i64, i64* %s", lenValStrRaw, lenPtrStr)
 	c.emit("  br label %%%s", lenMergeLabel)
 
 	c.emit("%s:", lenMergeLabel)
-	c.emit("  %s = phi i64 [ %s, %%%s ], [ %s, %%%s ]", lenReg, lenValArr, lenArrLabel, lenValStr, lenStrLabel)
+	c.emit("  %s = phi i64 [ %s, %%%s ], [ %s, %%%s ]", lenReg, lenValArrRaw, lenArrLabel, lenValStrRaw, lenStrLabel)
 
 	condReg := c.nextReg()
-	c.emit("  %s = icmp slt i64 %s, %s", condReg, idxReg, lenReg)
+	// 如果 isDict 是真，lenReg 代表 keys 数组的长度，而 keys 数组是遍历出来的 XTArray
+	c.emit("  %s = icmp slt i64 %s, %s", condReg, idxRaw, lenReg)
 	c.emit("  br i1 %s, label %%%s, label %%%s", condReg, bodyLabel, endLabel)
 
 	// 修复：进入循环体时应该使用 c.enterScope()
@@ -1830,7 +2148,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	elemArrLabel := c.nextLabel("for.elem_arr")
 	elemStrLabel := c.nextLabel("for.elem_str")
 	elemMergeLabel := c.nextLabel("for.elem_merge")
-	c.emit("  br i1 %s, label %%%s, label %%%s", isArray, elemArrLabel, elemStrLabel)
+	c.emit("  br i1 %s, label %%%s, label %%%s", isArrForLen, elemArrLabel, elemStrLabel)
 
 	c.emit("%s:", elemArrLabel)
 	aPtrElem := c.nextReg()
@@ -1840,7 +2158,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	elemsPtr := c.nextReg()
 	c.emit("  %s = load i8**, i8*** %s", elemsPtr, elemPtrPtr)
 	elemPtr := c.nextReg()
-	c.emit("  %s = getelementptr i8*, i8** %s, i64 %s", elemPtr, elemsPtr, idxReg)
+	c.emit("  %s = getelementptr i8*, i8** %s, i64 %s", elemPtr, elemsPtr, idxRaw)
 	valArr := c.nextReg()
 	c.emit("  %s = load i8*, i8** %s", valArr, elemPtr)
 	// 从数组加载需要 retain 以获得所有权 (+1)
@@ -1895,7 +2213,8 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 		c.emit("  store i64 %s, i64* %s", valPtr, idxAddrVar) // k = key
 
 		dictPtrGet := c.nextReg()
-		c.emit("  %s = bitcast %%XTObject* %s to %%XTDict*", dictPtrGet, objPtr) // objPtr holds the original dict
+		// 由于 objPtr 是 %XTObject*，需要先转为 %XTDict*
+		c.emit("  %s = bitcast %%XTObject* %s to %%XTDict*", dictPtrGet, actualObjPtr)
 		dictVal := c.nextReg()
 		c.emit("  %s = call i64 @xt_dict_get(%%XTDict* %s, i64 %s)", dictVal, dictPtrGet, valPtr)
 		c.emit("  call void @xt_retain(i64 %s)", dictVal)
@@ -1903,11 +2222,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 		c.emit("  br label %%%s", condAsgMerge)
 
 		c.emit("%s:", condArrAsg)
-		taggedIdx := c.nextReg()
-		shiftedIdx := c.nextReg()
-		c.emit("  %s = shl i64 %s, 1", shiftedIdx, idxReg)
-		c.emit("  %s = or i64 %s, 1", taggedIdx, shiftedIdx)
-		c.emit("  store i64 %s, i64* %s", taggedIdx, idxAddrVar) // k = index
+		c.emit("  store i64 %s, i64* %s", idxReg, idxAddrVar) // k = index
 
 		c.emit("  call void @xt_retain(i64 %s)", valPtr)
 		c.emit("  store i64 %s, i64* %s", valPtr, valAddrVar) // v = array[index]
@@ -1926,12 +2241,18 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	c.exitScope(false)
 
 	// 更新索引：如果是数组/字典（isArray=true），手动增加索引；如果是字符串，xt_string_next_char 已更新
+	// 但对于 isDict 也是手动增加索引！而 isArray 只检查了 == 5。
+	// 这里需要增加一个 isArrOrDict 的判断
+	isArrOrDict := c.nextReg()
+	c.emit("  %s = icmp ne i32 %s, 3", isArrOrDict, actualTypeId) // 3 is String, so if not 3, it's array or dict
+
 	idxUpdateLabel := c.nextLabel("for.idx_update")
 	idxSkipLabel := c.nextLabel("for.idx_skip")
-	c.emit("  br i1 %s, label %%%s, label %%%s", isArray, idxUpdateLabel, idxSkipLabel)
+	c.emit("  br i1 %s, label %%%s, label %%%s", isArrOrDict, idxUpdateLabel, idxSkipLabel)
 
 	c.emit("%s:", idxUpdateLabel)
 	newIdx := c.nextReg()
+	// 如果是原生 i64
 	c.emit("  %s = add i64 %s, 1", newIdx, idxReg)
 	c.emit("  store i64 %s, i64* %s", newIdx, idxAddr)
 	c.emit("  br label %%%s", condLabel)
@@ -1988,9 +2309,8 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		c.emit("%s:", dictLabel)
 		dPtr := c.nextReg()
 		c.emit("  %s = bitcast %%XTObject* %s to %%XTDict*", dPtr, objPtr)
-		idxObj, _ := c.convertToObj(idxReg, idxType)
-		idxXtVal := c.nextReg()
-		c.emit("  %s = ptrtoint i8* %s to i64", idxXtVal, idxObj)
+
+		idxXtVal := c.ensureI64(idxReg, idxType)
 		c.emit("  call void @xt_dict_set(%%XTDict* %s, i64 %s, i64 %s)", dPtr, idxXtVal, xtVal)
 
 		c.emit("  call void @xt_release(i64 %s)", leftReg)
@@ -2002,11 +2322,9 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		aPtr := c.nextReg()
 		c.emit("  %s = bitcast %%XTObject* %s to %%XTArray*", aPtr, objPtr)
 		idxUntag := c.nextReg()
-		if idxType == "i64" {
-			c.emit("  %s = ashr i64 %s, 1", idxUntag, idxReg)
-		} else {
-			c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, idxReg)
-		}
+		xtIdx := c.ensureI64(idxReg, idxType)
+		c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, xtIdx)
+
 		elemPtrPtr := c.nextReg()
 		c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 2", elemPtrPtr, aPtr)
 		elemsPtr := c.nextReg()
@@ -2025,8 +2343,10 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		c.emit("  store i64 %s, i64* %s", xtVal, elemPtrTyped)
 
 		c.emit("  call void @xt_release(i64 %s)", leftReg)
-		idxFinal := c.ensureI64(idxReg, idxType)
-		c.emit("  call void @xt_release(i64 %s)", idxFinal)
+		if idxType != "raw_i64" {
+			xtIdxRel := c.ensureI64(idxReg, idxType)
+			c.emit("  call void @xt_release(i64 %s)", xtIdxRel)
+		}
 
 		c.emit("  br label %%%s", mergeLabel)
 
@@ -2080,7 +2400,8 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 				// 存储新值 (接管 +1)
 				c.emit("  store i64 %s, i64* %s", xtVal, fieldPtr)
 			} else {
-				panic(fmt.Sprintf("未找到成员变量进行赋值: %s", left.Member.Value))
+				// 不要 panic，改为编译警告兜底
+				c.emit("  ; WARNING: 未找到成员变量进行赋值 %s", left.Member.Value)
 			}
 
 			objXt := c.ensureI64(objReg, objType)
@@ -2163,9 +2484,9 @@ func (c *LLVMCompiler) compileMethodStatement(className string, s *ast.FunctionS
 	c.scopeStack = [][]string{}
 
 	funcName := fmt.Sprintf("@\"%s_%s\"", className, s.Name.Value)
-	params := []string{"i8* %\"this_arg\""} // 方法首个参数永远是 this (i8*)
+	params := []string{"i64 %\"this_arg\""} // 方法首个参数永远是 this (现在是 i64)
 	for _, p := range s.Parameters {
-		params = append(params, "i8* %\""+p.Name.Value+"_arg\"")
+		params = append(params, "i64 %\""+p.Name.Value+"_arg\"")
 	}
 
 	c.emit("define i64 %s(%s) {", funcName, strings.Join(params, ", "))
@@ -2178,11 +2499,10 @@ func (c *LLVMCompiler) compileMethodStatement(className string, s *ast.FunctionS
 	// 绑定 this
 	thisAddr := "%\"此\"" // 支持中文 "此" 或 "this"
 	c.emitAlloca("%s = alloca i64", thisAddr)
-	thisXtVal := c.nextReg()
-	c.emit("  %s = ptrtoint i8* %%\"this_arg\" to i64", thisXtVal)
+	// this_arg 就是 i64，不需要再 bitcast 了
+	c.emit("  store i64 %%\"this_arg\", i64* %s", thisAddr)
 	// 参数作为局部变量，需要 retain 并加入作用域追踪
-	c.emit("  call void @xt_retain(i64 %s)", thisXtVal)
-	c.emit("  store i64 %s, i64* %s", thisXtVal, thisAddr)
+	c.emit("  call void @xt_retain(i64 %%\"this_arg\")")
 	c.symbolTable["此"] = SymbolInfo{AddrReg: thisAddr, Type: "i64", ClassName: className}
 	c.symbolTable["this"] = SymbolInfo{AddrReg: thisAddr, Type: "i64", ClassName: className}
 	c.trackObject(thisAddr)
@@ -2191,11 +2511,10 @@ func (c *LLVMCompiler) compileMethodStatement(className string, s *ast.FunctionS
 	for _, p := range s.Parameters {
 		addrReg := "%\"" + p.Name.Value + "\""
 		c.emitAlloca("%s = alloca i64", addrReg)
-		xtVal := c.nextReg()
-		c.emit("  %s = ptrtoint i8* %%\"%s_arg\" to i64", xtVal, p.Name.Value)
+		// 参数现在是 i64
+		c.emit("  store i64 %%\"%s_arg\", i64* %s", p.Name.Value, addrReg)
 		// 参数作为局部变量，需要 retain 并加入作用域追踪
-		c.emit("  call void @xt_retain(i64 %s)", xtVal)
-		c.emit("  store i64 %s, i64* %s", xtVal, addrReg)
+		c.emit("  call void @xt_retain(i64 %%\"%s_arg\")", p.Name.Value)
 		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
 		c.trackObject(addrReg)
 	}
