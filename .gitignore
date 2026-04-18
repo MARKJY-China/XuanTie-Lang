@@ -4,7 +4,7 @@
 测试*
 test*
 *.pdb
-fix.go.bak
+*.bak
 out.txt
 
 玄铁编译器功能实现清单.md
