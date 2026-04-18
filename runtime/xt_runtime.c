@@ -22,14 +22,14 @@ void xt_print_pool_stats() {
     printf("-------------------------\n");
 }
 
-#ifdef XT_DEBUG
+#define XT_DEBUG_MODE 0
+#if XT_DEBUG_MODE
 #define XT_DEBUG_PRINT(...) do { printf("DEBUG: " __VA_ARGS__); fflush(stdout); } while(0)
 #else
 #define XT_DEBUG_PRINT(...)
 #endif
 
-#define CRASH_DEBUG(...) // do { printf("DEBUG: " __VA_ARGS__); fflush(stdout); } while(0)
-
+#define CRASH_DEBUG(...) // do { printf("CRASH: " __VA_ARGS__); fflush(stdout); } while(0)
 void xt_print_int(int64_t val) {
     printf("%lld\n", val);
 }
@@ -66,6 +66,47 @@ XTString* xt_string_new(const char* data) {
 XTString* xt_string_from_char(char c) {
     char buf[2] = {c, '\0'};
     return xt_string_new(buf);
+}
+
+// 获取字符串在指定字符索引处的 UTF-8 字符 (返回新字符串)
+XTValue xt_string_get_char(XTValue str_val, int64_t index) {
+    if (!XT_IS_PTR(str_val) || str_val == XT_NULL) return XT_NULL;
+    XTObject* obj = (XTObject*)str_val;
+    if (obj->type_id != XT_TYPE_STRING) return XT_NULL;
+    
+    XTString* s = (XTString*)str_val;
+    if (index < 0) return XT_NULL;
+    
+    // 简单的 UTF-8 遍历 (实际应用中应使用更高效的库)
+    const char* p = s->data;
+    int64_t current = 0;
+    while (*p && current < index) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x80) p += 1;
+        else if ((c & 0xE0) == 0xC0) p += 2;
+        else if ((c & 0xF0) == 0xE0) p += 3;
+        else if ((c & 0xF8) == 0xF0) p += 4;
+        else p += 1; // 非法 UTF-8
+        current++;
+    }
+    
+    if (!*p) return XT_NULL;
+    
+    // 提取该字符
+    int len = 0;
+    unsigned char c = (unsigned char)*p;
+    if (c < 0x80) len = 1;
+    else if ((c & 0xE0) == 0xC0) len = 2;
+    else if ((c & 0xF0) == 0xE0) len = 3;
+    else if ((c & 0xF8) == 0xF0) len = 4;
+    else len = 1;
+    
+    char buf[5] = {0};
+    for (int i = 0; i < len && p[i]; i++) {
+        buf[i] = p[i];
+    }
+    
+    return (XTValue)xt_string_new(buf);
 }
 
 XTString* xt_string_next_char(XTString* s, int64_t* offset) {
@@ -249,6 +290,9 @@ void xt_release(XTValue val) {
                     res->error = NULL;
                     break;
                 }
+                case XT_TYPE_FUNCTION:
+                    obj_size = sizeof(XTFunction);
+                    break;
                 case XT_TYPE_DICT: {
                     obj_size = sizeof(XTDict);
                     XTDict* dict = (XTDict*)val;
@@ -318,8 +362,8 @@ XTInstance* xt_instance_new(void* class_ptr, size_t field_count) {
     XTInstance* inst = (XTInstance*)xt_malloc(sizeof(XTInstance), XT_TYPE_INSTANCE);
     inst->class_ptr = class_ptr;
     inst->field_count = field_count;
-    inst->fields = (void**)malloc(sizeof(void*) * field_count);
-    memset(inst->fields, 0, sizeof(void*) * field_count);
+    inst->fields = (XTValue*)malloc(sizeof(XTValue) * field_count);
+    memset(inst->fields, 0, sizeof(XTValue) * field_count);
     return inst;
 }
 
@@ -331,6 +375,85 @@ void* xt_result_new(int is_success, void* value, void* error) {
     if (value) xt_retain((XTValue)value);
     if (error) xt_retain((XTValue)error);
     return (void*)res;
+}
+
+XTValue xt_func_new(void* func_ptr) {
+    XTFunction* obj = (XTFunction*)xt_malloc(sizeof(XTFunction), XT_TYPE_FUNCTION);
+    obj->func_ptr = func_ptr;
+    return (XTValue)obj;
+}
+
+XTString* xt_string_substring(XTString* s, int64_t start, int64_t end) {
+    if (!s) return xt_string_new("");
+    
+    const char* p = s->data;
+    int64_t current = 0;
+    const char* start_p = NULL;
+    const char* end_p = NULL;
+    
+    while (*p) {
+        if (current == start) start_p = p;
+        if (current == end) { end_p = p; break; }
+        
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x80) p += 1;
+        else if ((c & 0xE0) == 0xC0) p += 2;
+        else if ((c & 0xF0) == 0xE0) p += 3;
+        else if ((c & 0xF8) == 0xF0) p += 4;
+        else p += 1;
+        current++;
+    }
+    
+    if (start_p && !end_p) end_p = p;
+    if (!start_p) return xt_string_new("");
+    
+    size_t len = end_p - start_p;
+    char* buf = (char*)malloc(len + 1);
+    memcpy(buf, start_p, len);
+    buf[len] = '\0';
+    XTString* res = xt_string_new(buf);
+    free(buf);
+    return res;
+}
+
+XTString* xt_array_join(XTArray* arr, XTString* sep) {
+    if (!arr) return xt_string_new("");
+    if (arr->length == 0) return xt_string_new("");
+    
+    // Calculate total length
+    size_t total_len = 0;
+    size_t sep_len = sep ? sep->length : 0;
+    
+    for (size_t i = 0; i < arr->length; i++) {
+        XTString* s = xt_obj_to_string((XTValue)arr->elements[i]);
+        total_len += s->length;
+        if (i < arr->length - 1) total_len += sep_len;
+        xt_release((XTValue)s);
+    }
+    
+    char* buf = (char*)malloc(total_len + 1);
+    char* p = buf;
+    
+    for (size_t i = 0; i < arr->length; i++) {
+        XTString* s = xt_obj_to_string((XTValue)arr->elements[i]);
+        memcpy(p, s->data, s->length);
+        p += s->length;
+        if (i < arr->length - 1 && sep) {
+            memcpy(p, sep->data, sep->length);
+            p += sep->length;
+        }
+        xt_release((XTValue)s);
+    }
+    *p = '\0';
+    
+    XTString* res = xt_string_new(buf);
+    free(buf);
+    return res;
+}
+
+int xt_string_contains(XTString* s, XTString* sub) {
+    if (!s || !sub) return 0;
+    return strstr(s->data, sub->data) != NULL;
 }
 
 XTString* xt_string_concat(XTString* s1, XTString* s2) {

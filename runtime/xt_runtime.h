@@ -49,6 +49,12 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_DICT   6
 #define XT_TYPE_INSTANCE 7
 #define XT_TYPE_RESULT   8
+#define XT_TYPE_FUNCTION 9
+
+typedef struct {
+    XTObject header;
+    void* func_ptr;
+} XTFunction;
 
 typedef struct {
     XTObject header;
@@ -68,20 +74,6 @@ typedef struct {
     size_t capacity;
 } XTArray;
 
-typedef struct {
-    XTObject header;
-    void* class_ptr;
-    void** fields;
-    size_t field_count;
-} XTInstance;
-
-typedef struct {
-    XTObject header;
-    int is_success;
-    void* value;
-    void* error;
-} XTResult;
-
 typedef struct XTDictEntry {
     XTValue key;
     XTValue value;
@@ -91,9 +83,23 @@ typedef struct XTDictEntry {
 typedef struct {
     XTObject header;
     XTDictEntry** buckets;
-    size_t capacity;
     size_t size;
+    size_t capacity;
 } XTDict;
+
+typedef struct {
+    XTObject header;
+    void* class_ptr;
+    XTValue* fields;
+    size_t field_count;
+} XTInstance;
+
+typedef struct {
+    XTObject header;
+    int is_success;
+    void* value;
+    void* error;
+} XTResult;
 
 // 运行时接口
 void xt_init();
@@ -106,10 +112,13 @@ void xt_print_value(XTValue val); // 新增：通用打印
 XTValue xt_int_new(int64_t val);    // 返回 XTValue
 void* xt_float_new(double val);
 XTValue xt_bool_new(int val);      // 返回 XTValue
+XTValue xt_func_new(void* func_ptr);
 XTString* xt_string_new(const char* data);
 XTString* xt_string_from_char(char c);
+XTValue xt_string_get_char(XTValue str_val, int64_t index);
 XTArray* xt_array_new(size_t capacity);
 void xt_array_append(XTArray* arr, XTValue element);
+XTString* xt_array_join(XTArray* arr, XTString* sep);
 XTDict* xt_dict_new(size_t capacity);
 void xt_dict_set(XTDict* dict, XTValue key, XTValue value);
 XTValue xt_dict_get(XTDict* dict, XTValue key);
@@ -120,6 +129,8 @@ void xt_release(XTValue val);      // 参数改为 XTValue
 
 int64_t xt_to_int(XTValue val);    // 参数改为 XTValue
 XTString* xt_string_concat(XTString* s1, XTString* s2);
+XTString* xt_string_substring(XTString* s, int64_t start, int64_t end);
+int xt_string_contains(XTString* s, XTString* sub);
 XTString* xt_int_to_string(int64_t val);
 XTString* xt_obj_to_string(XTValue val); // 参数改为 XTValue
 

@@ -750,14 +750,14 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 func (p *Parser) parseStringLiteral() ast.Expression {
 	lit := &ast.StringLiteral{Token: p.cur, Value: p.cur.Literal}
-	if !strings.Contains(lit.Value, "${") {
+	if !strings.Contains(lit.Value, "#{") {
 		return lit
 	}
 
 	var expressions []ast.Expression
 	str := lit.Value
 	for {
-		start := strings.Index(str, "${")
+		start := strings.Index(str, "#{")
 		if start == -1 {
 			if str != "" {
 				expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: str})

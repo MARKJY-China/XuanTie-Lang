@@ -149,20 +149,20 @@ func main() {
 		lines := strings.Split(string(data), "\n")
 		for _, msg := range p.Errors() {
 			if useColor {
-				fmt.Printf("\t%s%s%s\n", colorRed, msg, colorReset)
+				fmt.Fprintf(os.Stderr, "\t%s%s%s\n", colorRed, msg, colorReset)
 			} else {
-				fmt.Printf("\t%s\n", msg)
+				fmt.Fprintf(os.Stderr, "\t%s\n", msg)
 			}
 			// 尝试解析 [行:x, 列:y]
 			var line, col int
 			n, _ := fmt.Sscanf(msg, "[行:%d, 列:%d]", &line, &col)
 			if n == 2 && line > 0 && line <= len(lines) {
 				errorLine := strings.ReplaceAll(lines[line-1], "\t", "    ")
-				fmt.Printf("\t%s\n", errorLine)
+				fmt.Fprintf(os.Stderr, "\t%s\n", errorLine)
 				if useColor {
-					fmt.Printf("\t%s%s^%s\n", strings.Repeat(" ", col-1), colorRed, colorReset)
+					fmt.Fprintf(os.Stderr, "\t%s%s^%s\n", strings.Repeat(" ", col-1), colorRed, colorReset)
 				} else {
-					fmt.Printf("\t%s^\n", strings.Repeat(" ", col-1))
+					fmt.Fprintf(os.Stderr, "\t%s^\n", strings.Repeat(" ", col-1))
 				}
 			}
 		}
@@ -286,9 +286,9 @@ func main() {
 	result := evaluator.Eval(program, env)
 	if result != nil && result.Type() == object.ERROR_OBJ {
 		if useColor {
-			fmt.Printf("%s%s运行时错误%s %s%s%s\n", colorBold, colorRed, colorReset, colorRed, result.Inspect(), colorReset)
+			fmt.Fprintf(os.Stderr, "%s%s运行时错误:%s %s\n", colorBold, colorRed, colorReset, result.Inspect())
 		} else {
-			fmt.Printf("运行时错误 %s\n", result.Inspect())
+			fmt.Fprintf(os.Stderr, "运行时错误: %s\n", result.Inspect())
 		}
 	}
 }

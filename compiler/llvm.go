@@ -45,15 +45,17 @@ type LLVMCompiler struct {
 	breakLabels    []string   // break 目标标签栈
 	continueLabels []string   // continue 目标标签栈
 	loopDepths     []int      // 循环开始时的 scopeStack 深度栈
+	visitedImports map[string]bool
 }
 
 func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	return &LLVMCompiler{
-		program:     program,
-		symbolTable: make(map[string]SymbolInfo),
-		strings:     make(map[string]string),
-		classes:     make(map[string]*ClassInfo),
-		filePath:    program.FilePath,
+		program:        program,
+		symbolTable:    make(map[string]SymbolInfo),
+		strings:        make(map[string]string),
+		classes:        make(map[string]*ClassInfo),
+		filePath:       program.FilePath,
+		visitedImports: make(map[string]bool),
 	}
 }
 
@@ -116,17 +118,22 @@ func (c *LLVMCompiler) Compile() string {
 	c.emit("declare i64 @xt_int_new(i64)")
 	c.emit("declare i8* @xt_float_new(double)")
 	c.emit("declare i64 @xt_bool_new(i1)")
+	c.emit("declare i64 @xt_func_new(i8*)")
 	c.emit("declare %%XTString* @xt_string_new(i8*)")
+	c.emit("declare i64 @xt_string_get_char(i64, i64)")
 	c.emit("declare %%XTString* @xt_string_from_char(i8)")
 	c.emit("declare %%XTString* @xt_string_next_char(%%XTString*, i64*)")
 	c.emit("declare %%XTArray* @xt_array_new(i64)")
 	c.emit("declare void @xt_array_append(%%XTArray*, i64)")
+	c.emit("declare %%XTString* @xt_array_join(%%XTArray*, %%XTString*)")
 	c.emit("declare %%XTDict* @xt_dict_new(i64)")
 	c.emit("declare void @xt_dict_set(%%XTDict*, i64, i64)")
 	c.emit("declare i64 @xt_dict_get(%%XTDict*, i64)")
 	c.emit("declare %%XTInstance* @xt_instance_new(i8*, i64)")
 	c.emit("declare i8* @xt_result_new(i1, i8*, i8*)")
 	c.emit("declare %%XTString* @xt_string_concat(%%XTString*, %%XTString*)")
+	c.emit("declare %%XTString* @xt_string_substring(%%XTString*, i64, i64)")
+	c.emit("declare i32 @xt_string_contains(%%XTString*, %%XTString*)")
 	c.emit("declare %%XTString* @xt_int_to_string(i64)")
 	c.emit("declare %%XTString* @xt_obj_to_string(i64)")
 	c.emit("declare void @xt_retain(i64)")
@@ -265,6 +272,18 @@ func (c *LLVMCompiler) convertToObj(valReg, valType string) (string, string) {
 	if valType == "i1" {
 		reg := c.nextReg()
 		c.emit("  %s = select i1 %s, i64 4, i64 2", reg, valReg)
+		// 注意：XTValue 目前在 LLVM 中是用 i64 表示的 tagged pointer，
+		// 但 convertToObj 期望返回 i8*
+		resReg := c.nextReg()
+		c.emit("  %s = inttoptr i64 %s to i8*", resReg, reg)
+		return resReg, "i8*"
+	}
+
+	// 如果是函数名，作为函数指针处理
+	if valType == "函数名" {
+		reg := c.nextReg()
+		// 假设所有玄铁函数签名都是 i64 (...)
+		c.emit("  %s = bitcast i64 (...)* @\"%s\" to i8*", reg, valReg)
 		return reg, "i8*"
 	}
 
@@ -297,6 +316,11 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 		newReg := c.nextReg()
 		// LLVM i1 -> XuanTie Bool (4 for True, 2 for False)
 		c.emit("  %s = select i1 %s, i64 4, i64 2", newReg, reg)
+		return newReg
+	}
+	if typ == "函数名" {
+		newReg := c.nextReg()
+		c.emit("  %s = ptrtoint i64 (...)* @\"%s\" to i64", newReg, reg)
 		return newReg
 	}
 	if typ == "double" {
@@ -783,19 +807,25 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			importPath = filepath.Join(dir, importPath)
 		}
 
-		data, err := ioutil.ReadFile(importPath)
+		absPath, _ := filepath.Abs(importPath)
+		if c.visitedImports[absPath] {
+			return "0", "i64", ""
+		}
+		c.visitedImports[absPath] = true
+
+		data, err := ioutil.ReadFile(absPath)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "无法读取导入的文件 %s: %v\n", importPath, err)
+			fmt.Fprintf(os.Stderr, "无法读取导入的文件 %s: %v\n", absPath, err)
 			return "0", "i64", ""
 		}
 
 		l := lexer.New(string(data))
 		p := parser.New(l)
 		importProgram := p.ParseProgram()
-		importProgram.FilePath = importPath
+		importProgram.FilePath = absPath
 
 		if len(p.Errors()) > 0 {
-			fmt.Fprintf(os.Stderr, "导入文件 %s 存在解析错误:\n", importPath)
+			fmt.Fprintf(os.Stderr, "导入文件 %s 存在解析错误:\n", absPath)
 			for _, msg := range p.Errors() {
 				fmt.Fprintf(os.Stderr, "\t%s\n", msg)
 			}
@@ -805,7 +835,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		// 递归转译导入程序中的语句
 		// 注意：我们需要保存并恢复当前的 filePath
 		oldPath := c.filePath
-		c.filePath = importPath
+		c.filePath = absPath
 		for _, stmt := range importProgram.Statements {
 			c.compileStatement(stmt)
 		}
@@ -1165,14 +1195,18 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			isDict := c.nextReg()
 			c.emit("  %s = icmp eq i32 %s, 6", isDict, typeId) // XT_TYPE_DICT = 6
 
+			isString := c.nextReg()
+			c.emit("  %s = icmp eq i32 %s, 3", isString, typeId) // XT_TYPE_STRING = 3
+
 			resAddr := c.nextReg()
 			c.emitAlloca("%s = alloca i64", resAddr)
 
 			dictLabel := c.nextLabel("idx.dict")
+			stringLabel := c.nextLabel("idx.string")
 			arrayLabel := c.nextLabel("idx.array")
 			mergeLabel := c.nextLabel("idx.merge")
 
-			c.emit("  br i1 %s, label %%%s, label %%%s", isDict, dictLabel, arrayLabel)
+			c.emit("  br i1 %s, label %%%s, label %%%s", isDict, dictLabel, stringLabel)
 
 			c.emit("%s:", dictLabel)
 			dPtr := c.nextReg()
@@ -1185,6 +1219,18 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			// 重要：从字典加载需要 retain，以返回 +1 引用
 			c.emit("  call void @xt_retain(i64 %s)", dRes)
 			c.emit("  store i64 %s, i64* %s", dRes, resAddr)
+			c.emit("  br label %%%s", mergeLabel)
+
+			c.emit("%s:", stringLabel)
+			c.emit("  br i1 %s, label %%%s, label %%%s", isString, stringLabel+".true", arrayLabel)
+
+			c.emit("%s.true:", stringLabel)
+			sIdxUntag := c.nextReg()
+			xtSIdx := c.ensureI64(idxReg, idxType)
+			c.emit("  %s = call i64 @xt_to_int(i64 %s)", sIdxUntag, xtSIdx)
+			sRes := c.nextReg()
+			c.emit("  %s = call i64 @xt_string_get_char(i64 %s, i64 %s)", sRes, leftReg, sIdxUntag)
+			c.emit("  store i64 %s, i64* %s", sRes, resAddr)
 			c.emit("  br label %%%s", mergeLabel)
 
 			c.emit("%s:", arrayLabel)
@@ -1345,6 +1391,33 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  call void @xt_release(i64 %s)", objXt)
 
 			return lenVal, "raw_i64", ""
+		} else if e.Member.Value == "连接" {
+			// 数组连接
+			arrPtr := objReg
+			if objType == "i64" {
+				arrPtr = c.nextReg()
+				c.emit("  %s = inttoptr i64 %s to %%XTArray*", arrPtr, objReg)
+			} else if objType != "%XTArray*" {
+				arrPtr = c.nextReg()
+				c.emit("  %s = bitcast %s %s to %%XTArray*", arrPtr, objType, objReg)
+			}
+
+			sepReg, sepType, _ := c.compileExpression(e.Arguments[0])
+			sepPtr, _ := c.convertToObj(sepReg, sepType)
+			sepStrPtr := c.nextReg()
+			c.emit("  %s = bitcast i8* %s to %%XTString*", sepStrPtr, sepPtr)
+
+			res := c.nextReg()
+			c.emit("  %s = call %%XTString* @xt_array_join(%%XTArray* %s, %%XTString* %s)", res, arrPtr, sepStrPtr)
+
+			// 释放
+			c.emit("  call void @xt_release(i64 %s)", c.ensureI64(sepReg, sepType))
+			objXt := c.ensureI64(objReg, objType)
+			c.emit("  call void @xt_release(i64 %s)", objXt)
+
+			resXt := c.nextReg()
+			c.emit("  %s = ptrtoint %%XTString* %s to i64", resXt, res)
+			return resXt, "i64", ""
 		} else if e.Member.Value == "大小" {
 			dictPtr := objReg
 			if objType == "i64" {
@@ -1355,7 +1428,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				c.emit("  %s = bitcast %s %s to %%XTDict*", dictPtr, objType, objReg)
 			}
 			sizePtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTDict, %%XTDict* %s, i32 0, i32 4", sizePtr, dictPtr)
+			c.emit("  %s = getelementptr %%XTDict, %%XTDict* %s, i32 0, i32 3", sizePtr, dictPtr)
 			sizeVal := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", sizeVal, sizePtr)
 
@@ -1363,38 +1436,115 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  call void @xt_release(i64 %s)", objXt)
 
 			return sizeVal, "raw_i64", ""
-		} else if e.Member.Value == "含?" || e.Member.Value == "包含" {
-			dictPtr := objReg
+		} else if e.Member.Value == "截取" {
+			// 字符串截取
+			strPtr := objReg
 			if objType == "i64" {
-				dictPtr = c.nextReg()
-				c.emit("  %s = inttoptr i64 %s to %%XTDict*", dictPtr, objReg)
-			} else if objType != "%XTDict*" {
-				dictPtr = c.nextReg()
-				c.emit("  %s = bitcast %s %s to %%XTDict*", dictPtr, objType, objReg)
+				strPtr = c.nextReg()
+				c.emit("  %s = inttoptr i64 %s to %%XTString*", strPtr, objReg)
+			} else if objType != "%XTString*" {
+				strPtr = c.nextReg()
+				c.emit("  %s = bitcast %s %s to %%XTString*", strPtr, objType, objReg)
 			}
 
-			// call xt_dict_get
-			kReg, kType, _ := c.compileExpression(e.Arguments[0])
-			kObj, _ := c.convertToObj(kReg, kType)
-			kXtVal := c.nextReg()
-			c.emit("  %s = ptrtoint i8* %s to i64", kXtVal, kObj)
+			startReg, startType, _ := c.compileExpression(e.Arguments[0])
+			startI64 := c.ensureRawI64(startReg, startType)
+
+			endReg := c.nextReg()
+			if len(e.Arguments) > 1 {
+				er, et, _ := c.compileExpression(e.Arguments[1])
+				endI64 := c.ensureRawI64(er, et)
+				c.emit("  %s = add i64 0, %s", endReg, endI64)
+				if et != "raw_i64" {
+					c.emit("  call void @xt_release(i64 %s)", c.ensureI64(er, et))
+				}
+			} else {
+				// 默认到末尾
+				lenPtr := c.nextReg()
+				c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 3", lenPtr, strPtr)
+				c.emit("  %s = load i64, i64* %s", endReg, lenPtr)
+			}
+
 			res := c.nextReg()
-			c.emit("  %s = call i64 @xt_dict_get(%%XTDict* %s, i64 %s)", res, dictPtr, kXtVal)
+			c.emit("  %s = call %%XTString* @xt_string_substring(%%XTString* %s, i64 %s, i64 %s)", res, strPtr, startI64, endReg)
 
-			// check if res != 0 (XT_NULL)
-			cond := c.nextReg()
-			c.emit("  %s = icmp ne i64 %s, 0", cond, res)
-
-			// convert to tagged bool (True=4, False=2)
-			finalReg := c.nextReg()
-			c.emit("  %s = select i1 %s, i64 4, i64 2", finalReg, cond)
-
-			// release key and obj
-			c.emit("  call void @xt_release(i64 %s)", kXtVal)
+			// 释放
+			if startType != "raw_i64" {
+				c.emit("  call void @xt_release(i64 %s)", c.ensureI64(startReg, startType))
+			}
 			objXt := c.ensureI64(objReg, objType)
 			c.emit("  call void @xt_release(i64 %s)", objXt)
 
-			return finalReg, "i64", ""
+			resXt := c.nextReg()
+			c.emit("  %s = ptrtoint %%XTString* %s to i64", resXt, res)
+			return resXt, "i64", ""
+		} else if e.Member.Value == "含?" || e.Member.Value == "包含" || e.Member.Value == "包含?" {
+			// 可能是字典含? 或者是 字符串包含?
+
+			// 检查类型
+			newReg := c.nextReg()
+			if objType == "i64" {
+				c.emit("  %s = inttoptr i64 %s to %%XTObject*", newReg, objReg)
+			} else {
+				c.emit("  %s = bitcast %s %s to %%XTObject*", newReg, objType, objReg)
+			}
+
+			typeIdPtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, newReg)
+			typeId := c.nextReg()
+			c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
+
+			isStr := c.nextReg()
+			c.emit("  %s = icmp eq i32 %s, 3", isStr, typeId) // XT_TYPE_STRING = 3
+
+			resAddr := c.nextReg()
+			c.emitAlloca("%s = alloca i64", resAddr)
+
+			strLabel := c.nextLabel("contains.str")
+			dictLabel := c.nextLabel("contains.dict")
+			mergeLabel := c.nextLabel("contains.merge")
+
+			c.emit("  br i1 %s, label %%%s, label %%%s", isStr, strLabel, dictLabel)
+
+			c.emit("%s:", strLabel)
+			sPtr := c.nextReg()
+			c.emit("  %s = bitcast %%XTObject* %s to %%XTString*", sPtr, newReg)
+			argReg, argType, _ := c.compileExpression(e.Arguments[0])
+			argStr, _ := c.convertToObj(argReg, argType)
+			argStrPtr := c.nextReg()
+			c.emit("  %s = bitcast i8* %s to %%XTString*", argStrPtr, argStr)
+			sRes := c.nextReg()
+			c.emit("  %s = call i32 @xt_string_contains(%%XTString* %s, %%XTString* %s)", sRes, sPtr, argStrPtr)
+			sCond := c.nextReg()
+			c.emit("  %s = icmp ne i32 %s, 0", sCond, sRes)
+			sFinal := c.nextReg()
+			c.emit("  %s = select i1 %s, i64 4, i64 2", sFinal, sCond)
+			c.emit("  store i64 %s, i64* %s", sFinal, resAddr)
+			c.emit("  call void @xt_release(i64 %s)", c.ensureI64(argReg, argType))
+			c.emit("  br label %%%s", mergeLabel)
+
+			c.emit("%s:", dictLabel)
+			dPtr := c.nextReg()
+			c.emit("  %s = bitcast %%XTObject* %s to %%XTDict*", dPtr, newReg)
+			kReg, kType, _ := c.compileExpression(e.Arguments[0])
+			kXtVal := c.ensureI64(kReg, kType)
+			dRes := c.nextReg()
+			c.emit("  %s = call i64 @xt_dict_get(%%XTDict* %s, i64 %s)", dRes, dPtr, kXtVal)
+			dCond := c.nextReg()
+			c.emit("  %s = icmp ne i64 %s, 0", dCond, dRes)
+			dFinal := c.nextReg()
+			c.emit("  %s = select i1 %s, i64 4, i64 2", dFinal, dCond)
+			c.emit("  store i64 %s, i64* %s", dFinal, resAddr)
+			c.emit("  call void @xt_release(i64 %s)", kXtVal)
+			c.emit("  br label %%%s", mergeLabel)
+
+			c.emit("%s:", mergeLabel)
+			finalVal := c.nextReg()
+			c.emit("  %s = load i64, i64* %s", finalVal, resAddr)
+
+			objXt := c.ensureI64(objReg, objType)
+			c.emit("  call void @xt_release(i64 %s)", objXt)
+			return finalVal, "i64", ""
 		}
 
 		// 如果是 i8* 或 i64，尝试转为 %XTInstance*
