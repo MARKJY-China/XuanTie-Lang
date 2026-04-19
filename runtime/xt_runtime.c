@@ -11,6 +11,19 @@
 // 前置声明
 static void print_pool_stats();
 
+// Arena 区域分配器实现
+typedef struct XTArena {
+    char* buffer;
+    size_t size;
+    size_t offset;
+    struct XTArena* next;
+} XTArena;
+
+static XTArena* g_current_arena = NULL;
+XTArena* xt_arena_new(size_t size);
+void* xt_arena_alloc_raw(size_t size);
+void* xt_arena_alloc(size_t size, uint32_t type_id);
+
 /**
  * @brief 初始化运行时
  * 
@@ -94,9 +107,18 @@ XTValue xt_bool_new(int val) {
 XTString* xt_string_new_len(const char* data, size_t len) {
     XTString* s = (XTString*)xt_malloc(sizeof(XTString), XT_TYPE_STRING);
     s->length = len;
-    s->data = (char*)malloc(len + 1);
-    memcpy(s->data, data, len);
-    s->data[len] = '\0';
+    
+    if (g_current_arena) {
+        // 在 Arena 中分配数据空间，避免大量小 malloc 导致碎片化或 OOM
+        s->data = (char*)xt_arena_alloc_raw(len + 1);
+    } else {
+        s->data = (char*)malloc(len + 1);
+    }
+    
+    if (s->data) {
+        memcpy(s->data, data, len);
+        s->data[len] = '\0';
+    }
     return s;
 }
 
@@ -214,6 +236,79 @@ void xt_print_float(double val) {
 
 // --- 内存管理与内存池相关 ---
 
+/**
+ * @brief 初始化一个新的 Arena
+ */
+XTArena* xt_arena_new(size_t size) {
+    XTArena* arena = (XTArena*)malloc(sizeof(XTArena));
+    if (!arena) return NULL;
+    arena->buffer = (char*)calloc(1, size);
+    if (!arena->buffer) { free(arena); return NULL; }
+    arena->size = size;
+    arena->offset = 0;
+    arena->next = NULL;
+    return arena;
+}
+
+/**
+ * @brief 在 Arena 中分配原始内存 (不带对象头)
+ */
+void* xt_arena_alloc_raw(size_t size) {
+    if (!g_current_arena) return malloc(size);
+    
+    // 对齐到 8 字节
+    size = (size + 7) & ~7;
+    
+    if (g_current_arena->offset + size > g_current_arena->size) {
+        size_t next_size = (size > 1024 * 1024) ? size : 1024 * 1024;
+        XTArena* next = xt_arena_new(next_size);
+        if (!next) { fprintf(stderr, "Fatal error: out of memory (Arena raw expand)\n"); exit(1); }
+        next->next = g_current_arena;
+        g_current_arena = next;
+    }
+    
+    void* ptr = g_current_arena->buffer + g_current_arena->offset;
+    g_current_arena->offset += size;
+    return ptr;
+}
+
+/**
+ * @brief 在 Arena 中分配对象内存 (带对象头)
+ */
+void* xt_arena_alloc(size_t size, uint32_t type_id) {
+    void* ptr = xt_arena_alloc_raw(size);
+    
+    // 初始化对象头
+    XTObject* obj = (XTObject*)ptr;
+    atomic_init(&obj->ref_count, 1000000); 
+    obj->type_id = type_id;
+    
+    return ptr;
+}
+
+/**
+ * @brief 切换当前全局 Arena
+ */
+XTValue xt_arena_use(XTArena* arena) {
+    g_current_arena = arena;
+    return XT_NULL;
+}
+
+/**
+ * @brief 销毁 Arena 链表并释放所有内存
+ */
+XTValue xt_arena_destroy(XTArena* arena) {
+    XTArena* curr = arena;
+    while (curr) {
+        XTArena* next = curr->next;
+        free(curr->buffer);
+        free(curr);
+        curr = next;
+    }
+    if (g_current_arena == arena) g_current_arena = NULL;
+    return XT_NULL;
+}
+
 // 简单的空闲链表内存池配置 (目前主要作为扩展预留)
 #define POOL_MAX_SIZE 128
 #define POOL_SLOT_COUNT 8
@@ -230,6 +325,9 @@ typedef struct XTPoolNode {
  * 为所有玄铁对象分配堆空间，并初始化对象头 (引用计数设为 1)。
  */
 void* xt_malloc(size_t size, uint32_t type_id) {
+    if (g_current_arena) {
+        return xt_arena_alloc(size, type_id);
+    }
     XTObject* obj = (XTObject*)malloc(size);
     if (!obj) {
         fprintf(stderr, "Fatal error: out of memory (xt_malloc)\n");
@@ -375,8 +473,13 @@ int64_t xt_to_int(XTValue val) {
 XTValue xt_array_new(size_t capacity) {
     XTArray* arr = (XTArray*)xt_malloc(sizeof(XTArray), XT_TYPE_ARRAY);
     arr->length = 0;
-    arr->capacity = capacity;
-    arr->elements = capacity > 0 ? (void**)malloc(sizeof(void*) * capacity) : NULL;
+    arr->capacity = capacity > 0 ? capacity : 4; // 至少分配 4 个空间
+    
+    if (g_current_arena) {
+        arr->elements = (void**)xt_arena_alloc_raw(sizeof(void*) * arr->capacity);
+    } else {
+        arr->elements = (void**)malloc(sizeof(void*) * arr->capacity);
+    }
     return (XTValue)arr;
 }
 
@@ -398,7 +501,15 @@ void xt_array_append(XTValue arr_val, XTValue element) {
     // 检查扩容
     if (arr->length >= arr->capacity) {
         size_t new_capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;
-        void** new_elements = (void**)realloc(arr->elements, sizeof(void*) * new_capacity);
+        void** new_elements;
+        if (g_current_arena) {
+            new_elements = (void**)xt_arena_alloc_raw(sizeof(void*) * new_capacity);
+            if (arr->elements) {
+                memcpy(new_elements, arr->elements, sizeof(void*) * arr->length);
+            }
+        } else {
+            new_elements = (void**)realloc(arr->elements, sizeof(void*) * new_capacity);
+        }
         if (!new_elements) return;
         arr->elements = new_elements;
         arr->capacity = new_capacity;
@@ -771,7 +882,7 @@ void xt_dict_set(XTValue dict_val, XTValue key, XTValue value) {
     // 查找是否存在现有键
     XTDictEntry* entry = dict->buckets[idx];
     while (entry) {
-        if (xt_compare(entry->key, key) == 0) {
+        if (xt_eq((void*)entry->key, (void*)key)) {
             xt_release(entry->value);
             entry->value = value;
             xt_retain(value);
@@ -805,7 +916,7 @@ XTValue xt_dict_get(XTValue dict_val, XTValue key) {
 
     XTDictEntry* entry = dict->buckets[idx];
     while (entry) {
-        if (xt_compare(entry->key, key) == 0) {
+        if (xt_eq((void*)entry->key, (void*)key)) {
             return entry->value;
         }
         entry = entry->next;
@@ -838,7 +949,7 @@ int xt_dict_contains(XTValue dict_val, XTValue key) {
 
     XTDictEntry* entry = dict->buckets[idx];
     while (entry) {
-        if (xt_compare(entry->key, key) == 0) {
+        if (xt_eq((void*)entry->key, (void*)key)) {
             return 1;
         }
         entry = entry->next;

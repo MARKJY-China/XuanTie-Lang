@@ -314,6 +314,10 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_TYPE_DEF
 	case "口":
 		return token.TOKEN_INTERFACE
+	case "外":
+		return token.TOKEN_EXTERNAL
+	case "弱":
+		return token.TOKEN_WEAK
 	case "造":
 		return token.TOKEN_NEW
 	case "承":

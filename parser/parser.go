@@ -186,6 +186,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		stmt = p.parseTypeDefinitionStatement("")
 	case token.TOKEN_INTERFACE:
 		stmt = p.parseInterfaceStatement("")
+	case token.TOKEN_EXTERNAL:
+		stmt = p.parseExternalStatement()
 	case token.TOKEN_FUNCTION:
 		if p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_NEW {
 			stmt = p.parseFunctionStatement("", false)
@@ -537,6 +539,33 @@ func (p *Parser) parseInterfaceStatement(visibility token.TokenType) *ast.Interf
 
 	if !p.expectPeek(token.TOKEN_RBRACE) {
 		return nil
+	}
+
+	return stmt
+}
+
+func (p *Parser) parseExternalStatement() *ast.ExternalFunctionStatement {
+	stmt := &ast.ExternalFunctionStatement{Token: p.cur}
+
+	if !p.expectPeek(token.TOKEN_FUNCTION) {
+		return nil
+	}
+
+	if !p.expectPeek(token.TOKEN_IDENT) {
+		return nil
+	}
+
+	stmt.Name = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
+
+	if !p.expectPeek(token.TOKEN_LPAREN) {
+		return nil
+	}
+
+	stmt.Parameters = p.parseFunctionParameters()
+
+	if p.peek.Type == token.TOKEN_COLON {
+		p.nextToken()
+		stmt.ReturnType = p.parseTypeAnnotation()
 	}
 
 	return stmt

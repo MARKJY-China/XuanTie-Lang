@@ -856,6 +856,10 @@ func (c *GoCompiler) writeStatementsWithDeclarations(stmts []ast.Statement, inde
 			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, is.Name.Value))
 			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, is.Name.Value))
 		}
+		if efs, ok := stmt.(*ast.ExternalFunctionStatement); ok {
+			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, efs.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, efs.Name.Value))
+		}
 		// 收集引用别名
 		if es, ok := stmt.(*ast.ExpressionStatement); ok {
 			if ie, ok := es.Expression.(*ast.ImportExpression); ok && ie.Alias != nil {
@@ -919,6 +923,9 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%sbreak\n", indentStr))
 	case *ast.ContinueStatement:
 		c.output.WriteString(fmt.Sprintf("%scontinue\n", indentStr))
+	case *ast.ExternalFunctionStatement:
+		// 外部函数声明，生成一个 FFI 占位符
+		c.output.WriteString(fmt.Sprintf("%s%s = &FFIFunction{Name: %q}\n", indentStr, s.Name.Value, s.Name.Value))
 	case *ast.TryCatchStatement:
 		c.output.WriteString(fmt.Sprintf("%sfunc() {\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s\tdefer func() {\n", indentStr))

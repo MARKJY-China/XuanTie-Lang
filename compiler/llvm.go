@@ -146,6 +146,7 @@ func (c *LLVMCompiler) Compile() string {
 	c.emit("declare i64 @xt_file_read(i64)")
 	c.emit("declare i64 @xt_file_write(i64, i64)")
 	c.emit("")
+	c.emit("")
 
 	// 4. 写入全局变量定义
 	c.output.Write(c.globalOutput.Bytes())
@@ -406,6 +407,11 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		c.compileFunctionStatement(s)
 	case *ast.TypeDefinitionStatement:
 		c.compileTypeDefinitionStatement(s)
+	case *ast.InterfaceStatement:
+		// 接口在 LLVM 后端仅作为元数据，不生成代码
+		return
+	case *ast.ExternalFunctionStatement:
+		c.compileExternalFunctionStatement(s)
 	case *ast.ReturnStatement:
 		valReg, valType, _ := c.compileExpression(s.ReturnValue)
 		retVal := valReg
@@ -2042,6 +2048,30 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		c.emit("  call void @xt_release(i64 %s)", objXt)
 		c.emit("  call void @xt_release(i64 %s)", keyXt)
 	}
+}
+
+func (c *LLVMCompiler) compileExternalFunctionStatement(s *ast.ExternalFunctionStatement) {
+	retType := "i64"
+	switch s.ReturnType {
+	case "整", "整数":
+		retType = "i64"
+	case "小数":
+		retType = "double"
+	case "逻", "逻辑":
+		retType = "i1"
+	case "字", "字符串":
+		retType = "i8*"
+	case "空":
+		retType = "void"
+	}
+
+	params := []string{}
+	for range s.Parameters {
+		params = append(params, "i64")
+	}
+	paramStr := strings.Join(params, ", ")
+
+	c.globalOutput.WriteString(fmt.Sprintf("declare %s @%s(%s)\n", retType, s.Name.Value, paramStr))
 }
 
 func (c *LLVMCompiler) compileTypeDefinitionStatement(s *ast.TypeDefinitionStatement) {

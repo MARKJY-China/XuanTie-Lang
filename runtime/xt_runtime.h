@@ -216,6 +216,13 @@ void xt_retain(XTValue val);
 /// 减少对象的引用计数，若为 0 则释放
 void xt_release(XTValue val);
 
+// Arena 分配器
+typedef struct XTArena XTArena;
+XTArena* xt_arena_new(size_t size);
+void* xt_arena_alloc(size_t size, uint32_t type_id);
+XTValue xt_arena_use(XTArena* arena);
+XTValue xt_arena_destroy(XTArena* arena);
+
 // --- 类型转换与操作 ---
 
 /// 将任意 XTValue 转换为 64 位整数表示

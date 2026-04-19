@@ -72,6 +72,8 @@ const (
 	TOKEN_DESERIALIZE TokenType = "解"
 	TOKEN_TYPE_DEF    TokenType = "型"
 	TOKEN_INTERFACE   TokenType = "口"
+	TOKEN_EXTERNAL    TokenType = "外"
+	TOKEN_WEAK        TokenType = "弱"
 	TOKEN_NEW         TokenType = "造"
 	TOKEN_INHERIT     TokenType = "承"
 	TOKEN_CONNECT     TokenType = "连"

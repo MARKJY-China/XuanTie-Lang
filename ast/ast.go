@@ -933,6 +933,34 @@ func (fl *FunctionLiteral) String() string {
 	return out.String()
 }
 
+// ExternalFunctionStatement 外部函数定义语句
+type ExternalFunctionStatement struct {
+	Token      token.Token // "外"
+	Name       *Identifier
+	Parameters []*Parameter
+	ReturnType string // 可选返回类型
+}
+
+func (efs *ExternalFunctionStatement) statementNode()       {}
+func (efs *ExternalFunctionStatement) TokenLiteral() string { return efs.Token.Literal }
+func (efs *ExternalFunctionStatement) GetLine() int         { return efs.Token.Line }
+func (efs *ExternalFunctionStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("外 函 ")
+	out.WriteString(efs.Name.String())
+	out.WriteString("(")
+	params := []string{}
+	for _, p := range efs.Parameters {
+		params = append(params, p.String())
+	}
+	out.WriteString(strings.Join(params, ", "))
+	out.WriteString(")")
+	if efs.ReturnType != "" {
+		out.WriteString(": " + efs.ReturnType)
+	}
+	return out.String()
+}
+
 // FunctionStatement 具名函数定义
 type FunctionStatement struct {
 	Token         token.Token
