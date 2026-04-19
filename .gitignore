@@ -6,6 +6,8 @@ test*
 *.pdb
 *.bak
 out.txt
+output.txt
+*test.xt
 
 玄铁编译器功能实现清单.md
 

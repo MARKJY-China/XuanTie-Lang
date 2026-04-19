@@ -1544,6 +1544,22 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			memberVal = &object.Boolean{Value: len(arr.Elements) == 0}
 		case "非空?":
 			memberVal = &object.Boolean{Value: len(arr.Elements) > 0}
+		case "连接":
+			memberVal = &object.Builtin{
+				Fn: func(fArgs ...object.Object) object.Object {
+					sep := ""
+					if len(fArgs) > 0 {
+						if s, ok := fArgs[0].(*object.String); ok {
+							sep = s.Value
+						}
+					}
+					var strs []string
+					for _, e := range arr.Elements {
+						strs = append(strs, e.Inspect())
+					}
+					return &object.String{Value: strings.Join(strs, sep)}
+				},
+			}
 		case "归纳":
 			memberVal = &object.Builtin{
 				Fn: func(fArgs ...object.Object) object.Object {

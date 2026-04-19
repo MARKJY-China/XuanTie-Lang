@@ -278,6 +278,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_FUNCTION
 	case "返", "返回":
 		return token.TOKEN_RETURN
+	case "终":
+		return token.TOKEN_TERMINATE
 	case "真":
 		return token.TOKEN_TRUE
 	case "假":

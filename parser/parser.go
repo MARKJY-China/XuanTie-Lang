@@ -166,6 +166,8 @@ func (p *Parser) parseStatement() ast.Statement {
 		stmt = p.parseWhileStatement()
 	case token.TOKEN_MATCH:
 		stmt = p.parseMatchStatement()
+	case token.TOKEN_TERMINATE:
+		stmt = p.parseTerminateStatement()
 	case token.TOKEN_LOOP:
 		stmt = p.parseLoopStatement()
 	case token.TOKEN_FOR:
@@ -221,6 +223,16 @@ func (p *Parser) parseTestStatement() *ast.TestStatement {
 
 	stmt.Body = p.parseBlock()
 
+	return stmt
+}
+
+func (p *Parser) parseTerminateStatement() *ast.TerminateStatement {
+	stmt := &ast.TerminateStatement{Token: p.cur}
+	// 检查是否有状态码
+	if p.peek.Type == token.TOKEN_NUMBER || p.peek.Type == token.TOKEN_IDENT || p.peek.Type == token.TOKEN_LPAREN {
+		p.nextToken()
+		stmt.StatusCode = p.parseExpression(LOWEST)
+	}
 	return stmt
 }
 

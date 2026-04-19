@@ -786,6 +786,24 @@ func (ie *InfixExpression) String() string {
 	return out.String()
 }
 
+// TerminateStatement 终止语句
+type TerminateStatement struct {
+	Token      token.Token // "终"
+	StatusCode Expression  // 可选状态码
+}
+
+func (ts *TerminateStatement) statementNode()       {}
+func (ts *TerminateStatement) TokenLiteral() string { return ts.Token.Literal }
+func (ts *TerminateStatement) GetLine() int         { return ts.Token.Line }
+func (ts *TerminateStatement) String() string {
+	var out bytes.Buffer
+	out.WriteString("终 ")
+	if ts.StatusCode != nil {
+		out.WriteString(ts.StatusCode.String())
+	}
+	return out.String()
+}
+
 // Walk 深度优先遍历 AST
 func Walk(node Node, fn func(Node)) {
 	if node == nil {
