@@ -327,6 +327,9 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 		}
 		return newReg
 	}
+	if strings.HasPrefix(typ, "型:") {
+		return reg
+	}
 	return reg
 }
 
