@@ -456,13 +456,35 @@ int64_t xt_to_int(XTValue val) {
     if (XT_IS_INT(val)) return XT_TO_INT(val);
     if (val == XT_TRUE) return 1;
     if (val == XT_FALSE) return 0;
-    if (XT_IS_PTR(val) && val != XT_NULL) {
-        XTObject* header = (XTObject*)val;
-        if (header->type_id == XT_TYPE_INT) {
-            return ((XTInt*)val)->value;
-        }
+    if (val == XT_NULL) return 0;
+    if (XT_IS_PTR(val)) {
+        XTObject* obj = (XTObject*)val;
+        if (obj->type_id == XT_TYPE_INT) return ((XTInt*)val)->value;
+        if (obj->type_id == XT_TYPE_FLOAT) return (int64_t)((struct { XTObject h; double v; }*)val)->v;
+        if (obj->type_id == XT_TYPE_STRING) return atoll(((XTString*)val)->data);
     }
     return 0;
+}
+
+XTValue xt_convert_to_int(XTValue val) {
+    return XT_FROM_INT(xt_to_int(val));
+}
+
+XTValue xt_convert_to_float(XTValue val) {
+    double d = 0.0;
+    if (XT_IS_INT(val)) d = (double)XT_TO_INT(val);
+    else if (val == XT_TRUE) d = 1.0;
+    else if (XT_IS_PTR(val)) {
+        XTObject* obj = (XTObject*)val;
+        if (obj->type_id == XT_TYPE_FLOAT) d = ((struct { XTObject h; double v; }*)val)->v;
+        else if (obj->type_id == XT_TYPE_INT) d = (double)((XTInt*)val)->value;
+        else if (obj->type_id == XT_TYPE_STRING) d = atof(((XTString*)val)->data);
+    }
+    return (XTValue)xt_float_new(d);
+}
+
+XTValue xt_convert_to_string(XTValue val) {
+    return (XTValue)xt_obj_to_string(val);
 }
 
 // --- 数组 (Array) 实现 ---
@@ -1063,3 +1085,169 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
 
     return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
 }
+
+// --- 字节流与任务实现 ---
+
+XTValue xt_bytes_new(size_t capacity) {
+    XTBytes* b = (XTBytes*)xt_malloc(sizeof(XTBytes), XT_TYPE_BYTES);
+    b->data = (uint8_t*)malloc(capacity);
+    b->length = 0;
+    b->capacity = capacity;
+    return (XTValue)b;
+}
+
+void xt_bytes_append(XTValue bytes_val, uint8_t b_val) {
+    if (XT_IS_INT(bytes_val)) return;
+    XTBytes* b = (XTBytes*)bytes_val;
+    if (b->length >= b->capacity) {
+        b->capacity *= 2;
+        b->data = realloc(b->data, b->capacity);
+    }
+    b->data[b->length++] = b_val;
+}
+
+XTValue xt_task_new(XTValue result) {
+    XTTask* t = (XTTask*)xt_malloc(sizeof(XTTask), XT_TYPE_TASK);
+    t->result = result;
+    t->status = 1; // 默认已完成
+    return (XTValue)t;
+}
+
+XTValue xt_channel_new(size_t capacity) {
+    XTChannel* c = (XTChannel*)xt_malloc(sizeof(XTChannel), XT_TYPE_CHANNEL);
+    c->buffer = (XTValue*)malloc(capacity * sizeof(XTValue));
+    c->size = 0;
+    c->capacity = capacity;
+    c->head = 0;
+    c->tail = 0;
+    return (XTValue)c;
+}
+
+void xt_channel_send(XTValue chan_val, XTValue val) {
+    if (XT_IS_INT(chan_val)) return;
+    XTChannel* c = (XTChannel*)chan_val;
+    if (c->size >= c->capacity) return; // 简单丢弃，后续应阻塞
+    c->buffer[c->tail] = val;
+    xt_retain(val);
+    c->tail = (c->tail + 1) % c->capacity;
+    c->size++;
+}
+
+XTValue xt_channel_receive(XTValue chan_val) {
+    if (XT_IS_INT(chan_val)) return XT_NULL;
+    XTChannel* c = (XTChannel*)chan_val;
+    if (c->size == 0) return XT_NULL; // 后续应阻塞
+    XTValue val = c->buffer[c->head];
+    c->head = (c->head + 1) % c->capacity;
+    c->size--;
+    // 接收者获得所有权，不需要再次 retain，但 send 时已 retain
+    return val;
+}
+
+
+// --- JSON 实现 ---
+
+XTString* xt_json_serialize(XTValue val) {
+    if (XT_IS_INT(val)) return xt_int_to_string(XT_TO_INT(val));
+    if (val == XT_TRUE) return xt_string_new("true");
+    if (val == XT_FALSE) return xt_string_new("false");
+    if (val == XT_NULL) return xt_string_new("null");
+
+    if (!XT_IS_PTR(val)) return xt_string_new("\"illegal\"");
+
+    XTObject* header = (XTObject*)val;
+    switch (header->type_id) {
+        case XT_TYPE_STRING: {
+            XTString* s = (XTString*)val;
+            // 简单转义（实际应更复杂）
+            char* buf = malloc(s->length + 3);
+            sprintf(buf, "\"%s\"", s->data);
+            XTString* res = xt_string_new(buf);
+            free(buf);
+            return res;
+        }
+        case XT_TYPE_ARRAY: {
+            XTArray* arr = (XTArray*)val;
+            XTString* res = xt_string_new("[");
+            for (size_t i = 0; i < arr->length; i++) {
+                XTString* item = xt_json_serialize((XTValue)arr->elements[i]);
+                XTString* temp = xt_string_concat(res, item);
+                xt_release((XTValue)res);
+                xt_release((XTValue)item);
+                res = temp;
+                if (i < arr->length - 1) {
+                    temp = xt_string_concat(res, xt_string_new(", "));
+                    xt_release((XTValue)res);
+                    res = temp;
+                }
+            }
+            XTString* suffix = xt_string_new("]");
+            XTString* final_res = xt_string_concat(res, suffix);
+            xt_release((XTValue)res);
+            xt_release((XTValue)suffix);
+            return final_res;
+        }
+        case XT_TYPE_DICT: {
+            XTDict* dict = (XTDict*)val;
+            XTString* res = xt_string_new("{");
+            int first = 1;
+            for (size_t i = 0; i < dict->capacity; i++) {
+                XTDictEntry* entry = dict->buckets[i];
+                while (entry) {
+                    if (!first) {
+                        XTString* comma = xt_string_new(", ");
+                        XTString* temp = xt_string_concat(res, comma);
+                        xt_release((XTValue)res);
+                        xt_release((XTValue)comma);
+                        res = temp;
+                    }
+                    XTString* key = xt_json_serialize(entry->key);
+                    XTString* colon = xt_string_new(": ");
+                    XTString* val_str = xt_json_serialize(entry->value);
+                    
+                    XTString* temp1 = xt_string_concat(res, key);
+                    XTString* temp2 = xt_string_concat(temp1, colon);
+                    XTString* temp3 = xt_string_concat(temp2, val_str);
+                    
+                    xt_release((XTValue)res);
+                    xt_release((XTValue)key);
+                    xt_release((XTValue)colon);
+                    xt_release((XTValue)val_str);
+                    xt_release((XTValue)temp1);
+                    xt_release((XTValue)temp2);
+                    
+                    res = temp3;
+                    first = 0;
+                    entry = entry->next;
+                }
+            }
+            XTString* suffix = xt_string_new("}");
+            XTString* final_res = xt_string_concat(res, suffix);
+            xt_release((XTValue)res);
+            xt_release((XTValue)suffix);
+            return final_res;
+        }
+        default:
+            return xt_string_new("\"object\"");
+    }
+}
+
+XTValue xt_json_deserialize(XTString* json_str) {
+    // 简化版反序列化：仅支持基础类型识别，用于演示
+    if (!json_str || json_str->length == 0) return XT_NULL;
+    char* data = json_str->data;
+    if (strcmp(data, "true") == 0) return XT_TRUE;
+    if (strcmp(data, "false") == 0) return XT_FALSE;
+    if (strcmp(data, "null") == 0) return XT_NULL;
+    if (data[0] >= '0' && data[0] <= '9') return XT_FROM_INT(atoll(data));
+    if (data[0] == '"') {
+        char* inner = _strdup(data + 1);
+        inner[strlen(inner) - 1] = '\0';
+        XTValue res = (XTValue)xt_string_new(inner);
+        free(inner);
+        return res;
+    }
+    // 复合类型反序列化在演示中暂不完整实现
+    return (XTValue)xt_string_new("暂不支持复杂 JSON 反序列化");
+}
+

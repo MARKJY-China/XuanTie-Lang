@@ -79,6 +79,9 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_INSTANCE  7 ///< 类实例
 #define XT_TYPE_RESULT    8 ///< 结果容器 (Result)
 #define XT_TYPE_FUNCTION  9 ///< 函数对象
+#define XT_TYPE_BYTES     10 ///< 字节流 (Bytes)
+#define XT_TYPE_TASK      11 ///< 异步任务 (Task)
+#define XT_TYPE_CHANNEL   12 ///< 并发通道 (Channel)
 
 /**
  * @brief 函数对象结构
@@ -87,6 +90,38 @@ typedef struct {
     XTObject header;
     void* func_ptr; ///< 底层 C 函数指针
 } XTFunction;
+
+/**
+ * @brief 字节流结构
+ */
+typedef struct {
+    XTObject header;
+    uint8_t* data;
+    size_t length;
+    size_t capacity;
+} XTBytes;
+
+/**
+ * @brief 异步任务结构
+ */
+typedef struct {
+    XTObject header;
+    XTValue result;
+    int status; // 0: 运行中, 1: 已完成, 2: 失败
+} XTTask;
+
+/**
+ * @brief 通道结构 (简单环形队列)
+ */
+typedef struct {
+    XTObject header;
+    XTValue* buffer;
+    size_t size;
+    size_t capacity;
+    size_t head;
+    size_t tail;
+} XTChannel;
+
 
 /**
  * @brief 装箱整数结构 (较少直接使用，优先使用标记指针)
@@ -227,6 +262,13 @@ XTValue xt_arena_destroy(XTArena* arena);
 
 /// 将任意 XTValue 转换为 64 位整数表示
 int64_t xt_to_int(XTValue val);
+/// 显式转换为整数对象或标记指针
+XTValue xt_convert_to_int(XTValue val);
+/// 显式转换为浮点数对象
+XTValue xt_convert_to_float(XTValue val);
+/// 显式转换为字符串对象
+XTValue xt_convert_to_string(XTValue val);
+
 /// 连接两个字符串，返回新字符串
 XTString* xt_string_concat(XTString* s1, XTString* s2);
 /// 截取子字符串
@@ -237,6 +279,25 @@ int xt_string_contains(XTString* s, XTString* sub);
 XTString* xt_int_to_string(int64_t val);
 /// 将任意对象转换为其字符串表示 (用于打印/插值)
 XTString* xt_obj_to_string(XTValue val);
+
+// --- 字节流操作 ---
+XTValue xt_bytes_new(size_t capacity);
+void xt_bytes_append(XTValue bytes, uint8_t b);
+
+// --- 异步任务 ---
+XTValue xt_task_new(XTValue result);
+
+// --- 通道操作 ---
+XTValue xt_channel_new(size_t capacity);
+void xt_channel_send(XTValue chan_val, XTValue val);
+XTValue xt_channel_receive(XTValue chan_val);
+
+// --- JSON 支持 ---
+
+/// 将对象序列化为 JSON 字符串
+XTString* xt_json_serialize(XTValue val);
+/// 将 JSON 字符串反序列化为玄铁对象
+XTValue xt_json_deserialize(XTString* json_str);
 
 // --- 文件 I/O 接口 ---
 
