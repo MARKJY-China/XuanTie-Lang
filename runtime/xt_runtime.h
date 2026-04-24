@@ -83,6 +83,9 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_TASK      11 ///< 异步任务 (Task)
 #define XT_TYPE_CHANNEL   12 ///< 并发通道 (Channel)
 
+// 内存管理常量
+#define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
+
 /**
  * @brief 函数对象结构
  */
@@ -136,8 +139,9 @@ typedef struct {
  */
 typedef struct {
     XTObject header;
-    char* data;     ///< 字符数组 (UTF-8)
-    size_t length;  ///< 字符串字节长度
+    char* data;           ///< 字符数组 (UTF-8)
+    size_t length;        ///< 字符串字节长度
+    uint8_t data_in_arena; ///< 标志位：data 是否由 Arena 分配 (不可 free)
 } XTString;
 
 /**
@@ -193,6 +197,10 @@ typedef struct {
 
 /// 初始化运行时环境 (如设置控制台编码)
 void xt_init();
+
+/// 初始化并获取命令行参数
+void xt_init_args(int argc, char** argv);
+XTValue xt_get_args();
 
 /// 打印各种类型的值到标准输出
 void xt_print_int(int64_t val);

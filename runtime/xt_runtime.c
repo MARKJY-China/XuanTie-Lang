@@ -1,4 +1,5 @@
 #include "xt_runtime.h"
+#include <inttypes.h>
 
 /**
  * @file xt_runtime.c
@@ -20,6 +21,8 @@ typedef struct XTArena {
 } XTArena;
 
 static XTArena* g_current_arena = NULL;
+static XTValue g_xt_args = XT_NULL;
+
 XTArena* xt_arena_new(size_t size);
 void* xt_arena_alloc_raw(size_t size);
 void* xt_arena_alloc(size_t size, uint32_t type_id);
@@ -34,6 +37,29 @@ void xt_init() {
     SetConsoleOutputCP(65001); // 设置为 UTF-8
 #endif
     // atexit(print_pool_stats); // 如果需要调试内存池，可以解开注释
+}
+
+/**
+ * @brief 初始化命令行参数
+ */
+void xt_init_args(int argc, char** argv) {
+    g_xt_args = xt_array_new(argc);
+    for (int i = 0; i < argc; i++) {
+        XTString* s = xt_string_new(argv[i]);
+        xt_array_append(g_xt_args, (XTValue)s);
+        // xt_array_append 会 retain s，所以这里不需要额外操作
+    }
+}
+
+/**
+ * @brief 获取命令行参数列表
+ */
+XTValue xt_get_args() {
+    if (g_xt_args == XT_NULL) {
+        return xt_array_new(0);
+    }
+    xt_retain(g_xt_args);
+    return g_xt_args;
 }
 
 static void print_pool_stats() {
@@ -60,11 +86,20 @@ void xt_print_pool_stats() {
 #define XT_DEBUG_PRINT(...)
 #endif
 
+// 跨平台字符串复制实现
+static char* xt_strdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s) + 1;
+    char* res = (char*)malloc(len);
+    if (res) memcpy(res, s, len);
+    return res;
+}
+
 /**
  * @brief 打印 64 位整数
  */
 void xt_print_int(int64_t val) {
-    printf("%lld\n", val);
+    printf("%" PRId64 "\n", val);
 }
 
 /**
@@ -111,8 +146,10 @@ XTString* xt_string_new_len(const char* data, size_t len) {
     if (g_current_arena) {
         // 在 Arena 中分配数据空间，避免大量小 malloc 导致碎片化或 OOM
         s->data = (char*)xt_arena_alloc_raw(len + 1);
+        s->data_in_arena = 1;
     } else {
         s->data = (char*)malloc(len + 1);
+        s->data_in_arena = 0;
     }
     
     if (s->data) {
@@ -280,7 +317,7 @@ void* xt_arena_alloc(size_t size, uint32_t type_id) {
     
     // 初始化对象头
     XTObject* obj = (XTObject*)ptr;
-    atomic_init(&obj->ref_count, 1000000); 
+    atomic_init(&obj->ref_count, XT_REF_COUNT_IMMORTAL); 
     obj->type_id = type_id;
     
     return ptr;
@@ -346,10 +383,13 @@ void* xt_malloc(size_t size, uint32_t type_id) {
 static void xt_free_obj(XTObject* obj) {
     if (!obj) return;
     
+    // 如果是 Arena 对象，不执行释放 (Arena 会统一销毁)
+    if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
+
     switch (obj->type_id) {
         case XT_TYPE_STRING: {
             XTString* s = (XTString*)obj;
-            if (s->data) free(s->data);
+            if (s->data && !s->data_in_arena) free(s->data);
             break;
         }
         case XT_TYPE_ARRAY: {
@@ -1147,6 +1187,8 @@ XTValue xt_channel_receive(XTValue chan_val) {
 
 // --- JSON 实现 ---
 
+// TODO: 目前 JSON 序列化采用递归字符串拼接，性能为 O(n^2)。
+// 后续应引入 XTStringBuilder (预分配缓冲区) 优化。
 XTString* xt_json_serialize(XTValue val) {
     if (XT_IS_INT(val)) return xt_int_to_string(XT_TO_INT(val));
     if (val == XT_TRUE) return xt_string_new("true");
@@ -1241,7 +1283,7 @@ XTValue xt_json_deserialize(XTString* json_str) {
     if (strcmp(data, "null") == 0) return XT_NULL;
     if (data[0] >= '0' && data[0] <= '9') return XT_FROM_INT(atoll(data));
     if (data[0] == '"') {
-        char* inner = _strdup(data + 1);
+        char* inner = xt_strdup(data + 1);
         inner[strlen(inner) - 1] = '\0';
         XTValue res = (XTValue)xt_string_new(inner);
         free(inner);

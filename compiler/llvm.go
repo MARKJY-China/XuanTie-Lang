@@ -157,10 +157,13 @@ func (c *LLVMCompiler) Compile() string {
 	c.emit("")
 
 	// 6. 主函数入口
-	c.emit("define i32 @main() {")
+	c.emit("declare void @\"xt_init_args\"(i32, i8**)")
+	c.emit("")
+	c.emit("define i32 @main(i32 %%argc, i8** %%argv) {")
 	c.emit("entry:")
 	c.currentLabel = "entry"
 	c.emit("  call void @xt_init()")
+	c.emit("  call void @xt_init_args(i32 %%argc, i8** %%argv)")
 	c.output.WriteString(mainAllocas)
 	c.output.WriteString(mainBody)
 	c.emit("  ret i32 0")

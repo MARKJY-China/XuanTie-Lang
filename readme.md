@@ -1,6 +1,6 @@
 # 玄铁 (XuanTie)
 
-[![版本](https://img.shields.io/badge/版本-0.16.2-red.svg)](https://gitee.com/mark-jy/xuantie)
+[![版本](https://img.shields.io/badge/版本-0.16.3-red.svg)](https://gitee.com/mark-jy/xuantie)
 [![语言](https://img.shields.io/badge/语言-Go%20%7C%20LLVM-00ADD8.svg)](https://golang.org)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
 [![语法指南](https://img.shields.io/badge/文档-语法指南-yellow.svg)](https://www.yuque.com/markjy/upsxwh/mr3r02mv71uloe7o)
@@ -87,10 +87,12 @@
 
 ---
 
-## 未来路线图
+## 大致计划
 
-1. **第一步：完成自举**  
+1. **v1.0.0 正式自举**  
    用玄铁写的编译器能编译玄铁代码本身。这是语言图灵完备性的终极证明。
+2. **v1.1.0 渲染引擎**  
+   实现基于 `raylib` 或类似底层封装的玄铁原生渲染引擎。
 2. **第二步：渲染引擎**  
    实现基于 `raylib` 或类似底层封装的玄铁原生渲染引擎。
 3. **第三步：玄铁铸造厂 (IDE)**  

@@ -334,6 +334,7 @@
         此.写出("declare i8* @\"xt_float_new\"(double)")
         此.写出("declare %XTString* @\"xt_json_serialize\"(i64)")
         此.写出("declare i64 @\"xt_json_deserialize\"(%XTString*)")
+        此.写出("declare void @\"xt_init_args\"(i32, i8**)")
         此.写出("")
         
         // 输出外部函数声明
@@ -371,9 +372,10 @@
 
         此.写出(此.函数输出)
 
-        此.写出("define i32 @main() {")
+        此.写出("define i32 @main(i32 %argc, i8** %argv) {")
         此.写出("entry:")
         此.写出("  call void @xt_init()")
+        此.写出("  call void @xt_init_args(i32 %argc, i8** %argv)")
         此.写出(主体)
         此.写出("  ret i32 0")
         此.写出("}")

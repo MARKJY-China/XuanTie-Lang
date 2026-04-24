@@ -1,6 +1,7 @@
 # XuanTie Syntax Highlighting
 
-玄铁 (XuanTie) 编程语言的官方 VS Code 语法高亮扩展。
+玄铁 (XuanTie) 编程语言的官方 VS Code 扩展包。
+当前支持版本: v0.16.2
 
 ## 功能特性
 
