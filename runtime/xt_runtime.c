@@ -1,5 +1,6 @@
 #include "xt_runtime.h"
 #include <inttypes.h>
+#include <time.h>
 
 /**
  * @file xt_runtime.c
@@ -14,6 +15,7 @@ static void print_pool_stats();
 
 // Arena 区域分配器实现
 typedef struct XTArena {
+    XTObject header; // 使 Arena 本身也成为一个 managed 对象，防止被 ARC 误伤
     char* buffer;
     size_t size;
     size_t offset;
@@ -279,6 +281,11 @@ void xt_print_float(double val) {
 XTArena* xt_arena_new(size_t size) {
     XTArena* arena = (XTArena*)malloc(sizeof(XTArena));
     if (!arena) return NULL;
+    
+    // 初始化对象头，使其不被 ARC 释放
+    atomic_init(&arena->header.ref_count, XT_REF_COUNT_IMMORTAL);
+    arena->header.type_id = 0; // 特殊类型
+    
     arena->buffer = (char*)calloc(1, size);
     if (!arena->buffer) { free(arena); return NULL; }
     arena->size = size;
@@ -620,6 +627,53 @@ void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value) {
     xt_release((XTValue)arr->elements[index]);
     arr->elements[index] = (void*)value;
     xt_retain(value);
+}
+
+void xt_array_remove(XTValue arr_val, XTValue index_val) {
+    if (!XT_IS_PTR(arr_val) || arr_val == XT_NULL) return;
+    XTArray* arr = (XTArray*)arr_val;
+    if (arr->header.type_id != XT_TYPE_ARRAY) return;
+    int64_t index = xt_to_int(index_val);
+    if (index < 0 || (size_t)index >= arr->length) return;
+    xt_release((XTValue)arr->elements[index]);
+    for (size_t i = (size_t)index; i < arr->length - 1; i++) {
+        arr->elements[i] = arr->elements[i+1];
+    }
+    arr->length--;
+}
+
+void xt_array_insert(XTValue arr_val, XTValue index_val, XTValue value) {
+    if (!XT_IS_PTR(arr_val) || arr_val == XT_NULL) return;
+    XTArray* arr = (XTArray*)arr_val;
+    if (arr->header.type_id != XT_TYPE_ARRAY) return;
+    int64_t index = xt_to_int(index_val);
+    if (index < 0 || (size_t)index > arr->length) return;
+    
+    // 简单追加并移动
+    xt_array_append(arr_val, value);
+    for (size_t i = arr->length - 1; i > (size_t)index; i--) {
+        void* temp = arr->elements[i];
+        arr->elements[i] = arr->elements[i-1];
+        arr->elements[i-1] = temp;
+    }
+}
+
+XTValue xt_array_contains(XTValue arr_val, XTValue element) {
+    if (!XT_IS_PTR(arr_val) || arr_val == XT_NULL) return XT_FALSE;
+    XTArray* arr = (XTArray*)arr_val;
+    for (size_t i = 0; i < arr->length; i++) {
+        if (xt_compare((XTValue)arr->elements[i], element) == 0) return XT_TRUE;
+    }
+    return XT_FALSE;
+}
+
+XTValue xt_array_find(XTValue arr_val, XTValue element) {
+    if (!XT_IS_PTR(arr_val) || arr_val == XT_NULL) return XT_FROM_INT(-1);
+    XTArray* arr = (XTArray*)arr_val;
+    for (size_t i = 0; i < arr->length; i++) {
+        if (xt_compare((XTValue)arr->elements[i], element) == 0) return XT_FROM_INT(i);
+    }
+    return XT_FROM_INT(-1);
 }
 
 // --- 实例与函数 ---
@@ -1040,20 +1094,53 @@ XTValue xt_get_member(XTValue obj_val, XTValue key_val) {
     return XT_NULL;
 }
 
-/**
- * @brief 获取字典所有键组成的数组
- */
-XTArray* xt_dict_keys(XTDict* dict) {
-    if (!dict || dict->header.type_id != XT_TYPE_DICT) return NULL;
-    XTArray* arr = (XTArray*)xt_array_new(dict->size);
+XTValue xt_dict_keys(XTValue dict_val) {
+    if (!XT_IS_PTR(dict_val) || dict_val == XT_NULL) return XT_NULL;
+    XTDict* dict = (XTDict*)dict_val;
+    XTValue arr = xt_array_new(dict->size);
     for (size_t i = 0; i < dict->capacity; i++) {
         XTDictEntry* entry = dict->buckets[i];
         while (entry) {
-            xt_array_append((XTValue)arr, entry->key);
+            xt_array_append(arr, entry->key);
             entry = entry->next;
         }
     }
     return arr;
+}
+
+XTValue xt_dict_values(XTValue dict_val) {
+    if (!XT_IS_PTR(dict_val) || dict_val == XT_NULL) return XT_NULL;
+    XTDict* dict = (XTDict*)dict_val;
+    XTValue arr = xt_array_new(dict->size);
+    for (size_t i = 0; i < dict->capacity; i++) {
+        XTDictEntry* entry = dict->buckets[i];
+        while (entry) {
+            xt_array_append(arr, entry->value);
+            entry = entry->next;
+        }
+    }
+    return arr;
+}
+
+void xt_dict_remove(XTValue dict_val, XTValue key) {
+    if (!XT_IS_PTR(dict_val) || dict_val == XT_NULL) return;
+    XTDict* dict = (XTDict*)dict_val;
+    uint64_t hash = xt_hash_value(key) % dict->capacity;
+    XTDictEntry* entry = dict->buckets[hash];
+    XTDictEntry* prev = NULL;
+    while (entry) {
+        if (xt_compare(entry->key, key) == 0) {
+            if (prev) prev->next = entry->next;
+            else dict->buckets[hash] = entry->next;
+            xt_release(entry->key);
+            xt_release(entry->value);
+            free(entry);
+            dict->size--;
+            return;
+        }
+        prev = entry;
+        entry = entry->next;
+    }
 }
 
 /**
@@ -1128,11 +1215,31 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
     return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
 }
 
+XTValue xt_file_exists(XTValue path_val) {
+    if (XT_IS_INT(path_val)) return XT_FALSE;
+    XTString* path = (XTString*)path_val;
+    FILE* f;
+#ifdef _WIN32
+    fopen_s(&f, path->data, "r");
+#else
+    f = fopen(path->data, "r");
+#endif
+    if (f) {
+        fclose(f);
+        return XT_TRUE;
+    }
+    return XT_FALSE;
+}
+
 // --- 字节流与任务实现 ---
 
 XTValue xt_bytes_new(size_t capacity) {
     XTBytes* b = (XTBytes*)xt_malloc(sizeof(XTBytes), XT_TYPE_BYTES);
-    b->data = (uint8_t*)malloc(capacity);
+    if (g_current_arena) {
+        b->data = (uint8_t*)xt_arena_alloc_raw(capacity);
+    } else {
+        b->data = (uint8_t*)malloc(capacity);
+    }
     b->length = 0;
     b->capacity = capacity;
     return (XTValue)b;
@@ -1142,8 +1249,16 @@ void xt_bytes_append(XTValue bytes_val, uint8_t b_val) {
     if (XT_IS_INT(bytes_val)) return;
     XTBytes* b = (XTBytes*)bytes_val;
     if (b->length >= b->capacity) {
-        b->capacity *= 2;
-        b->data = realloc(b->data, b->capacity);
+        size_t new_capacity = b->capacity * 2;
+        if (atomic_load(&b->header.ref_count) >= XT_REF_COUNT_IMMORTAL) {
+            // 在 Arena 中，我们只能重新分配一个更大的块并拷贝
+            uint8_t* new_data = (uint8_t*)xt_arena_alloc_raw(new_capacity);
+            memcpy(new_data, b->data, b->length);
+            b->data = new_data;
+        } else {
+            b->data = realloc(b->data, new_capacity);
+        }
+        b->capacity = new_capacity;
     }
     b->data[b->length++] = b_val;
 }
@@ -1187,9 +1302,135 @@ XTValue xt_channel_receive(XTValue chan_val) {
 }
 
 
-// --- JSON 实现 ---
+// --- 核心网络与系统原语实现 ---
 
-// TODO: 目前 JSON 序列化采用递归字符串拼接，性能为 O(n^2)。
+XTValue xt_http_request(XTValue url_val) {
+    // 模拟网络请求
+    XTString* url = (XTString*)url_val;
+    char buf[256];
+    sprintf(buf, "模拟请求响应内容: 来自 %s", url->data);
+    return (XTValue)xt_result_new(1, (void*)xt_string_new(buf), NULL);
+}
+
+XTValue xt_listen(XTValue port_val, XTValue callback_val) {
+    // 模拟监听 (目前仅打印信息)
+    int64_t port = xt_to_int(port_val);
+    printf("[运行时] 开始模拟监听端口: %lld\n", port);
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+XTValue xt_connect(XTValue addr_val) {
+    // 模拟连接
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+XTValue xt_execute(XTValue cmd_val) {
+    if (XT_IS_INT(cmd_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("指令无效"));
+    XTString* cmd = (XTString*)cmd_val;
+    
+    FILE* pipe = _popen(cmd->data, "r");
+    if (!pipe) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("执行失败"));
+    
+    char buffer[128];
+    XTString* res = xt_string_new("");
+    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+        XTString* temp = res;
+        res = xt_string_concat(res, xt_string_new(buffer));
+        xt_release((XTValue)temp);
+    }
+    _pclose(pipe);
+    return (XTValue)xt_result_new(1, (void*)res, NULL);
+}
+
+XTValue xt_input(XTValue prompt_val) {
+    if (XT_IS_PTR(prompt_val) && prompt_val != XT_NULL) {
+        XTString* prompt = (XTString*)prompt_val;
+        printf("%s", prompt->data);
+    }
+    char buf[1024];
+    if (fgets(buf, sizeof(buf), stdin)) {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len-1] == '\n') buf[len-1] = '\0';
+        return (XTValue)xt_string_new(buf);
+    }
+    return (XTValue)xt_string_new("");
+}
+
+XTValue xt_math_random(XTValue max_val) {
+    int64_t max = xt_to_int(max_val);
+    if (max <= 0) max = 100;
+    return XT_FROM_INT(rand() % max);
+}
+
+XTValue xt_time_now() {
+    return XT_FROM_INT((int64_t)time(NULL));
+}
+
+XTValue xt_time_ms() {
+#ifdef _WIN32
+    return XT_FROM_INT((int64_t)GetTickCount64());
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return XT_FROM_INT((int64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
+#endif
+}
+
+XTValue xt_time_sleep(XTValue ms_val) {
+    int64_t ms = xt_to_int(ms_val);
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
+    usleep(ms * 1000);
+#endif
+    return XT_NULL;
+}
+
+XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
+    if (!XT_IS_PTR(str_val) || str_val == XT_NULL) return XT_NULL;
+    XTString* s = (XTString*)str_val;
+    XTString* sep = (XTString*)sep_val;
+    
+    XTValue arr = xt_array_new(4);
+    char* data = xt_strdup(s->data);
+    char* token;
+    char* rest = data;
+    
+    while ((token = strtok_s(rest, sep->data, &rest))) {
+        xt_array_append(arr, (XTValue)xt_string_new(token));
+    }
+    
+    free(data);
+    return arr;
+}
+
+XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val) {
+    if (!XT_IS_PTR(str_val) || str_val == XT_NULL) return XT_NULL;
+    XTString* s = (XTString*)str_val;
+    XTString* old_s = (XTString*)old_val;
+    XTString* new_s = (XTString*)new_val;
+    
+    // 简单实现：仅替换第一个
+    char* pos = strstr(s->data, old_s->data);
+    if (!pos) {
+        xt_retain(str_val);
+        return str_val;
+    }
+    
+    size_t prefix_len = pos - s->data;
+    size_t suffix_len = s->length - prefix_len - old_s->length;
+    
+    size_t total_len = prefix_len + new_s->length + suffix_len;
+    char* buf = (char*)malloc(total_len + 1);
+    memcpy(buf, s->data, prefix_len);
+    memcpy(buf + prefix_len, new_s->data, new_s->length);
+    memcpy(buf + prefix_len + new_s->length, pos + old_s->length, suffix_len);
+    buf[total_len] = '\0';
+    
+    XTString* res = xt_string_new(buf);
+    free(buf);
+    return (XTValue)res;
+}
 // 后续应引入 XTStringBuilder (预分配缓冲区) 优化。
 XTString* xt_json_serialize(XTValue val) {
     if (XT_IS_INT(val)) return xt_int_to_string(XT_TO_INT(val));

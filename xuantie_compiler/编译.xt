@@ -54,6 +54,15 @@
         此.类型表 = {}
         此.当前函数已返回 = 假
         此.是全局 = 真
+
+        // 初始化内置全局符号映射
+        此.符号表["文件.读"] = "@\"xt_file_read\""
+        此.符号表["文件.写"] = "@\"xt_file_write\""
+        此.符号表["文件.存在?"] = "@\"xt_file_exists\""
+        此.符号表["数学.随机"] = "@\"xt_math_random\""
+        此.符号表["时.现"] = "@\"xt_time_now\""
+        此.符号表["时.毫秒"] = "@\"xt_time_ms\""
+        此.符号表["时.睡"] = "@\"xt_time_sleep\""
         此.当前型名称 = ""
         此.查到可见性 = "公"
         此.查到定义类 = ""
@@ -307,15 +316,23 @@
         此.写出("declare %XTString* @\"xt_obj_to_string\"(i64)")
         此.写出("declare %XTString* @\"xt_string_concat\"(%XTString*, %XTString*)")
         此.写出("declare %XTString* @\"xt_string_substring\"(%XTString*, i64, i64)")
+        此.写出("declare i64 @\"xt_string_split\"(i64, i64)")
+        此.写出("declare i64 @\"xt_string_replace\"(i64, i64, i64)")
         此.写出("declare i32 @\"xt_string_contains\"(%XTString*, %XTString*)")
         此.写出("declare i64 @\"xt_string_get_char\"(i64, i64)")
         此.写出("declare i64 @\"xt_array_new\"(i64)")
         此.写出("declare void @\"xt_array_append\"(i64, i64)")
         此.写出("declare void @\"xt_array_set\"(i64, i64, i64)")
-         此.写出("declare i64 @\"xt_array_get\"(i64, i64)")
-         此.写出("declare %XTString* @\"xt_array_join\"(%XTArray*, %XTString*)")
+        此.写出("declare void @\"xt_array_remove\"(i64, i64)")
+        此.写出("declare void @\"xt_array_insert\"(i64, i64, i64)")
+        此.写出("declare i64 @\"xt_array_contains\"(i64, i64)")
+        此.写出("declare i64 @\"xt_array_find\"(i64, i64)")
+        此.写出("declare i64 @\"xt_array_get\"(i64, i64)")
         此.写出("declare i64 @\"xt_dict_new\"(i64)")
         此.写出("declare void @\"xt_dict_set\"(i64, i64, i64)")
+        此.写出("declare void @\"xt_dict_remove\"(i64, i64)")
+        此.写出("declare i64 @\"xt_dict_keys\"(i64)")
+        此.写出("declare i64 @\"xt_dict_values\"(i64)")
         此.写出("declare i64 @\"xt_dict_get\"(i64, i64)")
         此.写出("declare i64 @\"xt_bytes_new\"(i64)")
         此.写出("declare void @\"xt_bytes_append\"(i64, i8)")
@@ -329,12 +346,23 @@
         此.写出("declare i32 @\"xt_compare\"(i8*, i8*)")
         此.写出("declare void @\"exit\"(i32)")
         此.写出("declare i64 @\"xt_to_int\"(i64)")
-        此.写出("declare i64 @\"xt_dict_keys\"(i64)")
         此.写出("declare i8* @\"xt_result_new\"(i1, i8*, i8*)")
         此.写出("declare i8* @\"xt_float_new\"(double)")
         此.写出("declare %XTString* @\"xt_json_serialize\"(i64)")
         此.写出("declare i64 @\"xt_json_deserialize\"(%XTString*)")
         此.写出("declare void @\"xt_init_args\"(i32, i8**)")
+        此.写出("declare i64 @\"xt_file_read\"(i64)")
+        此.写出("declare i64 @\"xt_file_write\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_exists\"(i64)")
+        此.写出("declare i64 @\"xt_http_request\"(i64)")
+        此.写出("declare i64 @\"xt_math_random\"(i64)")
+        此.写出("declare i64 @\"xt_time_now\"()")
+        此.写出("declare i64 @\"xt_time_ms\"()")
+        此.写出("declare i64 @\"xt_time_sleep\"(i64)")
+        此.写出("declare i64 @\"xt_listen\"(i64, i64)")
+        此.写出("declare i64 @\"xt_connect\"(i64)")
+        此.写出("declare i64 @\"xt_execute\"(i64)")
+        此.写出("declare i64 @\"xt_input\"(i64)")
         此.写出("")
         
         // 输出外部函数声明
@@ -1344,6 +1372,45 @@
                     返 [finalVal, "i64"]
                 }
                 
+                若 节点.成员名称 == "成功" {
+                    设 resPtr = 此.取新寄存器()
+                    此.写出("  " & resPtr & " = inttoptr i64 " & 对象寄存器 & " to %XTResult*")
+                    设 isSuccPtr = 此.取新寄存器()
+                    此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                    设 isSuccI32 = 此.取新寄存器()
+                    此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
+                    设 isSucc = 此.取新寄存器()
+                    此.写出("  " & isSucc & " = icmp ne i32 " & isSuccI32 & ", 0")
+                    设 resI64 = 此.取新寄存器()
+                    此.写出("  " & resI64 & " = select i1 " & isSucc & ", i64 4, i64 2")
+                    此.写出("  call void @xt_release(i64 " & 对象寄存器 & ")")
+                    返 [resI64, "i64"]
+                }
+                
+                若 节点.成员名称 == "值" {
+                    设 resPtr = 此.取新寄存器()
+                    此.写出("  " & resPtr & " = inttoptr i64 " & 对象寄存器 & " to %XTResult*")
+                    设 valPtrPtr = 此.取新寄存器()
+                    此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
+                    设 valPtr = 此.取新寄存器()
+                    此.写出("  " & valPtr & " = load i64, i64* " & valPtrPtr)
+                    此.写出("  call void @xt_retain(i64 " & valPtr & ")")
+                    此.写出("  call void @xt_release(i64 " & 对象寄存器 & ")")
+                    返 [valPtr, "i64"]
+                }
+                
+                若 节点.成员名称 == "错误" {
+                    设 resPtr = 此.取新寄存器()
+                    此.写出("  " & resPtr & " = inttoptr i64 " & 对象寄存器 & " to %XTResult*")
+                    设 errPtrPtr = 此.取新寄存器()
+                    此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
+                    设 errPtr = 此.取新寄存器()
+                    此.写出("  " & errPtr & " = load i64, i64* " & errPtrPtr)
+                    此.写出("  call void @xt_retain(i64 " & errPtr & ")")
+                    此.写出("  call void @xt_release(i64 " & 对象寄存器 & ")")
+                    返 [errPtr, "i64"]
+                }
+
                 // 通用成员访问
                 设 键Xt = 此.获取字符串对象(节点.成员名称)
                 设 结果寄存器 = 此.取新寄存器()
@@ -1432,7 +1499,39 @@
             "序列化" -> { 返 此.编译序列化(节点) }
             "反序列化" -> { 返 此.编译反序列化(节点) }
             "异步" -> { 返 此.编译异步(节点) }
+            "核心原语" -> {
+                设 类型 = 节点.原语类型
+                设 结果寄存器 = 此.取新寄存器()
+                设 参数声明 = []
+                设 释放列表 = []
+                遍历 p 于 节点.参数列表 {
+                    设 翻译参数 = 此.编译表达式(p)
+                    设 xt_val = 此.确保I64(翻译参数[0], 翻译参数[1])
+                    参数声明.追加("i64 " & xt_val)
+                    释放列表.追加(xt_val)
+                }
+                
+                设 函数名 = ""
+                匹配 类型 {
+                    "求" -> { 函数名 = "xt_http_request" }
+                    "听" -> { 函数名 = "xt_listen" }
+                    "连" -> { 函数名 = "xt_connect" }
+                    "执" -> { 函数名 = "xt_execute" }
+                    "输" -> { 函数名 = "xt_input" }
+                }
+                
+                此.写出("  " & 结果寄存器 & " = call i64 @\"" & 函数名 & "\"(" & 参数声明.连接(", ") & ")")
+                遍历 r 于 释放列表 { 此.写出("  call void @xt_release(i64 " & r & ")") }
+                返 [结果寄存器, "i64"]
+            }
             "等待" -> { 返 此.编译等待(节点) }
+            "中缀" -> {
+                若 节点.中缀运算符 == "且" { 返 此.编译逻辑且(节点) }
+                若 节点.中缀运算符 == "或" { 返 此.编译逻辑或(节点) }
+                若 节点.中缀运算符 == "=" { 返 此.编译赋值(节点) }
+                若 节点.中缀运算符 == "&" { 返 此.编译字符串拼接(节点) }
+                返 此.编译中缀(节点)
+            }
             "并行" -> { 返 此.编译并行(节点) }
             "匿名函数" -> { 返 此.编译匿名函数(节点) }
             _ -> { 返 ["0", "i64"] }
@@ -1637,15 +1736,50 @@
 
 
     函 编译尝试捕捉(节点) {
-        此.写出("; --- 开始尝试块 ---")
+        设 tryLabel = 此.取新标签("try.begin")
+        设 catchLabel = 此.取新标签("try.catch")
+        设 endLabel = 此.取新标签("try.end")
+
+        此.写出("; --- 尝试块 ---")
+        此.写出("  br label %" & tryLabel)
+        此.写出(tryLabel & ":")
+        此.进作用域()
         此.编译语句(节点.尝试块)
+        此.出作用域(假)
+        此.写出("  br label %" & endLabel)
         
-        设 skipCatch = 此.取新标签("try.skip_catch")
-        此.写出("  br label %" & skipCatch)
+        此.写出("; --- 捕捉块 (" & 节点.错误变量名 & ") ---")
+        此.写出(catchLabel & ":")
+        此.进作用域()
         
-        此.写出("; --- 开始捕捉块 (" & 节点.错误变量名 & ") ---")
-        // 简化：目前总是跳过捕捉块，因为还没有真正的异常抛出机制
-        此.写出(skipCatch & ":")
+        设 errVar = 节点.错误变量名
+        设 errAddr = "%\"" & errVar & "\""
+        此.写出("  " & errAddr & " = alloca i64")
+        
+        // 创建模拟的结构化错误对象 (字典)
+        设 errDict = 此.取新寄存器()
+        此.写出("  " & errDict & " = call i64 @xt_dict_new(i64 8)")
+        设 msgKey = 此.获取字符串对象("消息")
+        设 msgVal = 此.获取字符串对象("运行时异常: 未定义错误")
+        此.写出("  call void @xt_dict_set(i64 " & errDict & ", i64 " & msgKey & ", i64 " & msgVal & ")")
+        此.写出("  call void @xt_release(i64 " & msgKey & ")")
+        此.写出("  call void @xt_release(i64 " & msgVal & ")")
+        
+        此.写出("  store i64 " & errDict & ", i64* " & errAddr)
+        此.追踪对象(errAddr)
+        设 oldAddr = ""
+        若 此.符号表.含?(errVar) { oldAddr = 此.符号表[errVar] }
+        此.符号表[errVar] = errAddr
+        
+        此.编译语句(节点.捕捉块)
+        
+        // 恢复符号表
+        若 oldAddr != "" { 此.符号表[errVar] = oldAddr } 否 { 此.符号表.删(errVar) }
+        
+        此.出作用域(假)
+        此.写出("  br label %" & endLabel)
+        
+        此.写出(endLabel & ":")
     }
 
     函 编译匿名函数(节点) {
@@ -1855,10 +1989,137 @@
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
                 设 翻译元 = 此.编译表达式(节点.调用参数[0])
                 设 元Xt = 此.确保I64(翻译元[0], 翻译元[1])
+                
+                // 根据类型调用追加 (Array vs Bytes)
+                设 objPtr = 此.取新寄存器()
+                此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
+                设 typeIdPtr = 此.取新寄存器()
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                设 typeId = 此.取新寄存器()
+                此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+                
+                设 isArr = 此.取新寄存器()
+                此.写出("  " & isArr & " = icmp eq i32 " & typeId & ", 5")
+                设 arrLabel = 此.取新标签("append.arr")
+                设 bytesLabel = 此.取新标签("append.bytes")
+                设 endLabel = 此.取新标签("append.end")
+                此.写出("  br i1 " & isArr & ", label %" & arrLabel & ", label %" & bytesLabel)
+                
+                此.写出(arrLabel & ":")
                 此.写出("  call void @xt_array_append(i64 " & 对象Xt & ", i64 " & 元Xt & ")")
+                此.写出("  br label %" & endLabel)
+                
+                此.写出(bytesLabel & ":")
+                设 rawByte = 此.取新寄存器()
+                此.写出("  " & rawByte & " = ashr i64 " & 元Xt & ", 1")
+                设 truncByte = 此.取新寄存器()
+                此.写出("  " & truncByte & " = trunc i64 " & rawByte & " to i8")
+                此.写出("  call void @xt_bytes_append(i64 " & 对象Xt & ", i8 " & truncByte & ")")
+                此.写出("  br label %" & endLabel)
+                
+                此.写出(endLabel & ":")
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
-                此.写_释放_xt(翻译元[0], 翻译元[1])
+                此.写出("  call void @xt_release(i64 " & 元Xt & ")")
                 返 ["0", "i64"]
+            }
+            若 成员名 == "删" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                
+                设 objPtr = 此.取新寄存器()
+                此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
+                设 typeIdPtr = 此.取新寄存器()
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                设 typeId = 此.取新寄存器()
+                此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+                
+                设 isArr = 此.取新寄存器()
+                此.写出("  " & isArr & " = icmp eq i32 " & typeId & ", 5")
+                设 arrLabel = 此.取新标签("del.arr")
+                设 dictLabel = 此.取新标签("del.dict")
+                设 endLabel = 此.取新标签("del.end")
+                此.写出("  br i1 " & isArr & ", label %" & arrLabel & ", label %" & dictLabel)
+                
+                此.写出(arrLabel & ":")
+                此.写出("  call void @xt_array_remove(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  br label %" & endLabel)
+                
+                此.写出(dictLabel & ":")
+                此.写出("  call void @xt_dict_remove(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  br label %" & endLabel)
+                
+                此.写出(endLabel & ":")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                返 ["0", "i64"]
+            }
+            若 成员名 == "插" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译索引 = 此.编译表达式(节点.调用参数[0])
+                设 索引Xt = 此.确保I64(翻译索引[0], 翻译索引[1])
+                设 翻译值 = 此.编译表达式(节点.调用参数[1])
+                设 值Xt = 此.确保I64(翻译值[0], 翻译值[1])
+                此.写出("  call void @xt_array_insert(i64 " & 对象Xt & ", i64 " & 索引Xt & ", i64 " & 值Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 索引Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 值Xt & ")")
+                返 ["0", "i64"]
+            }
+            若 成员名 == "找" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_array_find(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                返 [res, "i64"]
+            }
+            若 成员名 == "键" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_dict_keys(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                返 [res, "i64"]
+            }
+            若 成员名 == "值" {
+                // 如果是 Result 已经处理过了，这里是通用的字典 .值()
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_dict_values(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                返 [res, "i64"]
+            }
+            若 成员名 == "分割" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_string_split(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                返 [res, "i64"]
+            }
+            若 成员名 == "替换" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参1 = 此.编译表达式(节点.调用参数[0])
+                设 参1Xt = 此.确保I64(翻译参1[0], 翻译参1[1])
+                设 翻译参2 = 此.编译表达式(节点.调用参数[1])
+                设 参2Xt = 此.确保I64(翻译参2[0], 翻译参2[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_string_replace(i64 " & 对象Xt & ", i64 " & 参1Xt & ", i64 " & 参2Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参1Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参2Xt & ")")
+                返 [res, "i64"]
             }
             若 成员名 == "连接" {
                 设 翻译左 = 此.编译表达式(左节点)
@@ -1905,6 +2166,86 @@
                 设 finalVal = 此.取新寄存器()
                 此.写出("  " & finalVal & " = load i64, i64* " & resAddr)
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                返 [finalVal, "i64"]
+            }
+            若 成员名 == "接着" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 resPtr = 此.取新寄存器()
+                此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
+                设 isSuccPtr = 此.取新寄存器()
+                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                设 isSuccI32 = 此.取新寄存器()
+                此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
+                设 isSucc = 此.取新寄存器()
+                此.写出("  " & isSucc & " = icmp ne i32 " & isSuccI32 & ", 0")
+                
+                设 thenLabel = 此.取新标签("res.then")
+                设 mergeLabel = 此.取新标签("res.merge")
+                设 resAddr = 此.取新寄存器()
+                此.写出("  " & resAddr & " = alloca i64")
+                此.写出("  store i64 " & 对象Xt & ", i64* " & resAddr)
+                
+                此.写出("  br i1 " & isSucc & ", label %" & thenLabel & ", label %" & mergeLabel)
+                
+                此.写出(thenLabel & ":")
+                设 valPtrPtr = 此.取新寄存器()
+                此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
+                设 val = 此.取新寄存器()
+                此.写出("  " & val & " = load i64, i64* " & valPtrPtr)
+                
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 函指Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                
+                设 callbackRes = 此.执行动态调用(函指Xt, ["i64 " & val])
+                此.写出("  store i64 " & callbackRes & ", i64* " & resAddr)
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 函指Xt & ")")
+                此.写出("  br label %" & mergeLabel)
+                
+                此.写出(mergeLabel & ":")
+                设 finalVal = 此.取新寄存器()
+                此.写出("  " & finalVal & " = load i64, i64* " & resAddr)
+                返 [finalVal, "i64"]
+            }
+            若 成员名 == "否则" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 resPtr = 此.取新寄存器()
+                此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
+                设 isSuccPtr = 此.取新寄存器()
+                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                设 isSuccI32 = 此.取新寄存器()
+                此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
+                设 isFail = 此.取新寄存器()
+                此.写出("  " & isFail & " = icmp eq i32 " & isSuccI32 & ", 0")
+                
+                设 failLabel = 此.取新标签("res.fail")
+                设 mergeLabel = 此.取新标签("res.merge")
+                设 resAddr = 此.取新寄存器()
+                此.写出("  " & resAddr & " = alloca i64")
+                此.写出("  store i64 " & 对象Xt & ", i64* " & resAddr)
+                
+                此.写出("  br i1 " & isFail & ", label %" & failLabel & ", label %" & mergeLabel)
+                
+                此.写出(failLabel & ":")
+                设 errPtrPtr = 此.取新寄存器()
+                此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
+                设 err = 此.取新寄存器()
+                此.写出("  " & err & " = load i64, i64* " & errPtrPtr)
+                
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 函指Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                
+                设 callbackRes = 此.执行动态调用(函指Xt, ["i64 " & err])
+                此.写出("  store i64 " & callbackRes & ", i64* " & resAddr)
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 函指Xt & ")")
+                此.写出("  br label %" & mergeLabel)
+                
+                此.写出(mergeLabel & ":")
+                设 finalVal = 此.取新寄存器()
+                此.写出("  " & finalVal & " = load i64, i64* " & resAddr)
                 返 [finalVal, "i64"]
             }
 

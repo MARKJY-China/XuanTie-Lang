@@ -231,7 +231,11 @@ XTValue xt_string_get_char(XTValue str_val, int64_t index);
 XTValue xt_array_new(size_t capacity);
 /// 向数组末尾追加元素
 void xt_array_append(XTValue arr_val, XTValue element);
-/// 使用分隔符连接数组中的字符串元素
+void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value);
+void xt_array_remove(XTValue arr_val, XTValue index_val);
+void xt_array_insert(XTValue arr_val, XTValue index_val, XTValue value);
+XTValue xt_array_contains(XTValue arr_val, XTValue element);
+XTValue xt_array_find(XTValue arr_val, XTValue element);
 XTString* xt_array_join(XTArray* arr, XTString* sep);
 
 /// 创建指定容量的空字典
@@ -242,6 +246,10 @@ void xt_dict_set(XTValue dict_val, XTValue key, XTValue value);
 XTValue xt_dict_get(XTValue dict_val, XTValue key);
 /// 检查字典是否包含特定键
 int xt_dict_contains(XTValue dict_val, XTValue key);
+void xt_dict_remove(XTValue dict_val, XTValue key);
+XTValue xt_dict_keys(XTValue dict_val);
+XTValue xt_dict_values(XTValue dict_val);
+size_t xt_dict_size(XTValue dict_val);
 
 /// 比较两个 XTValue 的大小/相等性
 int xt_compare(XTValue a, XTValue b);
@@ -283,6 +291,8 @@ XTString* xt_string_concat(XTString* s1, XTString* s2);
 XTString* xt_string_substring(XTString* s, int64_t start, int64_t end);
 /// 检查字符串是否包含子串
 int xt_string_contains(XTString* s, XTString* sub);
+XTValue xt_string_split(XTValue str_val, XTValue sep_val);
+XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val);
 /// 将整数转换为字符串
 XTString* xt_int_to_string(int64_t val);
 /// 将任意对象转换为其字符串表示 (用于打印/插值)
@@ -300,6 +310,13 @@ XTValue xt_channel_new(size_t capacity);
 void xt_channel_send(XTValue chan_val, XTValue val);
 XTValue xt_channel_receive(XTValue chan_val);
 
+// --- 核心网络与系统原语 (v0.16.4+) ---
+XTValue xt_http_request(XTValue url_val);
+XTValue xt_listen(XTValue port_val, XTValue callback_val);
+XTValue xt_connect(XTValue addr_val);
+XTValue xt_execute(XTValue cmd_val);
+XTValue xt_input(XTValue prompt_val);
+
 // --- JSON 支持 ---
 
 /// 将对象序列化为 JSON 字符串
@@ -313,6 +330,7 @@ XTValue xt_json_deserialize(XTString* json_str);
 XTValue xt_file_read(XTValue path);
 /// 写入内容到文件，返回 Result 包装的布尔值
 XTValue xt_file_write(XTValue path, XTValue content);
+XTValue xt_file_exists(XTValue path);
 
 // --- 算术运算接口 (用于多态/重载支持) ---
 void* xt_add(void* a, void* b);
