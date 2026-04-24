@@ -462,29 +462,31 @@ static int xt_is_real_ptr(XTValue val) {
  * 目前维持空实现以确保自举编译器功能正常。
  */
 void xt_retain(XTValue val) {
-    /*
     if (xt_is_real_ptr(val)) {
         XTObject* obj = (XTObject*)val;
+        // 如果是 Arena 对象，不执行引用计数 (防止溢出或误释放)
+        if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
         atomic_fetch_add_explicit(&obj->ref_count, 1, memory_order_relaxed);
     }
-    */
 }
 
 /**
- * @brief 减少对象引用计数并在必要时释放 (临时禁用)
+ * @brief 减少对象引用计数并在必要时释放 (已恢复，配合 Arena 协同工作)
  */
 void xt_release(XTValue val) {
-    /*
     if (xt_is_real_ptr(val)) {
         XTObject* obj = (XTObject*)val;
+        // 如果是 Arena 对象，直接跳过
+        if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
+
         uint32_t old_ref = atomic_fetch_sub(&obj->ref_count, 1);
         if (old_ref == 1) {
             xt_free_obj(obj); 
         } else if (old_ref == 0) {
+            // 容错处理：防止过度释放
             atomic_store(&obj->ref_count, 0);
         }
     }
-    */
 }
 
 /**
