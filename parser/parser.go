@@ -592,6 +592,9 @@ func (p *Parser) parseTryCatchStatement() *ast.TryCatchStatement {
 			if !p.expectPeek(token.TOKEN_RPAREN) {
 				return nil
 			}
+		} else if p.peek.Type == token.TOKEN_IDENT {
+			p.nextToken() // cur: 变量名
+			stmt.CatchVar = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 		}
 
 		if !p.expectPeek(token.TOKEN_LBRACE) {
@@ -667,7 +670,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.TOKEN_IDENT:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE,
-		token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE, token.TOKEN_RESULT_TYPE:
+		token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE, token.TOKEN_TASK_TYPE, token.TOKEN_RESULT_TYPE:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_NUMBER:
 		leftExp = p.parseIntegerLiteral()

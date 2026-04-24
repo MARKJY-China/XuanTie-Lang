@@ -746,6 +746,12 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			return "13", "i64", "" // 6 * 2 + 1 = 13
 		case "结果":
 			return "17", "i64", "" // 8 * 2 + 1 = 17
+		case "字节":
+			return "19", "i64", "" // 9 * 2 + 1 = 19
+		case "任务":
+			return "21", "i64", "" // 10 * 2 + 1 = 21
+		case "道":
+			return "23", "i64", "" // 11 * 2 + 1 = 23
 		}
 		if info, ok := c.symbolTable[e.Value]; ok {
 			reg := c.nextReg()

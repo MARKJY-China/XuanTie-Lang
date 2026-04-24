@@ -98,10 +98,11 @@ const (
 	TOKEN_STRING_TYPE TokenType = "字"
 	TOKEN_INT_TYPE    TokenType = "整"
 	TOKEN_FLOAT_TYPE  TokenType = "小数"
+	TOKEN_BYTES_TYPE  TokenType = "字节"
+	TOKEN_TASK_TYPE   TokenType = "任务"
 	TOKEN_BOOL_TYPE   TokenType = "逻"
 	TOKEN_ARRAY_TYPE  TokenType = "数组"
 	TOKEN_DICT_TYPE   TokenType = "字典"
-	TOKEN_BYTES_TYPE  TokenType = "字节"
 
 	TOKEN_THIS TokenType = "此"
 )

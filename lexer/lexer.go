@@ -348,6 +348,10 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_NOT
 	case "是":
 		return token.TOKEN_IS
+	case "字节":
+		return token.TOKEN_BYTES_TYPE
+	case "任务":
+		return token.TOKEN_TASK_TYPE
 	case "等于":
 		return token.TOKEN_EQ
 	case "此":
@@ -366,8 +370,6 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_ARRAY_TYPE
 	case "字典":
 		return token.TOKEN_DICT_TYPE
-	case "字节":
-		return token.TOKEN_BYTES_TYPE
 	case "测试":
 		return token.TOKEN_TEST
 	case "覆":
