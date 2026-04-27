@@ -194,22 +194,33 @@ func main() {
 
 		rtC := filepath.Join(runtimeDir, "xt_runtime.c")
 
-		// 使用 clang 编译运行时和 IR
+		// 1. 使用 clang 将 LLVM IR 编译为 MinGW 格式的对象文件
+		objFile := strings.TrimSuffix(filename, ".xt") + ".o"
+		clangCmd := exec.Command("clang", "-target", "x86_64-w64-windows-gnu", "-c", irFile, "-o", objFile)
+		if out, err := clangCmd.CombinedOutput(); err != nil {
+			fmt.Printf("LLVM 编译为对象文件失败: %v\n", err)
+			fmt.Printf("错误详情: %s\n", string(out))
+			return
+		}
+
+		// 2. 使用 gcc (MinGW) 进行最终链接
 		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
 		if runtime.GOOS == "windows" {
 			outputName += ".exe"
 		}
-
-		cmd := exec.Command("clang", "-O0", irFile, rtC, "-o", outputName)
-		out, err := cmd.CombinedOutput()
+		gccCmd := exec.Command("gcc", objFile, rtC, "-o", outputName)
+		out, err := gccCmd.CombinedOutput()
 		fmt.Printf("生成的 LLVM IR 已保存至: %s\n", irFile)
 
 		// 编译失败时输出详细信息
 		if err != nil {
-			fmt.Printf("LLVM 编译失败 (请确保已安装 LLVM/Clang): %v\n", err)
+			fmt.Printf("MinGW 链接失败 (请确保已安装 GCC/MinGW): %v\n", err)
 			fmt.Printf("错误详情: %s\n", string(out))
 			return
 		}
+
+		// 清理中间对象文件
+		os.Remove(objFile)
 
 		fmt.Printf("原生编译完成: %s\n", outputName)
 		return

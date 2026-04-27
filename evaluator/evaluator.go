@@ -169,6 +169,12 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 			}
 		}
 		return &object.Null{}
+	case *ast.ExternalFunctionStatement:
+		// 外部函数声明在解释执行模式下暂时映射到 Builtins
+		if builtin, ok := stdlib.Builtins[n.Name.Value]; ok {
+			env[n.Name.Value] = builtin
+		}
+		return &object.Null{}
 	case *ast.TypeDefinitionStatement:
 		return evalTypeDefinitionStatement(n, env)
 	case *ast.InterfaceStatement:

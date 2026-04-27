@@ -1,6 +1,10 @@
 #ifndef XT_RUNTIME_H
 #define XT_RUNTIME_H
 
+#ifdef _WIN32
+#define _WIN32_WINNT 0x0600
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -82,6 +86,7 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_BYTES     10 ///< 字节流 (Bytes)
 #define XT_TYPE_TASK      11 ///< 异步任务 (Task)
 #define XT_TYPE_CHANNEL   12 ///< 并发通道 (Channel)
+#define XT_TYPE_ARENA     13 ///< 区域分配器 (Arena)
 
 // 内存管理常量
 #define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
@@ -188,9 +193,10 @@ typedef struct {
  */
 typedef struct {
     XTObject header;
-    int is_success; ///< 是否成功 (1-成功, 0-失败)
-    void* value;    ///< 成功时的返回值
-    void* error;    ///< 失败时的错误信息
+    int32_t is_success; ///< 是否成功 (1-成功, 0-失败)
+    int32_t padding;    ///< 64位对齐填充
+    void* value;        ///< 成功时的返回值
+    void* error;        ///< 失败时的错误信息
 } XTResult;
 
 // --- 运行时核心接口 ---
@@ -222,10 +228,16 @@ XTValue xt_func_new(void* func_ptr);
 
 /// 从 C 字符串创建 XT 字符串
 XTString* xt_string_new(const char* data);
+/// 创建指定长度的字符串
+XTString* xt_string_new_len(const char* data, size_t len);
 /// 从单个字符创建 XT 字符串
 XTString* xt_string_from_char(char c);
-/// 获取字符串中指定索引处的 UTF-8 字符 (返回新字符串)
 XTValue xt_string_get_char(XTValue str_val, int64_t index);
+XTValue xt_string_get_byte(XTValue str_val, int64_t byte_index);
+XTValue xt_string_byte_length(XTValue str_val);
+XTValue xt_string_char_count(XTValue str_val);
+XTValue xt_string_to_hex_string(XTValue str_val);
+XTString* xt_string_next_char(XTString* s, int64_t* offset);
 
 /// 创建指定容量的空数组
 XTValue xt_array_new(size_t capacity);
@@ -236,7 +248,9 @@ void xt_array_remove(XTValue arr_val, XTValue index_val);
 void xt_array_insert(XTValue arr_val, XTValue index_val, XTValue value);
 XTValue xt_array_contains(XTValue arr_val, XTValue element);
 XTValue xt_array_find(XTValue arr_val, XTValue element);
-XTString* xt_array_join(XTArray* arr, XTString* sep);
+XTString* xt_array_join(XTValue arr_val, XTString* sep);
+XTValue xt_array_slice(XTValue arr_val, XTValue start_val);
+XTValue xt_array_range(XTValue start_val, XTValue end_val);
 
 /// 创建指定容量的空字典
 XTValue xt_dict_new(size_t capacity);
@@ -304,18 +318,20 @@ void xt_bytes_append(XTValue bytes, uint8_t b);
 
 // --- 异步任务 ---
 XTValue xt_task_new(XTValue result);
+XTValue xt_wait(XTValue task_val);
 
 // --- 通道操作 ---
 XTValue xt_channel_new(size_t capacity);
 void xt_channel_send(XTValue chan_val, XTValue val);
 XTValue xt_channel_receive(XTValue chan_val);
 
-// --- 核心网络与系统原语 (v0.16.4+) ---
+// ---/// 核心网络与系统原语 (v0.16.4+) ---
 XTValue xt_http_request(XTValue url_val);
 XTValue xt_listen(XTValue port_val, XTValue callback_val);
 XTValue xt_connect(XTValue addr_val);
 XTValue xt_execute(XTValue cmd_val);
 XTValue xt_input(XTValue prompt_val);
+XTValue xt_get_temp_path();
 
 // --- JSON 支持 ---
 

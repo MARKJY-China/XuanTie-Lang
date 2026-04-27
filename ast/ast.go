@@ -482,6 +482,22 @@ func (ee *ExecuteExpression) String() string {
 	return "执(" + ee.Command.String() + ")"
 }
 
+// InputExpression 输入表达式
+type InputExpression struct {
+	Token  token.Token // "输"
+	Prompt Expression
+}
+
+func (ie *InputExpression) expressionNode()      {}
+func (ie *InputExpression) TokenLiteral() string { return ie.Token.Literal }
+func (ie *InputExpression) GetLine() int         { return ie.Token.Line }
+func (ie *InputExpression) String() string {
+	if ie.Prompt != nil {
+		return "输(" + ie.Prompt.String() + ")"
+	}
+	return "输()"
+}
+
 // ChannelExpression 通道表达式
 type ChannelExpression struct {
 	Token token.Token // "道"

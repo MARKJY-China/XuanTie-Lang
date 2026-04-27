@@ -74,7 +74,7 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("var interfaces = make(map[string][]string)\n")
 	c.output.WriteString("var xtStack []string\n\n")
 
-	c.output.WriteString("var 输入 = func(args []interface{}) interface{} {\n")
+	c.output.WriteString("var 输 = func(args []interface{}) interface{} {\n")
 	c.output.WriteString("\tif len(args) > 0 { fmt.Print(inspect(args[0])) }\n")
 	c.output.WriteString("\treader := bufio.NewReader(os.Stdin)\n")
 	c.output.WriteString("\ttext, _ := reader.ReadString('\\n')\n")

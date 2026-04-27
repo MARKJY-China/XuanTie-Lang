@@ -8,10 +8,14 @@ test*
 out.txt
 output.txt
 *test.xt
+GUIDE.lake
+*.o
 
 玄铁编译器功能实现清单.md
-
+功能实现清单.md
 玄铁自举技术架构白皮书.md
+记忆备份.md
+实现清单和计划.md
 
 # 过滤根目录下的 bin 文件夹及其内容
 /bin/
@@ -22,3 +26,4 @@ output.txt
 /Trae/
 /Test/
 /publicity/
+/.claude/

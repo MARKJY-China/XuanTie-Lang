@@ -140,14 +140,28 @@ func (l *Lexer) NextToken() token.Token {
 	case ';':
 		tok = token.Token{Type: token.TOKEN_SEMICOLON, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '"':
-		tok.Type = token.TOKEN_STRING
-		tok.Literal = l.readString('"')
+		if l.peekChar() == '"' && l.peekNextChar() == '"' {
+			l.readChar()
+			l.readChar()
+			tok.Type = token.TOKEN_STRING
+			tok.Literal = l.readMultiLineString('"')
+		} else {
+			tok.Type = token.TOKEN_STRING
+			tok.Literal = l.readString('"')
+		}
 		tok.Line = line
 		tok.Column = col
 		tok.HasSpaceBefore = hasSpace
 	case '\'':
-		tok.Type = token.TOKEN_STRING
-		tok.Literal = l.readString('\'')
+		if l.peekChar() == '\'' && l.peekNextChar() == '\'' {
+			l.readChar()
+			l.readChar()
+			tok.Type = token.TOKEN_STRING
+			tok.Literal = l.readMultiLineString('\'')
+		} else {
+			tok.Type = token.TOKEN_STRING
+			tok.Literal = l.readString('\'')
+		}
 		tok.Line = line
 		tok.Column = col
 		tok.HasSpaceBefore = hasSpace
@@ -179,6 +193,11 @@ func (l *Lexer) NextToken() token.Token {
 	case '?':
 		tok = token.Token{Type: token.TOKEN_QUESTION, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '.':
+		if l.peekChar() == '.' {
+			l.readChar()
+			tok = token.Token{Type: token.TOKEN_RANGE, Literal: "..", Line: line, Column: col, HasSpaceBefore: hasSpace}
+			return tok
+		}
 		if isDigit(l.peekChar()) {
 			tok.Literal, _ = l.readNumber()
 			tok.Type = token.TOKEN_FLOAT
@@ -330,6 +349,8 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_REQUEST
 	case "执":
 		return token.TOKEN_EXECUTE
+	case "输":
+		return token.TOKEN_INPUT
 	case "道":
 		return token.TOKEN_CHANNEL
 	case "予":
@@ -430,6 +451,23 @@ func (l *Lexer) readString(quote rune) string {
 		} else {
 			out.WriteRune(l.ch)
 		}
+	}
+	return out.String()
+}
+
+func (l *Lexer) readMultiLineString(quote rune) string {
+	var out strings.Builder
+	for {
+		l.readChar()
+		if l.ch == 0 {
+			break
+		}
+		if l.ch == quote && l.peekChar() == quote && l.peekNextChar() == quote {
+			l.readChar()
+			l.readChar()
+			break
+		}
+		out.WriteRune(l.ch)
 	}
 	return out.String()
 }

@@ -35,6 +35,7 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_GE:        LESSGREATER,
 	token.TOKEN_PLUS:      SUM,
 	token.TOKEN_MINUS:     SUM,
+	token.TOKEN_RANGE:     SUM,
 	token.TOKEN_MUL:       PRODUCT,
 	token.TOKEN_DIV:       PRODUCT,
 	token.TOKEN_MOD:       PRODUCT,
@@ -708,6 +709,8 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseConnectRequestExpression()
 	case token.TOKEN_EXECUTE:
 		leftExp = p.parseExecuteExpression()
+	case token.TOKEN_INPUT:
+		leftExp = p.parseInputExpression()
 	case token.TOKEN_CHANNEL:
 		leftExp = &ast.ChannelExpression{Token: p.cur}
 	case token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
@@ -735,7 +738,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD,
 			token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND,
 			token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS,
-			token.TOKEN_LE, token.TOKEN_GE:
+			token.TOKEN_LE, token.TOKEN_GE, token.TOKEN_RANGE:
 			p.nextToken()
 			leftExp = p.parseInfixExpression(leftExp)
 		case token.TOKEN_LT:
@@ -1173,6 +1176,19 @@ func (p *Parser) parseExecuteExpression() ast.Expression {
 	exp.Command = p.parseExpression(LOWEST)
 	if !p.expectPeek(token.TOKEN_RPAREN) {
 		return nil
+	}
+	return exp
+}
+
+func (p *Parser) parseInputExpression() ast.Expression {
+	exp := &ast.InputExpression{Token: p.cur}
+	if p.peek.Type == token.TOKEN_LPAREN {
+		p.nextToken() // (
+		p.nextToken() // move to expr
+		exp.Prompt = p.parseExpression(LOWEST)
+		if !p.expectPeek(token.TOKEN_RPAREN) {
+			return nil
+		}
 	}
 	return exp
 }

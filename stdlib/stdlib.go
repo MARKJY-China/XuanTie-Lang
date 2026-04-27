@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -18,16 +19,6 @@ import (
 
 // Builtins 存储所有内置函数和对象
 var Builtins = map[string]object.Object{
-	"输入": &object.Builtin{
-		Fn: func(args ...object.Object) object.Object {
-			if len(args) > 0 {
-				fmt.Print(args[0].Inspect())
-			}
-			reader := bufio.NewReader(os.Stdin)
-			text, _ := reader.ReadString('\n')
-			return &object.String{Value: strings.TrimSpace(text)}
-		},
-	},
 	"输": &object.Builtin{
 		Fn: func(args ...object.Object) object.Object {
 			if len(args) > 0 {
@@ -435,6 +426,34 @@ var Builtins = map[string]object.Object{
 					return &object.Result{IsSuccess: true, Value: &object.Array{Elements: elements}}
 				},
 			},
+		},
+	},
+	"执": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			if len(args) != 1 {
+				return &object.Error{Message: fmt.Sprintf("期望 1 个参数，得到 %d", len(args))}
+			}
+			cmdStr, ok := args[0].(*object.String)
+			if !ok {
+				return &object.Error{Message: fmt.Sprintf("参数必须是字符串，得到 %s", args[0].Type())}
+			}
+			// 在解释模式下，直接使用 os/exec 执行
+			var cmd *exec.Cmd
+			if os.PathSeparator == '\\' {
+				cmd = exec.Command("cmd", "/c", cmdStr.Value)
+			} else {
+				cmd = exec.Command("sh", "-c", cmdStr.Value)
+			}
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				return &object.Result{IsSuccess: false, Error: &object.Error{Message: string(out)}}
+			}
+			return &object.Result{IsSuccess: true, Value: &object.String{Value: string(out)}}
+		},
+	},
+	"xt_get_temp_path": &object.Builtin{
+		Fn: func(args ...object.Object) object.Object {
+			return &object.String{Value: os.TempDir()}
 		},
 	},
 	"时": &object.Dict{
