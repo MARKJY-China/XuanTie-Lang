@@ -4,7 +4,7 @@
 [![语言](https://img.shields.io/badge/语言-Go%20%7C%20LLVM-00ADD8.svg)](https://golang.org)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
 [![语法指南](https://img.shields.io/badge/文档-语法指南-yellow.svg)](https://www.yuque.com/markjy/upsxwh/mr3r02mv71uloe7o)
-[![历史更新](https://img.shields.io/badge/文档-历史更新-y.svg)](version.md)
+[![历史更新](https://img.shields.io/badge/文档-历史更新-y.svg)](versionLog.md)
 [![English README](https://img.shields.io/badge/README-English-blue.svg)](README_EN.md)
 
 **玄铁，一门骨子里就是中文的现代通用编程语言。**
