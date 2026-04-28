@@ -197,11 +197,19 @@
         终 1
     }
 
-    // 寻找 xt_runtime.c
+    // 寻找运行时 (优先寻找编译好的 .o 文件，以支持轻量化打包)
     设 runtimeDir = "runtime"
-    设 rtC = runtimeDir & "\\xt_runtime.c"
-    若 非 文件.存在?(rtC) {
-        rtC = "..\\runtime\\xt_runtime.c"
+    设 rtFile = runtimeDir & "\\xt_runtime.o"
+    若 非 文件.存在?(rtFile) {
+        rtFile = runtimeDir & "\\xt_runtime.c"
+    }
+    
+    // 再次尝试上级目录（用于开发环境）
+    若 非 文件.存在?(rtFile) {
+        rtFile = "..\\runtime\\xt_runtime.o"
+        若 非 文件.存在?(rtFile) {
+            rtFile = "..\\runtime\\xt_runtime.c"
+        }
     }
 
     // 调用 gcc 进行链接
@@ -214,9 +222,9 @@
 
     设 链接指令 = ""
     若 链接方式 == "静态" {
-        链接指令 = "gcc -static \"" & o路径 & "\" \"" & rtC & "\" -o \"" & 输出路径 & "\""
+        链接指令 = "gcc -static \"" & o路径 & "\" \"" & rtFile & "\" -o \"" & 输出路径 & "\""
     } 否 {
-        链接指令 = "gcc \"" & o路径 & "\" \"" & rtC & "\" -o \"" & 输出路径 & "\""
+        链接指令 = "gcc \"" & o路径 & "\" \"" & rtFile & "\" -o \"" & 输出路径 & "\""
     }
     
     设 gcc结果 = 执(链接指令)

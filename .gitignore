@@ -30,3 +30,5 @@ v0.17.0性能测试.xt
 /Test/
 /publicity/
 /.claude/
+/release/
+release_manifest.md

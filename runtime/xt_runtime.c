@@ -20,6 +20,7 @@
 #include <stddef.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <math.h>
 
 // --- 前置内部函数声明 ---
 static void print_pool_stats();
@@ -579,6 +580,38 @@ static void xt_free_obj(XTObject* obj) {
             XTResult* res = (XTResult*)obj;
             if (res->value) xt_release((XTValue)res->value);
             if (res->error) xt_release((XTValue)res->error);
+            break;
+        }
+        case XT_TYPE_CHANNEL: {
+            XTChannel* chan = (XTChannel*)obj;
+            if (chan->buffer) {
+                // 释放通道内剩余的所有消息引用
+                for (size_t i = 0; i < chan->size; i++) {
+                    size_t idx = (chan->head + i) % chan->capacity;
+                    xt_release(chan->buffer[idx]);
+                }
+                free(chan->buffer);
+            }
+            break;
+        }
+        case XT_TYPE_BYTES: {
+            XTBytes* bytes = (XTBytes*)obj;
+            if (bytes->data && !bytes->header.type_id) { // 简单判断是否在 arena
+                // 注意：这里需要更精确的 arena 判断，目前暂按 data_in_arena 逻辑
+            }
+            // 已经在 bytes_new 中处理了 data 释放逻辑 (通过 malloc/arena)
+            // 如果不是 arena 分配，需要 free
+            if (bytes->data) {
+                // 目前 bytes 结构体没有 data_in_arena 标志，暂通过 ref_count 判断
+                if (atomic_load(&bytes->header.ref_count) < XT_REF_COUNT_IMMORTAL) {
+                    free(bytes->data);
+                }
+            }
+            break;
+        }
+        case XT_TYPE_TASK: {
+            XTTask* task = (XTTask*)obj;
+            if (task->result != XT_NULL) xt_release(task->result);
             break;
         }
         case XT_TYPE_FUNCTION:
@@ -1279,11 +1312,18 @@ XTValue xt_file_read(XTValue path_val) {
  * @brief 文件写入
  */
 XTValue xt_file_write(XTValue path_val, XTValue content_val) {
-    if (!XT_IS_PTR(path_val) || path_val == XT_NULL) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    if (!xt_is_real_ptr(path_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
     XTObject* obj = (XTObject*)path_val;
     if (obj->type_id != XT_TYPE_STRING) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
     XTString* path = (XTString*)path_val;
+    if (!path->data) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径数据为空"));
+
     XTString* content = xt_obj_to_string(content_val);
+    if (!content || !content->data) {
+        if (content) xt_release((XTValue)content);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内容转换失败"));
+    }
+
     FILE* f = NULL;
 #ifdef _WIN32
     wchar_t* wpath = xt_utf8_to_utf16(path->data);
@@ -1294,7 +1334,10 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
 #else
     f = fopen(path->data, "wb");
 #endif
-    if (!f) { xt_release((XTValue)content); return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入文件")); }
+    if (!f) { 
+        xt_release((XTValue)content); 
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入文件 (打开失败)")); 
+    }
     fwrite(content->data, 1, content->length, f);
     fclose(f);
     xt_release((XTValue)content);
@@ -1302,10 +1345,12 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
 }
 
 XTValue xt_file_exists(XTValue path_val) {
-    if (!XT_IS_PTR(path_val) || path_val == XT_NULL) return XT_FALSE;
+    if (!xt_is_real_ptr(path_val)) return XT_FALSE;
     XTObject* obj = (XTObject*)path_val;
     if (obj->type_id != XT_TYPE_STRING) return XT_FALSE;
     XTString* path = (XTString*)path_val;
+    if (!path->data) return XT_FALSE;
+
 #ifdef _WIN32
     wchar_t* wpath = xt_utf8_to_utf16(path->data);
     if (wpath) {
@@ -1576,10 +1621,116 @@ XTValue xt_input(XTValue prompt_val) {
     return (XTValue)xt_string_new("");
 }
 
+static double xt_to_double(XTValue val);
+
 XTValue xt_math_random(XTValue max_val) {
     int64_t max = xt_to_int(max_val);
     if (max <= 0) max = 100;
     return XT_FROM_INT(rand() % max);
+}
+
+XTValue xt_math_abs(XTValue n_val) {
+    if (XT_IS_INT(n_val)) {
+        int64_t v = XT_TO_INT(n_val);
+        return XT_FROM_INT(v < 0 ? -v : v);
+    }
+    double d = xt_to_double(n_val);
+    return (XTValue)xt_float_new(fabs(d));
+}
+
+XTValue xt_math_sin(XTValue n_val) {
+    return (XTValue)xt_float_new(sin(xt_to_double(n_val)));
+}
+
+XTValue xt_math_cos(XTValue n_val) {
+    return (XTValue)xt_float_new(cos(xt_to_double(n_val)));
+}
+
+XTValue xt_math_sqrt(XTValue n_val) {
+    return (XTValue)xt_float_new(sqrt(xt_to_double(n_val)));
+}
+
+XTValue xt_math_floor(XTValue n_val) {
+    return XT_FROM_INT((int64_t)floor(xt_to_double(n_val)));
+}
+
+XTValue xt_math_ceil(XTValue n_val) {
+    return XT_FROM_INT((int64_t)ceil(xt_to_double(n_val)));
+}
+
+XTValue xt_math_round(XTValue n_val) {
+    return XT_FROM_INT((int64_t)round(xt_to_double(n_val)));
+}
+
+XTValue xt_math_pow(XTValue base_val, XTValue exp_val) {
+    return (XTValue)xt_float_new(pow(xt_to_double(base_val), xt_to_double(exp_val)));
+}
+
+XTValue xt_math_srand(XTValue seed_val) {
+    srand((unsigned int)xt_to_int(seed_val));
+    return XT_NULL;
+}
+
+XTValue xt_math_max(XTValue arr_val) {
+    if (!XT_IS_PTR(arr_val) || ((XTObject*)arr_val)->type_id != XT_TYPE_ARRAY) return XT_FROM_INT(0);
+    XTArray* arr = (XTArray*)arr_val;
+    if (arr->length == 0) return XT_FROM_INT(0);
+    
+    XTValue max_val = (XTValue)arr->elements[0];
+    double max_d = xt_to_double(max_val);
+    
+    for (size_t i = 1; i < arr->length; i++) {
+        XTValue cur = (XTValue)arr->elements[i];
+        double cur_d = xt_to_double(cur);
+        if (cur_d > max_d) {
+            max_d = cur_d;
+            max_val = cur;
+        }
+    }
+    xt_retain(max_val);
+    return max_val;
+}
+
+XTValue xt_math_min(XTValue arr_val) {
+    if (!XT_IS_PTR(arr_val) || ((XTObject*)arr_val)->type_id != XT_TYPE_ARRAY) return XT_FROM_INT(0);
+    XTArray* arr = (XTArray*)arr_val;
+    if (arr->length == 0) return XT_FROM_INT(0);
+    
+    XTValue min_val = (XTValue)arr->elements[0];
+    double min_d = xt_to_double(min_val);
+    
+    for (size_t i = 1; i < arr->length; i++) {
+        XTValue cur = (XTValue)arr->elements[i];
+        double cur_d = xt_to_double(cur);
+        if (cur_d < min_d) {
+            min_d = cur_d;
+            min_val = cur;
+        }
+    }
+    xt_retain(min_val);
+    return min_val;
+}
+
+XTValue xt_math_pi() {
+    return (XTValue)xt_float_new(3.14159265358979323846);
+}
+
+XTValue xt_math_e() {
+    return (XTValue)xt_float_new(2.71828182845904523536);
+}
+
+static double xt_to_double(XTValue val) {
+    if (XT_IS_INT(val)) return (double)XT_TO_INT(val);
+    if (XT_IS_PTR(val) && val != XT_NULL) {
+        XTObject* obj = (XTObject*)val;
+        if (obj->type_id == XT_TYPE_FLOAT) {
+            return ((struct { XTObject h; double v; }*)val)->v;
+        }
+        if (obj->type_id == XT_TYPE_INT) {
+            return (double)((XTInt*)val)->value;
+        }
+    }
+    return 0.0;
 }
 
 XTValue xt_time_now() {

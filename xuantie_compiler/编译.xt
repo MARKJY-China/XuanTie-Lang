@@ -68,6 +68,32 @@
         此.函数表["文件.存在?"] = 真
         此.符号表["数学.随机"] = "@\"xt_math_random\""
         此.函数表["数学.随机"] = 真
+        此.符号表["数学.绝对值"] = "@\"xt_math_abs\""
+        此.函数表["数学.绝对值"] = 真
+        此.符号表["数学.正弦"] = "@\"xt_math_sin\""
+        此.函数表["数学.正弦"] = 真
+        此.符号表["数学.余弦"] = "@\"xt_math_cos\""
+        此.函数表["数学.余弦"] = 真
+        此.符号表["数学.平方根"] = "@\"xt_math_sqrt\""
+        此.函数表["数学.平方根"] = 真
+        此.符号表["数学.取整"] = "@\"xt_math_floor\""
+        此.函数表["数学.取整"] = 真
+        此.符号表["数学.进一"] = "@\"xt_math_ceil\""
+        此.函数表["数学.进一"] = 真
+        此.符号表["数学.四舍五入"] = "@\"xt_math_round\""
+        此.函数表["数学.四舍五入"] = 真
+        此.符号表["数学.幂"] = "@\"xt_math_pow\""
+        此.函数表["数学.幂"] = 真
+        此.符号表["数学.设随机种子"] = "@\"xt_math_srand\""
+        此.函数表["数学.设随机种子"] = 真
+        此.符号表["数学.最大值"] = "@\"xt_math_max\""
+        此.函数表["数学.最大值"] = 真
+        此.符号表["数学.最小值"] = "@\"xt_math_min\""
+        此.函数表["数学.最小值"] = 真
+        此.符号表["数学.PI"] = "@\"xt_math_pi\""
+        此.函数表["数学.PI"] = 真
+        此.符号表["数学.E"] = "@\"xt_math_e\""
+        此.函数表["数学.E"] = 真
         此.符号表["时.现"] = "@\"xt_time_now\""
         此.函数表["时.现"] = 真
         此.符号表["时.毫秒"] = "@\"xt_time_ms\""
@@ -511,6 +537,19 @@
         此.写出("declare i64 @\"xt_file_exists\"(i64)")
         此.写出("declare i64 @\"xt_http_request\"(i64)")
         此.写出("declare i64 @\"xt_math_random\"(i64)")
+        此.写出("declare i64 @\"xt_math_abs\"(i64)")
+        此.写出("declare i64 @\"xt_math_sin\"(i64)")
+        此.写出("declare i64 @\"xt_math_cos\"(i64)")
+        此.写出("declare i64 @\"xt_math_sqrt\"(i64)")
+        此.写出("declare i64 @\"xt_math_floor\"(i64)")
+        此.写出("declare i64 @\"xt_math_ceil\"(i64)")
+        此.写出("declare i64 @\"xt_math_round\"(i64)")
+        此.写出("declare i64 @\"xt_math_pow\"(i64, i64)")
+        此.写出("declare i64 @\"xt_math_srand\"(i64)")
+        此.写出("declare i64 @\"xt_math_max\"(i64)")
+        此.写出("declare i64 @\"xt_math_min\"(i64)")
+        此.写出("declare i64 @\"xt_math_pi\"()")
+        此.写出("declare i64 @\"xt_math_e\"()")
         此.写出("declare i64 @\"xt_time_now\"()")
         此.写出("declare i64 @\"xt_time_ms\"()")
         此.写出("declare i64 @\"xt_time_micro\"()")
@@ -1383,6 +1422,8 @@
         设 resReg = 此.取新寄存器()
         此.写出("  " & resReg & " = call %XTString* @xt_string_concat(%XTString* " & lStr & ", %XTString* " & rStr & ")")
 
+        // 这里的释放逻辑是正确的：lStr 和 rStr 是 xt_obj_to_string 产生的 +1 引用，需要释放
+        // 翻译左[0] 和 翻译右[0] 是原始表达式产生的值，也需要释放（如果是临时对象）
         此.写_释放_xt(翻译左[0], 翻译左[1])
         此.写_释放_xt(翻译右[0], 翻译右[1])
 
@@ -1551,6 +1592,13 @@
                     
                     // 2. 检查是否是跨模块的函数
                     若 此.函数表.含?(潜在名) {
+                        // 特殊处理：如果是不带括号访问的内置常量（如 数学.PI）
+                        若 潜在名 == "数学.PI" 或 潜在名 == "数学.E" {
+                            设 真实名 = 此.符号表[潜在名]
+                            设 res = 此.取新寄存器()
+                            此.写出("  " & res & " = call i64 " & 真实名 & "()")
+                            返 [res, "i64"]
+                        }
                         返 [潜在名, "函数名"]
                     }
                     
@@ -1837,32 +1885,55 @@
         设 翻译左 = 此.编译表达式(节点.左节点)
         设 leftXtVal = 此.确保I64(翻译左[0], 翻译左[1])
 
-        // 检查是否为 Result 对象 (type_id == 8)
+        // --- 安全增强：检查是否为真实的 Result 对象 (type_id == 8) ---
         设 objPtr = 此.取新寄存器()
-        此.写出("  " & objPtr & " = inttoptr i64 " & leftXtVal & " to %XTResult*")
+        此.写出("  " & objPtr & " = inttoptr i64 " & leftXtVal & " to %XTObject*")
         
-        // 我们需要提取 is_success
+        设 typeIdPtr = 此.取新寄存器()
+        此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+        设 typeId = 此.取新寄存器()
+        此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+        
+        设 isResult = 此.取新寄存器()
+        此.写出("  " & isResult & " = icmp eq i32 " & typeId & ", 8") // XT_TYPE_RESULT = 8
+        
+        设 checkLabel = 此.取新标签("qm.check")
+        设 panicLabel = 此.取新标签("qm.panic")
+        设 trueLabel_final = 此.取新标签("qm.true")
+        设 falseLabel_final = 此.取新标签("qm.false")
+        设 endLabel = 此.取新标签("qm.end")
+        
+        设 resAddr = 此.取新寄存器()
+        此.写出("  " & resAddr & " = alloca i64")
+        
+        此.写出("  br i1 " & isResult & ", label %" & checkLabel & ", label %" & panicLabel)
+        
+        此.写出(panicLabel & ":")
+        设 msg1 = 此.获取字符串对象("运行时错误: '?' 操作符仅能作用于 '结果' 类型")
+        此.写_out("  call void @xt_print_value(i64 " & msg1 & ")")
+        此.写出("  call void @xt_release(i64 " & msg1 & ")")
+        此.写出("  call void @exit(i32 1)")
+        此.写出("  unreachable")
+
+        此.写出(checkLabel & ":")
+        设 resPtr = 此.取新寄存器()
+        此.写出("  " & resPtr & " = inttoptr i64 " & leftXtVal & " to %XTResult*")
+        
+        // 提取 is_success
         设 succPtr = 此.取新寄存器()
-        此.写出("  " & succPtr & " = getelementptr %XTResult, %XTResult* " & objPtr & ", i32 0, i32 2")
+        此.写出("  " & succPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
         设 isSuccess = 此.取新寄存器()
         此.写出("  " & isSuccess & " = load i32, i32* " & succPtr)
         
         设 cond = 此.取新寄存器()
         此.写出("  " & cond & " = icmp ne i32 " & isSuccess & ", 0")
         
-        设 trueLabel = 此.取新标签("qm.true")
-        设 falseLabel = 此.取新标签("qm.false")
-        设 endLabel = 此.取新标签("qm.end")
+        此.写出("  br i1 " & cond & ", label %" & trueLabel_final & ", label %" & falseLabel_final)
         
-        设 resAddr = 此.取新寄存器()
-        此.写出("  " & resAddr & " = alloca i64")
-        
-        此.写出("  br i1 " & cond & ", label %" & trueLabel & ", label %" & falseLabel)
-        
-        此.写出(trueLabel & ":")
+        此.写出(trueLabel_final & ":")
         // 如果成功，提取 value 并作为表达式结果
         设 valPtr = 此.取新寄存器()
-        此.写出("  " & valPtr & " = getelementptr %XTResult, %XTResult* " & objPtr & ", i32 0, i32 4")
+        此.写出("  " & valPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
         设 finalVal = 此.取新寄存器()
         此.写出("  " & finalVal & " = load i64, i64* " & valPtr)
         此.写出("  call void @xt_retain(i64 " & finalVal & ")")
@@ -1870,7 +1941,7 @@
         此.写出("  call void @xt_release(i64 " & leftXtVal & ")")
         此.写出("  br label %" & endLabel)
         
-        此.写出(falseLabel & ":")
+        此.写出(falseLabel_final & ":")
         // 如果失败，直接将该 Result 对象作为函数返回值并退出
         此.出作用域(真)
         若 此.是全局 {
@@ -1881,13 +1952,9 @@
         } 否 {
             此.写出("  ret i64 " & leftXtVal)
         }
-        // 为了 LLVM IR 合法性，需要加一个 unreachable 或 br
-        // 由于这里已经 ret，所以添加一条指令让基本块有效
-        // 或者直接跳到一个不会执行的块
         设 dummyLabel = 此.取新标签("qm.dummy")
         此.写出("  br label %" & dummyLabel)
         此.写出(dummyLabel & ":")
-        // 后续如果还有指令，依然让它 store 个占位符，免得 endLabel 读取出问题
         此.写出("  store i64 0, i64* " & resAddr)
         此.写出("  br label %" & endLabel)
         
@@ -2302,6 +2369,23 @@
             若 此.函数表.含?(完整名) {
                 设 真实名 = 此.符号表[完整名]
                 若 真实名 != 空 且 真实名 != "" {
+                    // 特殊处理内置变参函数：数学.最大值, 数学.最小值
+                    若 完整名 == "数学.最大值" 或 完整名 == "数学.最小值" {
+                        设 alen = 节点.调用参数.长度
+                        设 arrReg = 此.取新寄存器()
+                        此.写出("  " & arrReg & " = call i64 @xt_array_new(i64 " & alen & ")")
+                        遍历 p_math 于 节点.调用参数 {
+                            设 翻译p = 此.编译表达式(p_math)
+                            设 pXt = 此.确保I64(翻译p[0], 翻译p[1])
+                            此.写出("  call void @xt_array_append(i64 " & arrReg & ", i64 " & pXt & ")")
+                            此.写_释放_xt(翻译p[0], 翻译p[1])
+                        }
+                        设 res_math = 此.取新寄存器()
+                        此.写出("  " & res_math & " = call i64 " & 真实名 & "(i64 " & arrReg & ")")
+                        此.写出("  call void @xt_release(i64 " & arrReg & ")")
+                        返 [res_math, "i64"]
+                    }
+
                     设 my参数结果列表 = []
                     设 my释放寄存器列表 = []
                     遍历 arg 于 节点.调用参数 {
@@ -2366,9 +2450,9 @@
                 设 objReg = 参数对象[0]
                 设 resPtr = 此.取新寄存器()
                 若 全局函数名 == "成功" {
-                    此.写出("  " & resPtr & " = call i8* @xt_result_new(i1 " & isSuccess & ", i8* " & objReg & ", i8* null)")
+                    此.写出("  " & resPtr & " = call i8* @xt_result_new(i32 " & isSuccess & ", i8* " & objReg & ", i8* null)")
                 } 否 {
-                    此.写出("  " & resPtr & " = call i8* @xt_result_new(i1 " & isSuccess & ", i8* null, i8* " & objReg & ")")
+                    此.写出("  " & resPtr & " = call i8* @xt_result_new(i32 " & isSuccess & ", i8* null, i8* " & objReg & ")")
                 }
                 设 xtVal = 此.确保I64(翻译参数[0], 翻译参数[1])
                 此.写出("  call void @xt_release(i64 " & xtVal & ")")
