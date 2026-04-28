@@ -367,6 +367,18 @@ func lookupKeyword(ident string) token.TokenType {
 		return token.TOKEN_OR
 	case "非":
 		return token.TOKEN_NOT
+	case "位与":
+		return token.TOKEN_BIT_AND
+	case "位或":
+		return token.TOKEN_BIT_OR
+	case "异或":
+		return token.TOKEN_BIT_XOR
+	case "左移":
+		return token.TOKEN_LSHIFT
+	case "右移":
+		return token.TOKEN_RSHIFT
+	case "取反":
+		return token.TOKEN_BIT_NOT
 	case "是":
 		return token.TOKEN_IS
 	case "字节":

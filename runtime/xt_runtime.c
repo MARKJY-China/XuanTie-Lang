@@ -18,6 +18,8 @@
 #include <time.h>
 #include <locale.h>
 #include <stddef.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 // --- 前置内部函数声明 ---
 static void print_pool_stats();
@@ -82,10 +84,12 @@ void xt_init_args(int argc, char** argv) {
                 WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, utf8_str, utf8_len, NULL, NULL);
                 XTString* s = xt_string_new(utf8_str);
                 xt_array_append(g_xt_args, (XTValue)s);
+                xt_release((XTValue)s); // 修复泄漏：数组已 retain，释放本地持有的引用
                 free(utf8_str);
             } else {
                 XTString* s = xt_string_new("");
                 xt_array_append(g_xt_args, (XTValue)s);
+                xt_release((XTValue)s); // 修复泄漏
             }
         }
         LocalFree(wargv);
@@ -96,6 +100,7 @@ void xt_init_args(int argc, char** argv) {
     for (int i = 0; i < argc; i++) {
         XTString* s = xt_string_new(argv[i]);
         xt_array_append(g_xt_args, (XTValue)s);
+        xt_release((XTValue)s); // 修复泄漏
     }
 }
 
@@ -432,7 +437,7 @@ void* xt_arena_alloc_raw(size_t size) {
         // 关键修复：为了保持用户持有的 arena 句柄（池）始终有效且能销毁整个链表，
         // 我们将当前块的内容“推”到新块中，而让 g_current_arena 始终作为活跃的“头部”。
         
-        // 1. 交换 buffer 和元数据 (跳过 header，保持 g_current_arena 的 header 状态)
+        // 交换 buffer 和元数据 (跳过 header，保持 g_current_arena 的 header 状态)
         char* old_buffer = g_current_arena->buffer;
         size_t old_size = g_current_arena->size;
         size_t old_offset = g_current_arena->offset;
@@ -445,7 +450,7 @@ void* xt_arena_alloc_raw(size_t size) {
         new_block->size = old_size;
         new_block->offset = old_offset;
         
-        // 2. 将旧块挂载到活跃块（头部）之后
+        // 将旧块挂载到活跃块（头部）之后
         new_block->next = g_current_arena->next;
         g_current_arena->next = new_block;
     }
@@ -1223,6 +1228,17 @@ static wchar_t* xt_utf8_to_utf16(const char* utf8_str) {
     }
     return wstr;
 }
+
+static char* xt_utf16_to_utf8(const wchar_t* wstr) {
+    if (!wstr) return NULL;
+    int len = WideCharToMultiByte(CP_UTF8, 0, wstr, -1, NULL, 0, NULL, NULL);
+    if (len <= 0) return NULL;
+    char* utf8_str = (char*)malloc(len);
+    if (utf8_str) {
+        WideCharToMultiByte(CP_UTF8, 0, wstr, -1, utf8_str, len, NULL, NULL);
+    }
+    return utf8_str;
+}
 #endif
 
 /**
@@ -1293,13 +1309,14 @@ XTValue xt_file_exists(XTValue path_val) {
 #ifdef _WIN32
     wchar_t* wpath = xt_utf8_to_utf16(path->data);
     if (wpath) {
-        DWORD attr = GetFileAttributesW(wpath);
+        struct _stat64 st;
+        int res = _wstat64(wpath, &st);
         free(wpath);
-        if (attr != INVALID_FILE_ATTRIBUTES) return XT_TRUE;
+        return res == 0 ? XT_TRUE : XT_FALSE;
     }
 #else
-    FILE* f = fopen(path->data, "r");
-    if (f) { fclose(f); return XT_TRUE; }
+    struct stat st;
+    return stat(path->data, &st) == 0 ? XT_TRUE : XT_FALSE;
 #endif
     return XT_FALSE;
 }
@@ -1389,14 +1406,19 @@ XTValue xt_connect(XTValue addr_val) {
 
 XTValue xt_get_temp_path() {
 #ifdef _WIN32
-    char path[MAX_PATH];
-    if (GetTempPathA(MAX_PATH, path) > 0) {
-        // 移除末尾的反斜杠，保持与玄铁风格一致
-        size_t len = strlen(path);
-        if (len > 0 && (path[len-1] == '\\' || path[len-1] == '/')) {
-            path[len-1] = '\0';
+    wchar_t wpath[MAX_PATH];
+    if (GetTempPathW(MAX_PATH, wpath) > 0) {
+        char* path = xt_utf16_to_utf8(wpath);
+        if (path) {
+            // 移除末尾的反斜杠，保持与玄铁风格一致
+            size_t len = strlen(path);
+            if (len > 0 && (path[len-1] == '\\' || path[len-1] == '/')) {
+                path[len-1] = '\0';
+            }
+            XTString* s = xt_string_new(path);
+            free(path);
+            return (XTValue)s;
         }
-        return (XTValue)xt_string_new(path);
     }
     return (XTValue)xt_string_new("C:\\temp");
 #else
@@ -1446,7 +1468,17 @@ XTValue xt_execute(XTValue cmd_val) {
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("临时批处理路径过长"));
     }
     
-    FILE* fbat = fopen(bat_path, "w");
+    FILE* fbat = NULL;
+#ifdef _WIN32
+    wchar_t* wbat_path_init = xt_utf8_to_utf16(bat_path);
+    if (wbat_path_init) {
+        fbat = _wfopen(wbat_path_init, L"w");
+        free(wbat_path_init);
+    }
+#else
+    fbat = fopen(bat_path, "w");
+#endif
+
     if (!fbat) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("创建临时批处理失败"));
     
     // 写入指令并确保获取正确的退出码，同时将 stderr 重定向到 stdout 以便捕获错误信息

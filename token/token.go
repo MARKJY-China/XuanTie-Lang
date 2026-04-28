@@ -95,6 +95,14 @@ const (
 	TOKEN_NOT TokenType = "非"
 	TOKEN_IS  TokenType = "是"
 
+	// 位运算
+	TOKEN_BIT_AND TokenType = "位与"
+	TOKEN_BIT_OR  TokenType = "位或"
+	TOKEN_BIT_XOR TokenType = "异或"
+	TOKEN_LSHIFT  TokenType = "左移"
+	TOKEN_RSHIFT  TokenType = "右移"
+	TOKEN_BIT_NOT TokenType = "取反"
+
 	// 类型关键字
 	TOKEN_RESULT_TYPE TokenType = "结果"
 	TOKEN_STRING_TYPE TokenType = "字"

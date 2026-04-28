@@ -1,5 +1,5 @@
 // test_pandas.xt
-引 "./tiedata.xt"
+引 "tiedata.xt"
 
 示("=== 玄铁 '铁数' (TieData) 类 Pandas 演示 ===")
 

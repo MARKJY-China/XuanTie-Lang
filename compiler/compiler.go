@@ -1130,6 +1130,17 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 		return fmt.Sprintf("%q", e.Value)
 	case *ast.Identifier:
 		return e.Value
+	case *ast.PrefixExpression:
+		right := c.expressionCode(e.Right, isAssignment)
+		switch e.Operator {
+		case "非":
+			return fmt.Sprintf("(!isTruthy(%s))", right)
+		case "-":
+			return fmt.Sprintf("(-%s.(int64))", right)
+		case "取反":
+			return fmt.Sprintf("(^%s.(int64))", right)
+		}
+		return fmt.Sprintf("(%s%s)", e.Operator, right)
 	case *ast.InfixExpression:
 		return c.infixExpressionCode(e, isAssignment)
 	case *ast.CallExpression:
@@ -1664,6 +1675,16 @@ func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression, isAssignment bo
 		return fmt.Sprintf("gt(%s, %s)", left, right)
 	case "&": // 字符串拼接
 		return fmt.Sprintf("add(%s, %s)", left, right)
+	case "位与":
+		return fmt.Sprintf("(%s.(int64) & %s.(int64))", left, right)
+	case "位或":
+		return fmt.Sprintf("(%s.(int64) | %s.(int64))", left, right)
+	case "异或":
+		return fmt.Sprintf("(%s.(int64) ^ %s.(int64))", left, right)
+	case "左移":
+		return fmt.Sprintf("(%s.(int64) << uint(%s.(int64)))", left, right)
+	case "右移":
+		return fmt.Sprintf("(%s.(int64) >> uint(%s.(int64)))", left, right)
 	}
 	return fmt.Sprintf("(%s %s %s)", left, e.Operator, right)
 }

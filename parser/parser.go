@@ -16,8 +16,11 @@ const (
 	CONCAT      // &
 	EQUALS      // == !=
 	LESSGREATER // < >
+	BIT_OR      // 位或 异或
 	SUM         // + -
+	BIT_AND     // 位与 左移 右移
 	PRODUCT     // * /
+	PREFIX      // 取反
 	CALL        // 函数调用
 	DOT         // .
 	INDEX       // []
@@ -33,9 +36,14 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_GT:        LESSGREATER,
 	token.TOKEN_LE:        LESSGREATER,
 	token.TOKEN_GE:        LESSGREATER,
+	token.TOKEN_BIT_OR:    BIT_OR,
+	token.TOKEN_BIT_XOR:   BIT_OR,
 	token.TOKEN_PLUS:      SUM,
 	token.TOKEN_MINUS:     SUM,
 	token.TOKEN_RANGE:     SUM,
+	token.TOKEN_BIT_AND:   BIT_AND,
+	token.TOKEN_LSHIFT:    BIT_AND,
+	token.TOKEN_RSHIFT:    BIT_AND,
 	token.TOKEN_MUL:       PRODUCT,
 	token.TOKEN_DIV:       PRODUCT,
 	token.TOKEN_MOD:       PRODUCT,
@@ -715,7 +723,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = &ast.ChannelExpression{Token: p.cur}
 	case token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
 		leftExp = p.parseResultLiteral()
-	case token.TOKEN_NOT, token.TOKEN_MINUS, token.TOKEN_IS:
+	case token.TOKEN_NOT, token.TOKEN_MINUS, token.TOKEN_IS, token.TOKEN_BIT_NOT:
 		leftExp = p.parsePrefixExpression()
 	case token.TOKEN_LBRACKET:
 		leftExp = p.parseArrayLiteral()
@@ -738,7 +746,9 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		case token.TOKEN_PLUS, token.TOKEN_MINUS, token.TOKEN_MUL, token.TOKEN_DIV, token.TOKEN_MOD,
 			token.TOKEN_EQ, token.TOKEN_NEQ, token.TOKEN_ASSIGN, token.TOKEN_AMPERSAND,
 			token.TOKEN_AND, token.TOKEN_OR, token.TOKEN_IS,
-			token.TOKEN_LE, token.TOKEN_GE, token.TOKEN_RANGE:
+			token.TOKEN_LE, token.TOKEN_GE, token.TOKEN_RANGE,
+			token.TOKEN_BIT_AND, token.TOKEN_BIT_OR, token.TOKEN_BIT_XOR,
+			token.TOKEN_LSHIFT, token.TOKEN_RSHIFT:
 			p.nextToken()
 			leftExp = p.parseInfixExpression(leftExp)
 		case token.TOKEN_LT:
