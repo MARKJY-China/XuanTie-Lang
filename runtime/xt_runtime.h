@@ -30,9 +30,12 @@
  * 包含引用计数用于内存管理，以及类型 ID 用于运行时类型识别。
  */
 typedef struct {
+    uint32_t magic;             ///< 魔数，用于检测堆损坏 (0x58544F42 'XTOB')
     _Atomic uint32_t ref_count; ///< 引用计数 (原子操作)
     uint32_t type_id;           ///< 类型标识符 (XT_TYPE_*)
 } XTObject;
+
+#define XT_MAGIC 0x58544F42
 
 /**
  * @brief 统一值类型 (标记指针)
@@ -179,13 +182,14 @@ typedef struct {
 } XTDict;
 
 /**
- * @brief 类实例结构
+ * @brief 类实例结构 (与 XTDict 内存兼容以便支持动态属性)
  */
 typedef struct {
     XTObject header;
-    void* class_ptr;    ///< 指向类元数据的指针 (暂未完全定义)
-    XTValue* fields;    ///< 实例字段数组
-    size_t field_count; ///< 字段数量
+    XTDictEntry** buckets; ///< 哈希桶 (兼容 XTDict)
+    size_t size;           ///< 属性数量 (兼容 XTDict)
+    size_t capacity;       ///< 桶容量 (兼容 XTDict)
+    void* class_ptr;       ///< 指向类元数据的指针
 } XTInstance;
 
 /**
@@ -348,12 +352,19 @@ XTValue xt_file_read(XTValue path);
 XTValue xt_file_write(XTValue path, XTValue content);
 XTValue xt_file_exists(XTValue path);
 
-// --- 算术运算接口 (用于多态/重载支持) ---
-void* xt_add(void* a, void* b);
-void* xt_sub(void* a, void* b);
-void* xt_mul(void* a, void* b);
-void* xt_div(void* a, void* b);
+// --- 算术与位运算接口 (用于 Fallback/多态/重载支持) ---
+XTValue xt_add(XTValue a, XTValue b);
+XTValue xt_sub(XTValue a, XTValue b);
+XTValue xt_mul(XTValue a, XTValue b);
+XTValue xt_div(XTValue a, XTValue b);
+XTValue xt_mod(XTValue a, XTValue b);
+XTValue xt_bit_and(XTValue a, XTValue b);
+XTValue xt_bit_or(XTValue a, XTValue b);
+XTValue xt_bit_xor(XTValue a, XTValue b);
+XTValue xt_bit_shl(XTValue a, XTValue b);
+XTValue xt_bit_shr(XTValue a, XTValue b);
+
 /// 检查两个对象是否相等
-int xt_eq(void* a, void* b);
+int xt_eq(XTValue a, XTValue b);
 
 #endif

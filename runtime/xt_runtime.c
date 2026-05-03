@@ -22,6 +22,10 @@
 #include <sys/types.h>
 #include <math.h>
 
+#ifdef _WIN32
+#include <shellapi.h>
+#endif
+
 // --- 前置内部函数声明 ---
 static void print_pool_stats();
 static int xt_is_real_ptr(XTValue val);
@@ -74,6 +78,7 @@ void xt_init() {
  */
 void xt_init_args(int argc, char** argv) {
 #ifdef _WIN32
+    // Windows 下优先尝试获取 Unicode 命令行参数并转换为 UTF-8
     int wargc;
     LPWSTR* wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
     if (wargv) {
@@ -85,23 +90,31 @@ void xt_init_args(int argc, char** argv) {
                 WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, utf8_str, utf8_len, NULL, NULL);
                 XTString* s = xt_string_new(utf8_str);
                 xt_array_append(g_xt_args, (XTValue)s);
-                xt_release((XTValue)s); // 修复泄漏：数组已 retain，释放本地持有的引用
+                xt_release((XTValue)s);
                 free(utf8_str);
             } else {
                 XTString* s = xt_string_new("");
                 xt_array_append(g_xt_args, (XTValue)s);
-                xt_release((XTValue)s); // 修复泄漏
+                xt_release((XTValue)s);
             }
         }
         LocalFree(wargv);
         return;
     }
 #endif
+
+    // 非 Windows 平台或获取 Unicode 参数失败：使用标准的 argc/argv
     g_xt_args = xt_array_new(argc);
     for (int i = 0; i < argc; i++) {
-        XTString* s = xt_string_new(argv[i]);
-        xt_array_append(g_xt_args, (XTValue)s);
-        xt_release((XTValue)s); // 修复泄漏
+        if (argv[i]) {
+            XTString* s = xt_string_new(argv[i]);
+            xt_array_append(g_xt_args, (XTValue)s);
+            xt_release((XTValue)s);
+        } else {
+            XTString* s = xt_string_new("");
+            xt_array_append(g_xt_args, (XTValue)s);
+            xt_release((XTValue)s);
+        }
     }
 }
 
@@ -408,9 +421,10 @@ XTArena* xt_arena_new(size_t size) {
     XTArena* arena = (XTArena*)malloc(sizeof(XTArena));
     if (!arena) return NULL;
     
-    // 初始化对象头，设为长生不老，防止被 ARC 误杀
+    // 初始化对象头，设为长生不老，防止在使用期间被 ARC 误杀
     atomic_init(&arena->header.ref_count, XT_REF_COUNT_IMMORTAL);
     arena->header.type_id = XT_TYPE_ARENA;
+    arena->header.magic = XT_MAGIC;
 
     arena->buffer = (char*)calloc(1, size);
     if (!arena->buffer) { free(arena); return NULL; }
@@ -470,6 +484,7 @@ void* xt_arena_alloc(size_t size, uint32_t type_id) {
     // 使用特殊计数值，使 xt_release 跳过释放逻辑
     atomic_init(&obj->ref_count, XT_REF_COUNT_IMMORTAL); 
     obj->type_id = type_id;
+    obj->magic = XT_MAGIC;
     return ptr;
 }
 
@@ -483,16 +498,23 @@ XTValue xt_arena_use(XTArena* arena) {
 
 /**
  * @brief 销毁 Arena 及其所有关联内存
+ *
+ * 此函数解绑 Arena 并释放扩容链节点，但不会立即释放首节点 buffer。
+ * 首节点 buffer 的释放延迟到 Arena 壳子被 ARC 回收时（xt_free_obj）。
+ * 这样可保证在 buffer 被释放前，所有引用 Arena 内对象的局部变量
+ * 都已通过 ARC 扫描（看到 IMMORTAL 后安全跳过）。
  */
 XTValue xt_arena_destroy(XTArena* arena) {
     if (!arena) return XT_NULL;
     
     // 如果销毁的是当前正在使用的 Arena，先解除绑定
+    // 此后新分配将回退到 malloc
     if (g_current_arena == arena) {
         g_current_arena = NULL;
     }
 
-    XTArena* curr = arena;
+    // 释放扩容链节点（这些是内部链表节点，不被玄铁变量引用，可安全释放）
+    XTArena* curr = arena->next;
     while (curr) {
         XTArena* next = curr->next;
         if (curr->buffer) {
@@ -502,6 +524,13 @@ XTValue xt_arena_destroy(XTArena* arena) {
         free(curr);
         curr = next;
     }
+    arena->next = NULL;
+
+    // 首节点 buffer 不释放——等待 ARC 在作用域结束时回收 Arena 壳子时一并释放
+    // 降级：将 ref_count 从 IMMORTAL 改为 2，预留一次给编译器的调用后 release
+    // 作用域退出时最后一次 release 才会触发 xt_free_obj 释放 buffer
+    atomic_store(&arena->header.ref_count, 2);
+
     return XT_NULL;
 }
 
@@ -511,17 +540,32 @@ XTValue xt_arena_destroy(XTArena* arena) {
  * 所有堆对象均需通过此函数创建。它会自动识别当前是否处于 Arena 模式。
  */
 void* xt_malloc(size_t size, uint32_t type_id) {
+    XTObject* obj;
     if (g_current_arena) {
-        return xt_arena_alloc(size, type_id);
+        obj = (XTObject*)xt_arena_alloc(size, type_id);
+    } else {
+        obj = (XTObject*)malloc(size);
+        if (obj) {
+            atomic_init(&obj->ref_count, 1);
+            obj->type_id = type_id;
+        }
     }
-    XTObject* obj = (XTObject*)malloc(size);
-    if (!obj) {
+    if (obj) {
+        obj->magic = XT_MAGIC;
+    } else {
         fprintf(stderr, "Fatal error: out of memory (xt_malloc)\n");
         exit(1);
     }
-    atomic_init(&obj->ref_count, 1); // 默认初始引用计数为 1
-    obj->type_id = type_id;
     return (void*)obj;
+}
+
+static inline void xt_check_obj(void* val) {
+    if (!xt_is_real_ptr((XTValue)val)) return;
+    XTObject* obj = (XTObject*)val;
+    if (obj->magic != XT_MAGIC) {
+        fprintf(stderr, "运行时错误: 检测到堆损坏或非法指针访问 (Type=%d, Addr=%p)\n", obj->type_id, val);
+        exit(-1);
+    }
 }
 
 /**
@@ -569,11 +613,18 @@ static void xt_free_obj(XTObject* obj) {
         }
         case XT_TYPE_INSTANCE: {
             XTInstance* inst = (XTInstance*)obj;
-            // 释放类实例的所有字段引用
-            for (size_t i = 0; i < inst->field_count; i++) {
-                xt_release(inst->fields[i]);
+            // 释放所有动态属性
+            for (size_t i = 0; i < inst->capacity; i++) {
+                XTDictEntry* entry = inst->buckets[i];
+                while (entry) {
+                    xt_release(entry->key);
+                    xt_release(entry->value);
+                    XTDictEntry* next = entry->next;
+                    free(entry);
+                    entry = next;
+                }
             }
-            if (inst->fields) free(inst->fields);
+            if (inst->buckets) free(inst->buckets);
             break;
         }
         case XT_TYPE_RESULT: {
@@ -617,6 +668,19 @@ static void xt_free_obj(XTObject* obj) {
         case XT_TYPE_FUNCTION:
             // 函数对象（Lambda）目前仅持有纯指针，无额外堆成员
             break;
+        case XT_TYPE_ARENA: {
+            XTArena* arena = (XTArena*)obj;
+            // 当 ARC 回收 Arena 时，释放其所有的 buffer 内存
+            XTArena* curr = arena->next;
+            while (curr) {
+                XTArena* next = curr->next;
+                if (curr->buffer) free(curr->buffer);
+                free(curr);
+                curr = next;
+            }
+            if (arena->buffer) free(arena->buffer);
+            break;
+        }
         default:
             break;
     }
@@ -641,6 +705,7 @@ static int xt_is_real_ptr(XTValue val) {
 void xt_retain(XTValue val) {
     if (XT_IS_INT(val)) return; // P0: 极速路径，跳过标记指针
     if (xt_is_real_ptr(val)) {
+        xt_check_obj((void*)val);
         XTObject* obj = (XTObject*)val;
         // 长生不老对象不参与计数逻辑，提升自举速度
         if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
@@ -654,6 +719,7 @@ void xt_retain(XTValue val) {
 void xt_release(XTValue val) {
     if (XT_IS_INT(val)) return; // P0: 极速路径，跳过标记指针
     if (xt_is_real_ptr(val)) {
+        xt_check_obj((void*)val);
         XTObject* obj = (XTObject*)val;
         if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
 
@@ -740,7 +806,6 @@ void xt_array_append(XTValue arr_val, XTValue element) {
         size_t new_capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;
         void** new_elements;
         if (g_current_arena) {
-            // Arena 下通过拷贝实现扩容
             new_elements = (void**)xt_arena_alloc_raw(sizeof(void*) * new_capacity);
             if (arr->elements) memcpy(new_elements, arr->elements, sizeof(void*) * arr->length);
         } else {
@@ -885,9 +950,13 @@ XTValue xt_array_range(XTValue start_val, XTValue end_val) {
 XTInstance* xt_instance_new(void* class_ptr, size_t field_count) {
     XTInstance* inst = (XTInstance*)xt_malloc(sizeof(XTInstance), XT_TYPE_INSTANCE);
     inst->class_ptr = class_ptr;
-    inst->field_count = field_count;
-    inst->fields = (XTValue*)malloc(sizeof(XTValue) * field_count);
-    memset(inst->fields, 0, sizeof(XTValue) * field_count);
+    
+    // 初始化为一个小型的字典，以支持动态属性
+    inst->capacity = 8;
+    inst->size = 0;
+    inst->buckets = (XTDictEntry**)malloc(sizeof(XTDictEntry*) * inst->capacity);
+    memset(inst->buckets, 0, sizeof(XTDictEntry*) * inst->capacity);
+    
     return inst;
 }
 
@@ -1146,7 +1215,7 @@ void xt_dict_set(XTValue dict_val, XTValue key, XTValue value) {
 
     XTDictEntry* entry = dict->buckets[idx];
     while (entry) {
-        if (xt_eq((void*)entry->key, (void*)key)) {
+        if (xt_eq(entry->key, key)) {
             xt_release(entry->value);
             entry->value = value;
             xt_retain(value);
@@ -1177,7 +1246,7 @@ XTValue xt_dict_get(XTValue dict_val, XTValue key) {
 
     XTDictEntry* entry = dict->buckets[idx];
     while (entry) {
-        if (xt_eq((void*)entry->key, (void*)key)) return entry->value;
+        if (xt_eq(entry->key, key)) return entry->value;
         entry = entry->next;
     }
     return XT_NULL;
@@ -1200,7 +1269,9 @@ int xt_dict_contains(XTValue dict_val, XTValue key) {
 XTValue xt_get_member(XTValue obj_val, XTValue key_val) {
     if (!XT_IS_PTR(obj_val) || obj_val == XT_NULL) return XT_NULL;
     XTObject* obj = (XTObject*)obj_val;
-    if (obj->type_id == XT_TYPE_DICT) return xt_dict_get(obj_val, key_val);
+    if (obj->type_id == XT_TYPE_DICT || obj->type_id == XT_TYPE_INSTANCE) {
+        return xt_dict_get(obj_val, key_val);
+    }
     return XT_NULL;
 }
 
@@ -1244,8 +1315,8 @@ void xt_dict_remove(XTValue dict_val, XTValue key) {
     }
 }
 
-int xt_eq(void* a, void* b) {
-    return xt_compare((XTValue)a, (XTValue)b) == 0;
+int xt_eq(XTValue a, XTValue b) {
+    return xt_compare(a, b) == 0;
 }
 
 // --- 文件 I/O 系统原语 ---
@@ -1789,12 +1860,27 @@ XTValue xt_time_sleep(XTValue ms_val) {
  */
 XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
     if (!XT_IS_PTR(str_val) || str_val == XT_NULL) return XT_NULL;
-    XTString* s = (XTString*)str_val; XTString* sep = (XTString*)sep_val;
+    XTString* s = (XTString*)str_val; 
+    XTString* sep = (XTString*)sep_val;
     XTValue arr = xt_array_new(4);
+    
+    if (sep && sep->length == 0) {
+        // 如果分隔符为空字符串，则按逻辑字符拆分
+        int64_t char_count = XT_TO_INT(xt_string_char_count(str_val));
+        for (int64_t i = 0; i < char_count; i++) {
+            XTValue c = xt_string_get_char(str_val, i);
+            xt_array_append(arr, c);
+            xt_release(c);
+        }
+        return arr;
+    }
+
     char* data = xt_strdup(s->data);
     char* token; char* rest = data;
-    while ((token = strtok_s(rest, sep->data, &rest))) {
-        xt_array_append(arr, (XTValue)xt_string_new(token));
+    while ((token = strtok_s(rest, sep ? sep->data : "", &rest))) {
+        XTValue s_new = (XTValue)xt_string_new(token);
+        xt_array_append(arr, s_new);
+        xt_release(s_new);
     }
     free(data); return arr;
 }
@@ -1900,5 +1986,54 @@ XTValue xt_json_deserialize(XTString* json_str) {
         XTValue res = (XTValue)xt_string_new(inner);
         free(inner); return res;
     }
-    return (XTValue)xt_string_new("暂不支持复杂 JSON 反序列化");
+    return XT_NULL;
+}
+
+// --- 通用算术与位运算 Fallback ---
+
+XTValue xt_add(XTValue a, XTValue b) {
+    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) + XT_TO_INT(b));
+    return XT_FROM_INT(xt_to_int(a) + xt_to_int(b));
+}
+
+XTValue xt_sub(XTValue a, XTValue b) {
+    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) - XT_TO_INT(b));
+    return XT_FROM_INT(xt_to_int(a) - xt_to_int(b));
+}
+
+XTValue xt_mul(XTValue a, XTValue b) {
+    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) * XT_TO_INT(b));
+    return XT_FROM_INT(xt_to_int(a) * xt_to_int(b));
+}
+
+XTValue xt_div(XTValue a, XTValue b) {
+    int64_t vb = xt_to_int(b);
+    if (vb == 0) return XT_FROM_INT(0);
+    return XT_FROM_INT(xt_to_int(a) / vb);
+}
+
+XTValue xt_mod(XTValue a, XTValue b) {
+    int64_t vb = xt_to_int(b);
+    if (vb == 0) return XT_FROM_INT(0);
+    return XT_FROM_INT(xt_to_int(a) % vb);
+}
+
+XTValue xt_bit_and(XTValue a, XTValue b) {
+    return XT_FROM_INT(xt_to_int(a) & xt_to_int(b));
+}
+
+XTValue xt_bit_or(XTValue a, XTValue b) {
+    return XT_FROM_INT(xt_to_int(a) | xt_to_int(b));
+}
+
+XTValue xt_bit_xor(XTValue a, XTValue b) {
+    return XT_FROM_INT(xt_to_int(a) ^ xt_to_int(b));
+}
+
+XTValue xt_bit_shl(XTValue a, XTValue b) {
+    return XT_FROM_INT(xt_to_int(a) << xt_to_int(b));
+}
+
+XTValue xt_bit_shr(XTValue a, XTValue b) {
+    return XT_FROM_INT(xt_to_int(a) >> xt_to_int(b));
 }

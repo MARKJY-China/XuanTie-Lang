@@ -1161,6 +1161,13 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 		return c.awaitExpressionCode(e, isAssignment)
 	case *ast.FunctionLiteral:
 		return c.functionLiteralCode(e, isAssignment)
+	case *ast.PostfixExpression:
+		if e.Operator == "?" {
+			// 在 Go 后端中，暂将后缀 `?` 简单编译为其操作数本身（或取其值），
+			// 因为严格的异常向上传递需要改变函数的返回签名，这里仅做容错处理。
+			return c.expressionCode(e.Left, isAssignment)
+		}
+		return "nil"
 	case *ast.ImportExpression:
 		return c.importExpressionCode(e, isAssignment)
 	case *ast.NewExpression:

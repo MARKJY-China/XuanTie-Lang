@@ -19,6 +19,9 @@ v0.17.0性能测试.xt
 玄铁自举技术架构白皮书.md
 记忆备份.md
 实现清单和计划.md
+你现在要执行的任务.md
+NOTES.md
+runtime_updates.md
 
 # 过滤根目录下的 bin 文件夹及其内容
 /bin/
@@ -32,3 +35,11 @@ v0.17.0性能测试.xt
 /.claude/
 /release/
 release_manifest.md
+/*.c
+/*.xt
+/*.txt
+
+xt.xt
+AGENTS.md
+IR_DIFF_REPORT.md
+INVESTIGATION_xt.md

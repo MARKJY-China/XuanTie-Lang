@@ -544,6 +544,25 @@ func (mc *MatchCase) String() string {
 	return out.String()
 }
 
+// PostfixExpression 后缀表达式 (例如 x?)
+type PostfixExpression struct {
+	Token    token.Token // 后缀运算符, 例如 "?"
+	Operator string
+	Left     Expression
+}
+
+func (pe *PostfixExpression) expressionNode()      {}
+func (pe *PostfixExpression) TokenLiteral() string { return pe.Token.Literal }
+func (pe *PostfixExpression) GetLine() int         { return pe.Token.Line }
+func (pe *PostfixExpression) String() string {
+	var out bytes.Buffer
+	out.WriteString("(")
+	out.WriteString(pe.Left.String())
+	out.WriteString(pe.Operator)
+	out.WriteString(")")
+	return out.String()
+}
+
 // ParallelExpression 并行执行表达式
 type ParallelExpression struct {
 	Token  token.Token // "并行"

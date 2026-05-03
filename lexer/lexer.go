@@ -192,6 +192,8 @@ func (l *Lexer) NextToken() token.Token {
 		tok = token.Token{Type: token.TOKEN_PIPE, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '?':
 		tok = token.Token{Type: token.TOKEN_QUESTION, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+	case '$':
+		tok = token.Token{Type: token.TOKEN_DOLLAR, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '.':
 		if l.peekChar() == '.' {
 			l.readChar()
@@ -257,6 +259,7 @@ func (l *Lexer) readIdentifier() string {
 	for isLetter(l.ch) || isDigit(l.ch) {
 		l.readChar()
 	}
+	// 将 `?` 作为标识符的一部分读取，支持 `存在?` 这种带问号的方法名
 	if l.ch == '?' {
 		l.readChar()
 	}
@@ -418,7 +421,7 @@ func (l *Lexer) readNumber() (string, bool) {
 	for isDigit(l.ch) {
 		l.readChar()
 	}
-	if l.ch == '.' {
+	if l.ch == '.' && isDigit(l.peekChar()) {
 		isFloat = true
 		l.readChar()
 		for isDigit(l.ch) {
@@ -434,11 +437,37 @@ func isDigit(ch rune) bool {
 
 func (l *Lexer) readString(quote rune) string {
 	var out strings.Builder
+	interpDepth := 0
 	for {
 		l.readChar()
-		if l.ch == quote || l.ch == 0 {
+		if l.ch == 0 {
 			break
 		}
+		if l.ch == quote && interpDepth == 0 {
+			break
+		}
+
+		if interpDepth > 0 {
+			// 在插值内：透传，但要小心转义引号和嵌套花括号
+			if l.ch == '\\' {
+				out.WriteRune('\\')
+				l.readChar()
+				if l.ch == 0 {
+					break
+				}
+				out.WriteRune(l.ch)
+				continue
+			}
+			if l.ch == '{' {
+				interpDepth++
+			} else if l.ch == '}' {
+				interpDepth--
+			}
+			out.WriteRune(l.ch)
+			continue
+		}
+
+		// 不在插值内：按原逻辑处理转义
 		if l.ch == '\\' {
 			l.readChar()
 			switch l.ch {
@@ -450,18 +479,33 @@ func (l *Lexer) readString(quote rune) string {
 				out.WriteRune('\t')
 			case '"':
 				out.WriteRune('"')
+			case '\'':
+				out.WriteRune('\'')
 			case '\\':
 				out.WriteRune('\\')
-			case '$': // Support \$ escaping
+			case '$':
 				out.WriteRune('$')
-			case '{': // Support \{ escaping
+			case '{':
 				out.WriteRune('{')
+			case '}':
+				out.WriteRune('}')
+			case '#':
+				out.WriteRune('\\')
+				out.WriteRune('#')
 			default:
 				out.WriteRune('\\')
 				out.WriteRune(l.ch)
 			}
 		} else {
-			out.WriteRune(l.ch)
+			// 检测插值开始
+			if l.ch == '#' && l.peekChar() == '{' {
+				out.WriteRune('#')
+				out.WriteRune('{')
+				l.readChar() // 吃掉 {
+				interpDepth = 1
+			} else {
+				out.WriteRune(l.ch)
+			}
 		}
 	}
 	return out.String()
@@ -469,17 +513,45 @@ func (l *Lexer) readString(quote rune) string {
 
 func (l *Lexer) readMultiLineString(quote rune) string {
 	var out strings.Builder
+	interpDepth := 0
 	for {
 		l.readChar()
 		if l.ch == 0 {
 			break
 		}
-		if l.ch == quote && l.peekChar() == quote && l.peekNextChar() == quote {
+		if interpDepth == 0 && l.ch == quote && l.peekChar() == quote && l.peekNextChar() == quote {
 			l.readChar()
 			l.readChar()
 			break
 		}
-		out.WriteRune(l.ch)
+
+		if interpDepth > 0 {
+			if l.ch == '\\' {
+				out.WriteRune('\\')
+				l.readChar()
+				if l.ch == 0 {
+					break
+				}
+				out.WriteRune(l.ch)
+				continue
+			}
+			if l.ch == '{' {
+				interpDepth++
+			} else if l.ch == '}' {
+				interpDepth--
+			}
+			out.WriteRune(l.ch)
+			continue
+		}
+
+		if l.ch == '#' && l.peekChar() == '{' {
+			out.WriteRune('#')
+			out.WriteRune('{')
+			l.readChar()
+			interpDepth = 1
+		} else {
+			out.WriteRune(l.ch)
+		}
 	}
 	return out.String()
 }

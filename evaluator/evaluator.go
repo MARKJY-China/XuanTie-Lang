@@ -248,6 +248,11 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalAwaitExpression(n, env)
 	case *ast.MemberCallExpression:
 		return evalMemberCallExpression(n, env)
+	case *ast.PostfixExpression:
+		if n.Operator == "?" {
+			return EvalContext(n.Left, env, isAssignment)
+		}
+		return newError(n.GetLine(), "未知的后缀运算符: %s", n.Operator)
 	case *ast.MemberAssignStatement:
 		obj := EvalContext(n.Object, env, true)
 		if isError(obj) {
@@ -1329,6 +1334,19 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 				return newError(mce.GetLine(), "包含?期望 1 个参数")
 			}
 			return &object.Boolean{Value: strings.Contains(str.Value, args[0].Inspect())}
+		case "取字节", "字节":
+			if len(args) == 0 {
+				return newError(mce.GetLine(), "取字节期望 1 个参数 (索引)")
+			}
+			idx, ok := args[0].(*object.Integer)
+			if !ok {
+				return newError(mce.GetLine(), "索引必须是整数")
+			}
+			i := int(idx.Value)
+			if i < 0 || i >= len(str.Value) {
+				return &object.Integer{Value: 0}
+			}
+			return &object.Integer{Value: int64(str.Value[i])}
 		case "截取":
 			if len(args) < 1 {
 				return newError(mce.GetLine(), "截取期望至少 1 个参数 (起始索引)")

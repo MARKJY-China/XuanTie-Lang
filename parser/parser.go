@@ -24,6 +24,7 @@ const (
 	CALL        // 函数调用
 	DOT         // .
 	INDEX       // []
+	POSTFIX     // 后缀运算，如 ?
 )
 
 var precedences = map[token.TokenType]int{
@@ -47,6 +48,7 @@ var precedences = map[token.TokenType]int{
 	token.TOKEN_MUL:       PRODUCT,
 	token.TOKEN_DIV:       PRODUCT,
 	token.TOKEN_MOD:       PRODUCT,
+	token.TOKEN_QUESTION:  POSTFIX,
 	token.TOKEN_AMPERSAND: CONCAT,
 	token.TOKEN_LPAREN:    CALL,
 	token.TOKEN_DOT:       DOT,
@@ -437,38 +439,41 @@ func (p *Parser) parseMatchStatement() *ast.MatchStatement {
 		return nil
 	}
 
-	for p.peek.Type != token.TOKEN_RBRACE && p.peek.Type != token.TOKEN_EOF {
-		p.nextToken()
-		caseNode := p.parseMatchCase()
-		if caseNode != nil {
-			stmt.Cases = append(stmt.Cases, caseNode)
-		}
-	}
+	p.nextToken() // skip {
 
-	if !p.expectPeek(token.TOKEN_RBRACE) {
-		return nil
+	for p.cur.Type != token.TOKEN_RBRACE && p.cur.Type != token.TOKEN_EOF {
+		// 支持 | 分隔的多个模式
+		var patterns []ast.Expression
+		for {
+			patterns = append(patterns, p.parseExpression(LOWEST))
+			if p.peek.Type == token.TOKEN_PIPE {
+				p.nextToken() // cur: pattern
+				p.nextToken() // cur: |
+			} else {
+				break
+			}
+		}
+
+		if !p.expectPeek(token.TOKEN_ARROW) {
+			return nil
+		}
+		p.nextToken() // skip ->
+
+		var body []ast.Statement
+		if p.cur.Type == token.TOKEN_LBRACE {
+			body = p.parseBlock()
+		} else {
+			body = []ast.Statement{p.parseStatement()}
+		}
+
+		for _, pat := range patterns {
+			cas := &ast.MatchCase{Pattern: pat, Body: body}
+			stmt.Cases = append(stmt.Cases, cas)
+		}
+		p.nextToken()
 	}
 
 	return stmt
-}
-
-func (p *Parser) parseMatchCase() *ast.MatchCase {
-	mc := &ast.MatchCase{}
-
-	// Pattern can be a literal, or '是 类型'
-	mc.Pattern = p.parseExpression(LOWEST)
-
-	if !p.expectPeek(token.TOKEN_ARROW) {
-		return nil
-	}
-	mc.Token = p.cur
-
-	if !p.expectPeek(token.TOKEN_LBRACE) {
-		return nil
-	}
-
-	mc.Body = p.parseBlock()
-	return mc
 }
 
 func (p *Parser) parseLoopStatement() *ast.LoopStatement {
@@ -679,7 +684,7 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 	case token.TOKEN_IDENT:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE,
-		token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE, token.TOKEN_TASK_TYPE, token.TOKEN_RESULT_TYPE:
+		token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE, token.TOKEN_TASK_TYPE, token.TOKEN_RESULT_TYPE, token.TOKEN_CHANNEL:
 		leftExp = &ast.Identifier{Token: p.cur, Value: p.cur.Literal}
 	case token.TOKEN_NUMBER:
 		leftExp = p.parseIntegerLiteral()
@@ -719,8 +724,6 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		leftExp = p.parseExecuteExpression()
 	case token.TOKEN_INPUT:
 		leftExp = p.parseInputExpression()
-	case token.TOKEN_CHANNEL:
-		leftExp = &ast.ChannelExpression{Token: p.cur}
 	case token.TOKEN_SUCCESS, token.TOKEN_FAILURE:
 		leftExp = p.parseResultLiteral()
 	case token.TOKEN_NOT, token.TOKEN_MINUS, token.TOKEN_IS, token.TOKEN_BIT_NOT:
@@ -797,6 +800,13 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 		case token.TOKEN_LBRACKET:
 			p.nextToken()
 			leftExp = p.parseIndexExpression(leftExp)
+		case token.TOKEN_QUESTION:
+			p.nextToken()
+			leftExp = &ast.PostfixExpression{
+				Token:    p.cur,
+				Operator: "?",
+				Left:     leftExp,
+			}
 		default:
 			return leftExp
 		}
@@ -807,6 +817,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 
 func (p *Parser) parseStringLiteral() ast.Expression {
 	lit := &ast.StringLiteral{Token: p.cur, Value: p.cur.Literal}
+
+	if strings.Contains(lit.Value, "${") {
+		p.errors = append(p.errors, fmt.Sprintf("[行:%d] 不支持的插值符号 '$'，玄铁仅支持 '#{'", p.cur.Line))
+		return nil
+	}
+
 	if !strings.Contains(lit.Value, "#{") {
 		return lit
 	}
@@ -814,16 +830,33 @@ func (p *Parser) parseStringLiteral() ast.Expression {
 	var expressions []ast.Expression
 	str := lit.Value
 	for {
-		start := strings.Index(str, "#{")
+		start := -1
+		// 寻找 #{，但跳过 \#{
+		for i := 0; i < len(str)-1; i++ {
+			if str[i] == '#' && str[i+1] == '{' {
+				if i > 0 && str[i-1] == '\\' {
+					continue
+				}
+				start = i
+				break
+			}
+		}
+
 		if start == -1 {
-			if str != "" {
-				expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: str})
+			// 将剩余字符串中的 \# 还原为 #
+			finalVal := strings.ReplaceAll(str, "\\#", "#")
+			if finalVal != "" {
+				expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: finalVal})
 			}
 			break
 		}
 
 		if start > 0 {
-			expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: str[:start]})
+			// 将前缀中的 \# 还原为 #
+			prefix := strings.ReplaceAll(str[:start], "\\#", "#")
+			if prefix != "" {
+				expressions = append(expressions, &ast.StringLiteral{Token: p.cur, Value: prefix})
+			}
 		}
 
 		str = str[start+2:]
@@ -831,8 +864,25 @@ func (p *Parser) parseStringLiteral() ast.Expression {
 		// 寻找匹配的 }
 		depth := 1
 		end := -1
+		inStr := false
+		var strQuote byte = 0
 		for i := 0; i < len(str); i++ {
 			char := str[i]
+			if inStr {
+				if char == '\\' && i+1 < len(str) {
+					i++ // 跳过转义的下一个字符
+					continue
+				}
+				if char == strQuote {
+					inStr = false
+				}
+				continue
+			}
+			if char == '"' || char == '\'' {
+				inStr = true
+				strQuote = char
+				continue
+			}
 			if char == '{' {
 				depth++
 			} else if char == '}' {
@@ -1021,7 +1071,13 @@ func (p *Parser) parseFunctionStatement(visibility token.TokenType, isOverride b
 	p.nextToken() // skip 函
 
 	if p.cur.Type != token.TOKEN_IDENT && p.cur.Type != token.TOKEN_NEW {
-		p.errors = append(p.errors, fmt.Sprintf("预期函数名，得到 %s", p.cur.Type))
+		// 检查是否是因为关键字撞名
+		switch p.cur.Type {
+		case token.TOKEN_RESULT_TYPE, token.TOKEN_TASK_TYPE, token.TOKEN_CHANNEL, token.TOKEN_TEST, token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE:
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 语法错误：'%s' 是玄铁语言的保留关键字，不能用作函数名。请换一个名字。", p.cur.Line, p.cur.Column, p.cur.Literal))
+		default:
+			p.errors = append(p.errors, fmt.Sprintf("预期函数名，得到 %s", p.cur.Type))
+		}
 		return nil
 	}
 
@@ -1425,6 +1481,17 @@ func (p *Parser) expectPeek(t token.TokenType) bool {
 		p.nextToken()
 		return true
 	}
+
+	// 如果是我们在特定场景下需要的自定义拦截报错，我们不在这里统一打错，而是返回 false 交给调用方处理。
+	// 但为了兼容老的逻辑，如果调用方没处理，或者这里想统一拦截关键字：
+	if t == token.TOKEN_IDENT {
+		switch p.peek.Type {
+		case token.TOKEN_RESULT_TYPE, token.TOKEN_TASK_TYPE, token.TOKEN_CHANNEL, token.TOKEN_TEST, token.TOKEN_STRING_TYPE, token.TOKEN_INT_TYPE, token.TOKEN_FLOAT_TYPE, token.TOKEN_BOOL_TYPE, token.TOKEN_ARRAY_TYPE, token.TOKEN_DICT_TYPE, token.TOKEN_BYTES_TYPE:
+			p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 语法错误：'%s' 是玄铁语言的保留关键字，不能用作变量名或标识符。请换一个名字。", p.peek.Line, p.peek.Column, p.peek.Literal))
+			return false
+		}
+	}
+
 	p.errors = append(p.errors, fmt.Sprintf("[行:%d, 列:%d] 预期下一个标记为 %s，但实际得到 %s (%s)",
 		p.peek.Line, p.peek.Column, t, p.peek.Type, p.peek.Literal))
 	return false

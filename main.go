@@ -16,7 +16,7 @@ import (
 	"xuantie/parser"
 )
 
-var version = "0.15.7"
+var version = "0.17.5"
 
 const (
 	colorReset = "\033[0m"
@@ -196,7 +196,7 @@ func main() {
 
 		// 1. 使用 clang 将 LLVM IR 编译为 MinGW 格式的对象文件
 		objFile := strings.TrimSuffix(filename, ".xt") + ".o"
-		clangCmd := exec.Command("clang", "-target", "x86_64-w64-windows-gnu", "-c", irFile, "-o", objFile)
+		clangCmd := exec.Command("clang", "-target", "x86_64-w64-windows-gnu", "-c", irFile, "-o", objFile, "-Og")
 		if out, err := clangCmd.CombinedOutput(); err != nil {
 			fmt.Printf("LLVM 编译为对象文件失败: %v\n", err)
 			fmt.Printf("错误详情: %s\n", string(out))
@@ -208,7 +208,7 @@ func main() {
 		if runtime.GOOS == "windows" {
 			outputName += ".exe"
 		}
-		gccCmd := exec.Command("gcc", objFile, rtC, "-o", outputName)
+		gccCmd := exec.Command("gcc", objFile, rtC, "-o", outputName, "-lshell32")
 		out, err := gccCmd.CombinedOutput()
 		fmt.Printf("生成的 LLVM IR 已保存至: %s\n", irFile)
 

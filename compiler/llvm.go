@@ -40,16 +40,19 @@ type LLVMCompiler struct {
 	symbolTable     map[string]SymbolInfo
 	strings         map[string]string
 	classes         map[string]*ClassInfo
-	scopeStack      [][]string // 每层作用域需要 release 的寄存器列表
-	currentFunc     string     // 为空表示在 main 中
-	currentClass    string     // 当前正在转译的类名
-	currentLabel    string     // 最近一个基本块标签
-	filePath        string     // 当前正在转译的文件路径
-	breakLabels     []string   // break 目标标签栈
-	continueLabels  []string   // continue 目标标签栈
-	loopDepths      []int      // 循环开始时的 scopeStack 深度栈
+	scopeStack      [][]string      // 每层作用域需要 release 的寄存器列表
+	arenaPoolRegs   map[string]bool // Arena 池变量的 alloca 寄存器，退出作用域时最后释放
+	currentFunc     string          // 为空表示在 main 中
+	currentClass    string          // 当前正在转译的类名
+	currentLabel    string          // 最近一个基本块标签
+	filePath        string          // 当前正在转译的文件路径
+	breakLabels     []string        // break 目标标签栈
+	continueLabels  []string        // continue 目标标签栈
+	loopDepths      []int           // 循环开始时的 scopeStack 深度栈
 	visitedImports  map[string]bool
+	moduleAliases   map[string]bool
 	declaredGlobals map[string]bool
+	funcReturnTypes map[string]string // 函数名 → 内部返回类型（"raw_i64"/"double"/"i1"），用于调用处自动脱壳
 }
 
 func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
@@ -60,41 +63,46 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 		classes:         make(map[string]*ClassInfo),
 		filePath:        program.FilePath,
 		visitedImports:  make(map[string]bool),
+		moduleAliases:   make(map[string]bool),
 		declaredGlobals: make(map[string]bool),
+		arenaPoolRegs:   make(map[string]bool),
+		funcReturnTypes: make(map[string]string),
 	}
 
 	// 注入内置全局符号
-	c.symbolTable["文件.读"] = SymbolInfo{AddrReg: "@\"xt_file_read\"", IsGlobal: true}
+	c.symbolTable["文件.读"] = SymbolInfo{AddrReg: "@\"xt_file_read\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["文件.读"] = true
-	c.symbolTable["文件.写"] = SymbolInfo{AddrReg: "@\"xt_file_write\"", IsGlobal: true}
+	c.symbolTable["文件.写"] = SymbolInfo{AddrReg: "@\"xt_file_write\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["文件.写"] = true
-	c.symbolTable["文件.存在?"] = SymbolInfo{AddrReg: "@\"xt_file_exists\"", IsGlobal: true}
+	c.symbolTable["文件.存在?"] = SymbolInfo{AddrReg: "@\"xt_file_exists\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["文件.存在?"] = true
-	c.symbolTable["数学.随机"] = SymbolInfo{AddrReg: "@\"xt_math_random\"", IsGlobal: true}
+	c.symbolTable["道"] = SymbolInfo{AddrReg: "@\"xt_channel_new\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["道"] = true
+	c.symbolTable["数学.随机"] = SymbolInfo{AddrReg: "@\"xt_math_random\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["数学.随机"] = true
-	c.symbolTable["时.现"] = SymbolInfo{AddrReg: "@\"xt_time_now\"", IsGlobal: true}
+	c.symbolTable["时.现"] = SymbolInfo{AddrReg: "@\"xt_time_now\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["时.现"] = true
-	c.symbolTable["时.毫秒"] = SymbolInfo{AddrReg: "@\"xt_time_ms\"", IsGlobal: true}
+	c.symbolTable["时.毫秒"] = SymbolInfo{AddrReg: "@\"xt_time_ms\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["时.毫秒"] = true
-	c.symbolTable["时.微秒"] = SymbolInfo{AddrReg: "@\"xt_time_micro\"", IsGlobal: true}
+	c.symbolTable["时.微秒"] = SymbolInfo{AddrReg: "@\"xt_time_micro\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["时.微秒"] = true
-	c.symbolTable["时.睡"] = SymbolInfo{AddrReg: "@\"xt_time_sleep\"", IsGlobal: true}
+	c.symbolTable["时.睡"] = SymbolInfo{AddrReg: "@\"xt_time_sleep\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["时.睡"] = true
-	c.symbolTable["执"] = SymbolInfo{AddrReg: "@\"xt_execute\"", IsGlobal: true}
+	c.symbolTable["执"] = SymbolInfo{AddrReg: "@\"xt_execute\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["执"] = true
-	c.symbolTable["化"] = SymbolInfo{AddrReg: "@\"xt_json_serialize\"", IsGlobal: true}
+	c.symbolTable["化"] = SymbolInfo{AddrReg: "@\"xt_json_serialize\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["化"] = true
-	c.symbolTable["解"] = SymbolInfo{AddrReg: "@\"xt_json_deserialize\"", IsGlobal: true}
+	c.symbolTable["解"] = SymbolInfo{AddrReg: "@\"xt_json_deserialize\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["解"] = true
-	c.symbolTable["求"] = SymbolInfo{AddrReg: "@\"xt_http_request\"", IsGlobal: true}
+	c.symbolTable["求"] = SymbolInfo{AddrReg: "@\"xt_http_request\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["求"] = true
-	c.symbolTable["输"] = SymbolInfo{AddrReg: "@\"xt_input\"", IsGlobal: true}
+	c.symbolTable["输"] = SymbolInfo{AddrReg: "@\"xt_input\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["输"] = true
-	c.symbolTable["听"] = SymbolInfo{AddrReg: "@\"xt_listen\"", IsGlobal: true}
+	c.symbolTable["听"] = SymbolInfo{AddrReg: "@\"xt_listen\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["听"] = true
-	c.symbolTable["连"] = SymbolInfo{AddrReg: "@\"xt_connect\"", IsGlobal: true}
+	c.symbolTable["连"] = SymbolInfo{AddrReg: "@\"xt_connect\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["连"] = true
-	c.symbolTable["等待"] = SymbolInfo{AddrReg: "@\"xt_wait\"", IsGlobal: true}
+	c.symbolTable["等待"] = SymbolInfo{AddrReg: "@\"xt_wait\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["等待"] = true
 
 	return c
@@ -121,11 +129,11 @@ func (c *LLVMCompiler) Compile() string {
 	c.output = oldOutput
 	c.allocaOutput = bytes.Buffer{}
 
+	var res bytes.Buffer
 	// 1. 写入模块头
-	c.emit("; XuanTie v0.15.5 LLVM Backend")
-	c.emit("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"")
-	c.emit("target triple = \"x86_64-w64-windows-gnu\"")
-	c.emit("")
+	res.WriteString("; XuanTie v0.15.5 LLVM Backend\n")
+	res.WriteString("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n")
+	res.WriteString("target triple = \"x86_64-w64-windows-gnu\"\n\n")
 
 	// 2. 写入全局字符串常量
 	for content, alias := range c.strings {
@@ -138,105 +146,115 @@ func (c *LLVMCompiler) Compile() string {
 				escaped += fmt.Sprintf("\\%02X", b)
 			}
 		}
-		c.emit("@%s = private unnamed_addr constant [%d x i8] c\"%s\\00\", align 1", alias, len(content)+1, escaped)
+		res.WriteString(fmt.Sprintf("@%s = private unnamed_addr constant [%d x i8] c\"%s\\00\", align 1\n", alias, len(content)+1, escaped))
 	}
-	c.emit("")
+	res.WriteString("\n")
 
 	// 3. 外部运行时函数声明
-	c.emit("%%XTObject = type { i32, i32 }")
-	c.emit("%%XTString = type { i32, i32, i8*, i64, i32 }")
-	c.emit("%%XTArray = type { i32, i32, i8**, i64, i64 }")
-	c.emit("%%XTDict = type { i32, i32, i8***, i64, i64 }")
-	c.emit("%%XTFunction = type { i32, i32, i8* }")
-	c.emit("%%XTInstance = type { i32, i32, i8*, i64*, i64 }")
-	c.emit("%%XTResult = type { i32, i32, i32, i32, i64, i64 }")
-	c.emit("declare %%XTArray* @xt_dict_keys(%%XTDict*)")
-	c.emit("declare void @xt_init()")
-	c.emit("declare void @xt_print_int(i64)")
-	c.emit("declare void @xt_print_string(%%XTString*)")
-	c.emit("declare void @xt_print_bool(i1)")
-	c.emit("declare void @xt_print_float(double)")
-	c.emit("declare void @xt_print_value(i64)")
-	c.emit("declare i64 @xt_convert_to_int(i64)")
-	c.emit("declare i64 @xt_convert_to_float(i64)")
-	c.emit("declare i64 @xt_convert_to_string(i64)")
-	c.emit("declare i64 @xt_int_new(i64)")
-	c.emit("declare i8* @xt_float_new(double)")
-	c.emit("declare i64 @xt_bool_new(i1)")
-	c.emit("declare i64 @xt_func_new(i8*)")
-	c.emit("declare %%XTString* @xt_string_new(i8*)")
-	c.emit("declare i64 @xt_string_get_char(i64, i64)")
-	c.emit("declare i64 @xt_string_get_byte(i64, i64)")
-	c.emit("declare i64 @xt_string_byte_length(i64)")
-	c.emit("declare i64 @xt_string_char_count(i64)")
-	c.emit("declare i64 @xt_string_to_hex_string(i64)")
-	c.emit("declare %%XTString* @xt_string_from_char(i8)")
-	c.emit("declare %%XTString* @xt_string_next_char(%%XTString*, i64*)")
-	c.emit("declare i64 @xt_array_new(i64)")
-	c.emit("declare void @xt_array_append(i64, i64)")
-	c.emit("declare i64 @xt_array_pop(%%XTArray*)")
-	c.emit("declare i64 @xt_array_slice(i64, i64)")
-	c.emit("declare i64 @xt_array_range(i64, i64)")
-	c.emit("declare i64 @xt_array_get(i64, i64)")
-	c.emit("declare %%XTString* @xt_array_join(i64, %%XTString*)")
-	c.emit("declare i64 @xt_dict_new(i64)")
-	c.emit("declare void @xt_dict_set(i64, i64, i64)")
-	c.emit("declare i64 @xt_dict_get(i64, i64)")
-	c.emit("declare i32 @xt_dict_contains(i64, i64)")
-	c.emit("declare i8* @xt_result_new(i32, i8*, i8*)")
-	c.emit("declare i32 @__mingw_printf(i8*, ...)")
-	c.emit("declare %%XTString* @xt_string_concat(%%XTString*, %%XTString*)")
-	c.emit("declare %%XTString* @xt_string_substring(%%XTString*, i64, i64)")
-	c.emit("declare i32 @xt_string_contains(%%XTString*, %%XTString*)")
-	c.emit("declare i64 @xt_string_replace(i64, i64, i64)")
-	c.emit("declare i64 @xt_string_split(i64, i64)")
-	c.emit("declare %%XTString* @xt_int_to_string(i64)")
-	c.emit("declare %%XTString* @xt_obj_to_string(i64)")
-	c.emit("declare void @xt_retain(i64)")
-	c.emit("declare void @xt_release(i64)")
-	c.emit("declare i64 @xt_to_int(i64)")
-	c.emit("declare i32 @xt_compare(i64, i64)")
-	c.emit("declare void @exit(i32)")
-	c.emit("declare i64 @xt_file_read(i64)")
-	c.emit("declare i64 @xt_file_write(i64, i64)")
-	c.emit("declare i64 @xt_file_exists(i64)")
-	c.emit("declare i64 @xt_http_request(i64)")
-	c.emit("declare i64 @xt_math_random(i64)")
-	c.emit("declare i64 @xt_time_now()")
-	c.emit("declare i64 @xt_time_ms()")
-	c.emit("declare i64 @xt_time_sleep(i64)")
-	c.emit("declare i64 @xt_listen(i64, i64)")
-	c.emit("declare i64 @xt_connect(i64)")
-	c.emit("declare i64 @xt_execute(i64)")
-	c.emit("declare i64 @xt_input(i64)")
-	c.emit("declare %%XTString* @xt_json_serialize(i64)")
-	c.emit("declare i64 @xt_json_deserialize(%%XTString*)")
-	c.emit("declare i64 @xt_wait(i64)")
-	c.emit("")
-	c.emit("")
+	res.WriteString("%XTObject = type { i32, i32, i32 }\n")
+	res.WriteString("%XTString = type { i32, i32, i32, i8*, i64, i32 }\n")
+	res.WriteString("%XTArray = type { i32, i32, i32, i8**, i64, i64 }\n")
+	res.WriteString("%XTDict = type { i32, i32, i32, i8***, i64, i64 }\n")
+	res.WriteString("%XTFunction = type { i32, i32, i32, i8* }\n")
+	res.WriteString("%XTInstance = type { i32, i32, i32, i8***, i64, i64, i8* }\n")
+	res.WriteString("%XTResult = type { i32, i32, i32, i32, i32, i64, i64 }\n")
+	res.WriteString("declare %XTArray* @xt_dict_keys(%XTDict*)\n")
+	res.WriteString("declare void @xt_init()\n")
+	res.WriteString("declare void @xt_print_int(i64)\n")
+	res.WriteString("declare void @xt_print_string(%XTString*)\n")
+	res.WriteString("declare void @xt_print_bool(i1)\n")
+	res.WriteString("declare void @xt_print_float(double)\n")
+	res.WriteString("declare void @xt_print_value(i64)\n")
+	res.WriteString("declare i64 @xt_convert_to_int(i64)\n")
+	res.WriteString("declare i64 @xt_convert_to_float(i64)\n")
+	res.WriteString("declare i64 @xt_convert_to_string(i64)\n")
+	res.WriteString("declare i64 @xt_int_new(i64)\n")
+	res.WriteString("declare i8* @xt_float_new(double)\n")
+	res.WriteString("declare i64 @xt_bool_new(i1)\n")
+	res.WriteString("declare i64 @xt_func_new(i8*)\n")
+	res.WriteString("declare %XTString* @xt_string_new(i8*)\n")
+	res.WriteString("declare i64 @xt_string_get_char(i64, i64)\n")
+	res.WriteString("declare i64 @xt_string_get_byte(i64, i64)\n")
+	res.WriteString("declare i64 @xt_string_byte_length(i64)\n")
+	res.WriteString("declare i64 @xt_string_char_count(i64)\n")
+	res.WriteString("declare i64 @xt_string_to_hex_string(i64)\n")
+	res.WriteString("declare %XTString* @xt_string_from_char(i8)\n")
+	res.WriteString("declare %XTString* @xt_string_next_char(%XTString*, i64*)\n")
+	res.WriteString("declare i64 @xt_array_new(i64)\n")
+	res.WriteString("declare void @xt_array_append(i64, i64)\n")
+	res.WriteString("declare i64 @xt_array_pop(%XTArray*)\n")
+	res.WriteString("declare i64 @xt_array_slice(i64, i64)\n")
+	res.WriteString("declare i64 @xt_array_range(i64, i64)\n")
+	res.WriteString("declare i64 @xt_array_get(i64, i64)\n")
+	res.WriteString("declare %XTString* @xt_array_join(i64, %XTString*)\n")
+	res.WriteString("declare i64 @xt_dict_new(i64)\n")
+	res.WriteString("declare void @xt_dict_set(i64, i64, i64)\n")
+	res.WriteString("declare i64 @xt_dict_get(i64, i64)\n")
+	res.WriteString("declare i32 @xt_dict_contains(i64, i64)\n")
+	res.WriteString("declare i8* @xt_result_new(i32, i8*, i8*)\n")
+	res.WriteString("declare i32 @xt_ffi_printf(%XTString*, ...)\n")
+	res.WriteString("declare %XTString* @xt_string_concat(%XTString*, %XTString*)\n")
+	res.WriteString("declare %XTString* @xt_string_substring(%XTString*, i64, i64)\n")
+	res.WriteString("declare i32 @xt_string_contains(%XTString*, %XTString*)\n")
+	res.WriteString("declare i64 @xt_string_replace(i64, i64, i64)\n")
+	res.WriteString("declare i64 @xt_string_split(i64, i64)\n")
+	res.WriteString("declare %XTString* @xt_int_to_string(i64)\n")
+	res.WriteString("declare %XTString* @xt_obj_to_string(i64)\n")
+	res.WriteString("declare void @xt_retain(i64)\n")
+	res.WriteString("declare void @xt_release(i64)\n")
+	res.WriteString("declare i64 @xt_to_int(i64)\n")
+	res.WriteString("declare i32 @xt_compare(i64, i64)\n")
+	res.WriteString("declare i64 @xt_add(i64, i64)\n")
+	res.WriteString("declare i64 @xt_sub(i64, i64)\n")
+	res.WriteString("declare i64 @xt_mul(i64, i64)\n")
+	res.WriteString("declare i64 @xt_div(i64, i64)\n")
+	res.WriteString("declare i64 @xt_mod(i64, i64)\n")
+	res.WriteString("declare i64 @xt_bit_and(i64, i64)\n")
+	res.WriteString("declare i64 @xt_bit_or(i64, i64)\n")
+	res.WriteString("declare i64 @xt_bit_xor(i64, i64)\n")
+	res.WriteString("declare i64 @xt_bit_shl(i64, i64)\n")
+	res.WriteString("declare i64 @xt_bit_shr(i64, i64)\n")
+	res.WriteString("declare void @exit(i32)\n")
+	res.WriteString("declare i64 @xt_file_read(i64)\n")
+	res.WriteString("declare i64 @xt_file_write(i64, i64)\n")
+	res.WriteString("declare i64 @xt_file_exists(i64)\n")
+	res.WriteString("declare i64 @xt_http_request(i64)\n")
+	res.WriteString("declare i64 @xt_math_random(i64)\n")
+	res.WriteString("declare i64 @xt_time_now()\n")
+	res.WriteString("declare i64 @xt_time_ms()\n")
+	res.WriteString("declare i64 @xt_time_micro()\n")
+	res.WriteString("declare i64 @xt_time_sleep(i64)\n")
+	res.WriteString("declare i64 @xt_listen(i64, i64)\n")
+	res.WriteString("declare i64 @xt_connect(i64)\n")
+	res.WriteString("declare i64 @xt_execute(i64)\n")
+	res.WriteString("declare i64 @xt_input(i64)\n")
+	res.WriteString("declare i64 @xt_channel_new(i64)\n")
+	res.WriteString("declare i64 @xt_channel_send(i64, i64)\n")
+	res.WriteString("declare i64 @xt_channel_receive(i64)\n")
+	res.WriteString("declare %XTString* @xt_json_serialize(i64)\n")
+	res.WriteString("declare i64 @xt_json_deserialize(%XTString*)\n")
+	res.WriteString("declare i64 @xt_wait(i64)\n\n")
 
 	// 4. 写入全局变量定义
-	c.output.Write(c.globalOutput.Bytes())
-	c.emit("")
+	res.Write(c.globalOutput.Bytes())
+	res.WriteString("\n")
 
 	// 5. 写入自定义函数定义
-	c.output.Write(c.funcOutput.Bytes())
-	c.emit("")
+	res.Write(c.funcOutput.Bytes())
+	res.WriteString("\n")
 
 	// 6. 主函数入口
-	c.emit("declare void @\"xt_init_args\"(i32, i8**)")
-	c.emit("")
-	c.emit("define i32 @main(i32 %%argc, i8** %%argv) {")
-	c.emit("entry:")
-	c.currentLabel = "entry"
-	c.emit("  call void @xt_init()")
-	c.emit("  call void @xt_init_args(i32 %%argc, i8** %%argv)")
-	c.output.WriteString(mainAllocas)
-	c.output.WriteString(mainBody)
-	c.emit("  ret i32 0")
-	c.emit("}")
+	res.WriteString("declare void @\"xt_init_args\"(i32, i8**)\n\n")
+	res.WriteString("define i32 @main(i32 %argc, i8** %argv) {\n")
+	res.WriteString("entry:\n")
+	res.WriteString("  call void @xt_init()\n")
+	res.WriteString("  call void @xt_init_args(i32 %argc, i8** %argv)\n")
+	res.WriteString(mainAllocas)
+	res.WriteString(mainBody)
+	res.WriteString("  ret i32 0\n")
+	res.WriteString("}\n")
 
-	return c.output.String()
+	return res.String()
 }
 
 func (c *LLVMCompiler) emit(format string, args ...interface{}) {
@@ -261,6 +279,33 @@ func (c *LLVMCompiler) emitAlloca(format string, args ...interface{}) {
 
 func (c *LLVMCompiler) isScalarType(typ string) bool {
 	return typ == "raw_i64" || typ == "i1" || typ == "double"
+}
+
+// 将玄铁类型注解映射为编译器内部类型标记
+func (c *LLVMCompiler) mapTypeAnnotation(xtType string) string {
+	switch xtType {
+	case "整":
+		return "raw_i64"
+	case "小数":
+		return "double"
+	case "逻":
+		return "i1"
+	default:
+		return "i64"
+	}
+}
+
+// 检测表达式是否为 xt_arena_new 函数调用
+func (c *LLVMCompiler) isArenaCreate(expr ast.Expression) bool {
+	call, ok := expr.(*ast.CallExpression)
+	if !ok {
+		return false
+	}
+	ident, ok := call.Function.(*ast.Identifier)
+	if !ok {
+		return false
+	}
+	return ident.Value == "xt_arena_new"
 }
 
 func (c *LLVMCompiler) nextReg() string {
@@ -306,7 +351,20 @@ func (c *LLVMCompiler) exitScope(isReturn bool) {
 	}
 
 	for i := start; i >= end; i-- {
+		// 第一遍：释放非 Arena 池变量
 		for _, addrReg := range c.scopeStack[i] {
+			if c.arenaPoolRegs[addrReg] {
+				continue
+			}
+			valReg := c.nextReg()
+			c.emit("  %s = load i64, i64* %s", valReg, addrReg)
+			c.emit("  call void @xt_release(i64 %s)", valReg)
+		}
+		// 第二遍：释放 Arena 池变量（确保在最后）
+		for _, addrReg := range c.scopeStack[i] {
+			if !c.arenaPoolRegs[addrReg] {
+				continue
+			}
 			valReg := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", valReg, addrReg)
 			c.emit("  call void @xt_release(i64 %s)", valReg)
@@ -323,7 +381,20 @@ func (c *LLVMCompiler) exitScopesUntil(depth int) {
 		return
 	}
 	for i := len(c.scopeStack) - 1; i >= depth; i-- {
+		// 第一遍：释放非 Arena 池变量
 		for _, addrReg := range c.scopeStack[i] {
+			if c.arenaPoolRegs[addrReg] {
+				continue
+			}
+			valReg := c.nextReg()
+			c.emit("  %s = load i64, i64* %s", valReg, addrReg)
+			c.emit("  call void @xt_release(i64 %s)", valReg)
+		}
+		// 第二遍：释放 Arena 池变量（确保在最后）
+		for _, addrReg := range c.scopeStack[i] {
+			if !c.arenaPoolRegs[addrReg] {
+				continue
+			}
 			valReg := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", valReg, addrReg)
 			c.emit("  call void @xt_release(i64 %s)", valReg)
@@ -369,7 +440,7 @@ func (c *LLVMCompiler) convertToObj(valReg, valType string) (string, string) {
 }
 
 func (c *LLVMCompiler) ensureI64(reg, typ string) string {
-	if typ == "i64" {
+	if typ == "i64" || typ == "整" {
 		return reg
 	}
 	if typ == "raw_i64" {
@@ -379,7 +450,7 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 		c.emit("  %s = or i64 %s, 1", newReg, shifted)
 		return newReg
 	}
-	if typ == "i1" {
+	if typ == "i1" || typ == "逻" {
 		newReg := c.nextReg()
 		c.emit("  %s = select i1 %s, i64 4, i64 2", newReg, reg)
 		return newReg
@@ -389,7 +460,7 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 		c.emit("  %s = ptrtoint i64 (...)* @\"%s\" to i64", newReg, reg)
 		return newReg
 	}
-	if typ == "double" {
+	if typ == "double" || typ == "小数" {
 		newReg := c.nextReg()
 		c.emit("  %s = call i8* @xt_float_new(double %s)", newReg, reg)
 		ptrI64 := c.nextReg()
@@ -417,9 +488,14 @@ func (c *LLVMCompiler) ensureRawI64(reg, typ string) string {
 	if typ == "raw_i64" {
 		return reg
 	}
-	if typ == "i64" {
+	if typ == "i64" || typ == "整" {
 		newReg := c.nextReg()
 		c.emit("  %s = ashr i64 %s, 1", newReg, reg)
+		return newReg
+	}
+	if typ == "i1" || typ == "逻" {
+		newReg := c.nextReg()
+		c.emit("  %s = zext i1 %s to i64", newReg, reg)
 		return newReg
 	}
 	xtVal := c.ensureI64(reg, typ)
@@ -437,7 +513,9 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		valReg, valType, _ := c.compileExpression(s.Value)
 		xtValReg := c.ensureI64(valReg, valType)
 		c.emit("  call void @xt_print_value(i64 %s)", xtValReg)
-		c.emit("  call void @xt_release(i64 %s)", xtValReg)
+		if !c.isScalarType(valType) {
+			c.emit("  call void @xt_release(i64 %s)", xtValReg)
+		}
 	case *ast.VarStatement:
 		valReg, valType, valClass := c.compileExpression(s.Value)
 		// 只有局部变量且初始值为标量时，才尝试优化
@@ -448,6 +526,7 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 			xtVal = valReg
 		} else {
 			xtVal = c.ensureI64(valReg, valType)
+			c.emit("  call void @xt_retain(i64 %s)", xtVal)
 		}
 
 		if c.currentFunc == "" && c.currentClass == "" {
@@ -486,21 +565,30 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 				} else {
 					c.trackObject(addrReg)
 				}
+				// 检测变量是否由 xt_arena_new 创建，标记为 Arena 池
+				if c.isArenaCreate(s.Value) {
+					c.arenaPoolRegs[addrReg] = true
+				}
 				c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: newType, ClassName: valClass, IsGlobal: false}
 			}
 		}
 	case *ast.AssignStatement:
+		if s.Name == "_" {
+			valReg, valType, _ := c.compileExpression(s.Value)
+			if !c.isScalarType(valType) {
+				c.emit("  call void @xt_release(i64 %s)", c.ensureI64(valReg, valType))
+			}
+			return
+		}
 		valReg, valType, className := c.compileExpression(s.Value)
+		xtVal := c.ensureI64(valReg, valType)
 
 		if sym, ok := c.symbolTable[s.Name]; ok {
 			// 只有局部变量且新值为标量时，才尝试优化
 			isScalar := c.isScalarType(valType) && (c.currentFunc != "" || c.currentClass != "") && !sym.IsGlobal
 
-			var xtVal string
-			if isScalar {
-				xtVal = valReg
-			} else {
-				xtVal = c.ensureI64(valReg, valType)
+			if !isScalar {
+				c.emit("  call void @xt_retain(i64 %s)", xtVal)
 			}
 
 			// 如果旧变量不是标量类型，需要 release
@@ -510,21 +598,31 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 				c.emit("  call void @xt_release(i64 %s)", oldVal)
 			}
 
-			c.emit("  store i64 %s, i64* %s", xtVal, sym.AddrReg)
+			// 标量变量存储原始值，非标量存储标记值
+			storeVal := xtVal
+			if isScalar {
+				storeVal = valReg
+			}
+			c.emit("  store i64 %s, i64* %s", storeVal, sym.AddrReg)
 			sym.Type = "i64"
 			if isScalar {
 				sym.Type = valType
 			}
 			sym.ClassName = className
 			c.symbolTable[s.Name] = sym
+			// 检测是否被赋值为 xt_arena_new，若是则标记为 Arena 池
+			if c.isArenaCreate(s.Value) {
+				c.arenaPoolRegs[sym.AddrReg] = true
+			}
 		} else {
-			xtVal := c.ensureI64(valReg, valType)
+			c.emit("  call void @xt_retain(i64 %s)", xtVal)
 			addrReg := "@\"" + s.Name + "\""
 			if !c.declaredGlobals[s.Name] {
 				c.globalOutput.WriteString(fmt.Sprintf("%s = global i64 0\n", addrReg))
 				c.declaredGlobals[s.Name] = true
 			}
 			c.emit("  store i64 %s, i64* %s", xtVal, addrReg)
+			c.symbolTable[s.Name] = SymbolInfo{AddrReg: addrReg, Type: "i64", ClassName: className, IsGlobal: true}
 		}
 	case *ast.ComplexAssignStatement:
 		c.compileComplexAssignStatement(s)
@@ -547,21 +645,30 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		c.compileExternalFunctionStatement(s)
 	case *ast.ReturnStatement:
 		valReg, valType, _ := c.compileExpression(s.ReturnValue)
-		retVal := valReg
-		if valType == "i1" {
-			reg := c.nextReg()
-			c.emit("  %s = select i1 %s, i64 4, i64 2", reg, valReg)
-			retVal = reg
-		} else if valType == "raw_i64" {
-			retVal = c.ensureI64(valReg, valType)
-		} else if strings.HasSuffix(valType, "*") || valType == "i8*" || valType == "ptr" {
-			reg := c.nextReg()
-			c.emit("  %s = ptrtoint %s %s to i64", reg, valType, valReg)
-			retVal = reg
+		if c.currentFunc == "" && c.currentClass == "" {
+			// 在 main 函数中，返回 i32
+			raw := c.ensureRawI64(valReg, valType)
+			i32Reg := c.nextReg()
+			c.emit("  %s = trunc i64 %s to i32", i32Reg, raw)
+			c.exitScope(true)
+			c.emit("  ret i32 %s", i32Reg)
+		} else {
+			retVal := valReg
+			if valType == "i1" || valType == "逻" {
+				reg := c.nextReg()
+				c.emit("  %s = select i1 %s, i64 4, i64 2", reg, valReg)
+				retVal = reg
+			} else if valType == "raw_i64" {
+				retVal = c.ensureI64(valReg, valType)
+			} else if strings.HasSuffix(valType, "*") || valType == "i8*" || valType == "ptr" {
+				reg := c.nextReg()
+				c.emit("  %s = ptrtoint %s %s to i64", reg, valType, valReg)
+				retVal = reg
+			}
+			c.emit("  call void @xt_retain(i64 %s)", retVal)
+			c.exitScope(true)
+			c.emit("  ret i64 %s", retVal)
 		}
-		c.emit("  call void @xt_retain(i64 %s)", retVal)
-		c.exitScope(true)
-		c.emit("  ret i64 %s", retVal)
 		deadLabel := c.nextLabel("deadcode")
 		c.emit("%s:", deadLabel)
 	case *ast.MatchStatement:
@@ -764,21 +871,37 @@ func (c *LLVMCompiler) compileFunctionStatement(s *ast.FunctionStatement) {
 	oldScopeStack := c.scopeStack
 	c.scopeStack = [][]string{}
 	funcName := "@\"" + s.Name.Value + "\""
+	// 注册返回类型注解，供调用处按需自动脱壳
+	if s.ReturnType != "" {
+		c.funcReturnTypes[s.Name.Value] = c.mapTypeAnnotation(s.ReturnType)
+	}
 	params := []string{}
 	for _, p := range s.Parameters {
 		params = append(params, "i64 %\""+p.Name.Value+"_arg\"")
 	}
 	c.emit("define i64 %s(%s) {", funcName, strings.Join(params, ", "))
-	c.emit("entry:")
+	c.emit("__ALLOCAS_MARKER__")
 	c.currentLabel = "entry"
 	c.enterScope()
 	for _, p := range s.Parameters {
 		addrReg := "%\"" + p.Name.Value + "\""
 		c.emitAlloca("%s = alloca i64", addrReg)
-		c.emit("  store i64 %%\"%s_arg\", i64* %s", p.Name.Value, addrReg)
-		c.emit("  call void @xt_retain(i64 %%\"%s_arg\")", p.Name.Value)
-		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
-		c.trackObject(addrReg)
+		// 根据类型注解决定参数的类型标记
+		paramType := "i64"
+		if p.DataType != "" {
+			paramType = c.mapTypeAnnotation(p.DataType)
+		}
+		if c.isScalarType(paramType) {
+			// 标量参数：传入值为标记 i64，需先脱壳再存储为 raw_i64
+			unboxed := c.ensureRawI64("%\""+p.Name.Value+"_arg\"", "i64")
+			c.emit("  store i64 %s, i64* %s", unboxed, addrReg)
+			c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: paramType}
+		} else {
+			c.emit("  store i64 %%\"%s_arg\", i64* %s", p.Name.Value, addrReg)
+			c.emit("  call void @xt_retain(i64 %%\"%s_arg\")", p.Name.Value)
+			c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
+			c.trackObject(addrReg)
+		}
 	}
 	for _, stmt := range s.Body {
 		c.compileStatement(stmt)
@@ -788,12 +911,14 @@ func (c *LLVMCompiler) compileFunctionStatement(s *ast.FunctionStatement) {
 	c.emit("}")
 	funcBody := c.output.String()
 	funcAllocas := c.allocaOutput.String()
-	parts := strings.SplitN(funcBody, "entry:\n", 2)
-	if len(parts) == 2 {
-		c.funcOutput.WriteString(parts[0] + "entry:\n" + funcAllocas + parts[1])
-	} else {
-		c.funcOutput.WriteString(funcBody)
-	}
+
+	// 注册函数到符号表，支持前向引用和函数值
+	c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: funcName, IsGlobal: true, Type: "i64"}
+
+	// 拼装函数体：在 marker 处插入 alloca
+	res := strings.Replace(funcBody, "__ALLOCAS_MARKER__\n", "entry:\n"+funcAllocas, 1)
+	c.funcOutput.WriteString(res + "\n")
+
 	c.output = oldOutput
 	c.allocaOutput = oldAllocaOutput
 	c.currentFunc = oldFunc
@@ -834,6 +959,9 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		p := parser.New(l)
 		importProgram := p.ParseProgram()
 		importProgram.FilePath = absPath
+		if e.Alias != nil {
+			c.moduleAliases[e.Alias.Value] = true
+		}
 		oldPath := c.filePath
 		c.filePath = absPath
 		for _, stmt := range importProgram.Statements {
@@ -851,6 +979,9 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		c.emit("  %s = ptrtoint %%XTString* %s to i64", resReg, objReg)
 		return resReg, "i64", ""
 	case *ast.Identifier:
+		if e.Value == "_" {
+			return "0", "i64", ""
+		}
 		if e.Value == "空" {
 			return "0", "i64", ""
 		}
@@ -902,24 +1033,31 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		c.emit("  %s = bitcast i64 (...)* @\"%s\" to i8*", ptrReg, e.Value)
 		c.emit("  %s = ptrtoint i8* %s to i64", reg, ptrReg)
 		return reg, "i64", ""
+	case *ast.PostfixExpression:
+		if e.Operator == "?" {
+			// 目前对 x? 的简单支持：如果它是个 Result 对象，我们可能需要检查它是否成功，
+			// 如果失败直接 return（这是高级语言特性，我们在 LLVM 层简单翻译为取值）
+			// 这里先暂时将 x? 等价于 x.值 或者直接返回 x，为了不引入太多控制流
+			valReg, valType, valClass := c.compileExpression(e.Left)
+			return valReg, valType, valClass
+		}
+		return "0", "i64", ""
 	case *ast.PrefixExpression:
 		rightReg, rightType, _ := c.compileExpression(e.Right)
-		reg := c.nextReg()
-		if e.Operator == "非" {
-			cond := c.nextReg()
-			if rightType == "i64" {
-				c.emit("  %s = icmp ne i64 %s, 2", cond, rightReg)
-			} else {
-				c.emit("  %s = icmp ne %s %s, 0", cond, rightType, rightReg)
-			}
+		if e.Operator == "非" || e.Operator == "!" {
+			lI1 := c.generateBooleanCondition(rightReg, rightType)
 			resI1 := c.nextReg()
-			c.emit("  %s = xor i1 %s, 1", resI1, cond)
-			c.emit("  %s = select i1 %s, i64 4, i64 2", reg, resI1)
-			c.emit("  call void @xt_release(i64 %s)", c.ensureI64(rightReg, rightType))
-			return reg, "i64", ""
+			c.emit("  %s = xor i1 %s, true", resI1, lI1)
+			resReg := c.nextReg()
+			c.emit("  %s = select i1 %s, i64 4, i64 2", resReg, resI1)
+			if !c.isScalarType(rightType) {
+				c.emit("  call void @xt_release(i64 %s)", c.ensureI64(rightReg, rightType))
+			}
+			return resReg, "i64", ""
 		}
 		if e.Operator == "-" {
 			if rightType == "raw_i64" {
+				reg := c.nextReg()
 				c.emit("  %s = sub i64 0, %s", reg, rightReg)
 				return reg, "raw_i64", ""
 			}
@@ -927,6 +1065,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			// 强度削减优化：对于标记指针，-(x>>1<<1|1) 等价于 (2 - x) | 1
 			neg := c.nextReg()
 			c.emit("  %s = sub i64 2, %s", neg, val)
+			reg := c.nextReg()
 			c.emit("  %s = or i64 %s, 1", reg, neg)
 			c.emit("  call void @xt_release(i64 %s)", val)
 			return reg, "i64", ""
@@ -979,16 +1118,30 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			case "字":
 				funcName = "@xt_convert_to_string"
 			default:
-				funcName = "@\"" + ident.Value + "\""
+				if info, ok := c.symbolTable[ident.Value]; ok && info.IsGlobal {
+					funcName = info.AddrReg
+				} else {
+					funcName = "@\"" + ident.Value + "\""
+				}
 			}
 		} else {
 			fReg, _, _ := c.compileExpression(e.Function)
 			funcName = fReg
 		}
 		isBuiltin := false
-		if strings.HasPrefix(funcName, "@\"xt_") || strings.HasPrefix(funcName, "@xt_") {
-			isBuiltin = true
+		declaredRetType := "i64"
+
+		// 检查是否在符号表中有声明
+		if info, ok := c.symbolTable[rawFuncName]; ok && info.IsGlobal {
+			declaredRetType = info.Type
+		} else {
+			// 只有在没有显式声明的情况下，且以 xt_ 开头且不是 xt_to_int，才视为内置 i8* 返回函数
+			if (strings.HasPrefix(funcName, "@\"xt_") || strings.HasPrefix(funcName, "@xt_")) && !strings.Contains(funcName, "xt_to_int") {
+				isBuiltin = true
+				declaredRetType = "i8*"
+			}
 		}
+
 		args := []string{}
 		argRegs := []string{}
 		for _, a := range e.Arguments {
@@ -1033,6 +1186,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		if !strings.HasPrefix(funcName, "@") {
 			funcName = "@" + funcName
 		}
+
 		if strings.HasPrefix(funcName, "@%") {
 			funcName = strings.TrimPrefix(funcName, "@")
 			funcPtrReg := c.nextReg()
@@ -1040,34 +1194,34 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			for i, a := range args {
 				argTypes[i] = strings.Split(a, " ")[0]
 			}
-			c.emit("  %s = inttoptr i64 %s to i64 (%s)*", funcPtrReg, funcName, strings.Join(argTypes, ", "))
-			c.emit("  %s = call i64 %s(%s)", reg, funcPtrReg, strings.Join(args, ", "))
+			c.emit("  %s = inttoptr i64 %s to %s (%s)*", funcPtrReg, funcName, declaredRetType, strings.Join(argTypes, ", "))
+			c.emit("  %s = call %s %s(%s)", reg, declaredRetType, funcPtrReg, strings.Join(args, ", "))
 		} else if strings.HasPrefix(funcName, "%") {
 			funcPtrReg := c.nextReg()
 			argTypes := make([]string, len(args))
 			for i, a := range args {
 				argTypes[i] = strings.Split(a, " ")[0]
 			}
-			c.emit("  %s = inttoptr i64 %s to i64 (%s)*", funcPtrReg, funcName, strings.Join(argTypes, ", "))
-			c.emit("  %s = call i64 %s(%s)", reg, funcPtrReg, strings.Join(args, ", "))
+			c.emit("  %s = inttoptr i64 %s to %s (%s)*", funcPtrReg, funcName, declaredRetType, strings.Join(argTypes, ", "))
+			c.emit("  %s = call %s %s(%s)", reg, declaredRetType, funcPtrReg, strings.Join(args, ", "))
 		} else {
-			if isBuiltin {
-				if strings.Contains(funcName, "xt_to_int") {
-					c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
-				} else {
-					c.emit("  %s = call i8* %s(%s)", reg, funcName, strings.Join(args, ", "))
-				}
-			} else {
+			if strings.Contains(funcName, "xt_to_int") {
 				c.emit("  %s = call i64 %s(%s)", reg, funcName, strings.Join(args, ", "))
+			} else {
+				c.emit("  %s = call %s %s(%s)", reg, declaredRetType, funcName, strings.Join(args, ", "))
 			}
 		}
 		for _, argReg := range argRegs {
 			c.emit("  call void @xt_release(i64 %s)", argReg)
 		}
-		if isBuiltin && !strings.Contains(funcName, "xt_to_int") {
-			return reg, "i8*", ""
+		// 如果函数有返回类型注解（如"整"），自动脱壳为 raw_i64
+		if rawFuncName != "" {
+			if retAnnotation, ok := c.funcReturnTypes[rawFuncName]; ok && retAnnotation == "raw_i64" {
+				rawRes := c.ensureRawI64(reg, "i64")
+				return rawRes, "raw_i64", ""
+			}
 		}
-		return reg, "i64", ""
+		return reg, declaredRetType, ""
 	case *ast.NewExpression:
 		reg := c.nextReg()
 		c.emit("  %s = call i64 @xt_dict_new(i64 16)", reg)
@@ -1200,7 +1354,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		c.emit("  %s = inttoptr i64 %s to %%XTObject*", newReg, leftXt)
 
 		typeIdPtr := c.nextReg()
-		c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, newReg)
+		c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, newReg)
 		typeId := c.nextReg()
 		c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
 		isDict := c.nextReg()
@@ -1237,7 +1391,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		idxUntag := c.nextReg()
 		c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, idxXt)
 		elemPtrPtr := c.nextReg()
-		c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 2", elemPtrPtr, aPtr)
+		c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", elemPtrPtr, aPtr)
 		elemsPtr := c.nextReg()
 		c.emit("  %s = load i8**, i8*** %s", elemsPtr, elemPtrPtr)
 		elemPtr := c.nextReg()
@@ -1320,6 +1474,10 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					res := c.nextReg()
 					c.emit("  %s = call i64 @xt_time_ms()", res)
 					return res, "i64", ""
+				} else if e.Member.Value == "微秒" {
+					res := c.nextReg()
+					c.emit("  %s = call i64 @xt_time_micro()", res)
+					return res, "i64", ""
 				} else if e.Member.Value == "睡" {
 					valReg, valType, _ := c.compileExpression(e.Arguments[0])
 					xtVal := c.ensureI64(valReg, valType)
@@ -1337,6 +1495,23 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					c.emit("  call void @xt_release(i64 %s)", xtVal)
 					return res, "i64", ""
 				}
+			} else if c.moduleAliases[ident.Value] {
+				// It's a module alias, map to global function
+				funcName := "@\"" + e.Member.Value + "\""
+				args := []string{}
+				argRegs := []string{}
+				for _, a := range e.Arguments {
+					valReg, valType, _ := c.compileExpression(a)
+					xtVal := c.ensureI64(valReg, valType)
+					argRegs = append(argRegs, xtVal)
+					args = append(args, "i64 "+xtVal)
+				}
+				callRes := c.nextReg()
+				c.emit("  %s = call i64 %s(%s)", callRes, funcName, strings.Join(args, ", "))
+				for _, r := range argRegs {
+					c.emit("  call void @xt_release(i64 %s)", r)
+				}
+				return callRes, "i64", ""
 			}
 		}
 		objReg, objType, objClass := c.compileExpression(e.Object)
@@ -1358,7 +1533,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			resPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTResult*", resPtr, objXt)
 			isSuccPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 2", isSuccPtr, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 3", isSuccPtr, resPtr)
 			isSucc := c.nextReg()
 			c.emit("  %s = load i32, i32* %s", isSucc, isSuccPtr)
 			cond := c.nextReg()
@@ -1366,8 +1541,8 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			valReg := c.nextReg()
 			errReg := c.nextReg()
 			resReg := c.nextReg()
-			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 4", valReg, resPtr)
-			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 5", errReg, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 5", valReg, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 6", errReg, resPtr)
 			vPtr := c.nextReg()
 			c.emit("  %s = load i8*, i8** %s", vPtr, valReg)
 			ePtr := c.nextReg()
@@ -1382,7 +1557,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			resPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTResult*", resPtr, objXt)
 			isSuccPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 2", isSuccPtr, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 3", isSuccPtr, resPtr)
 			isSucc := c.nextReg()
 			c.emit("  %s = load i32, i32* %s", isSucc, isSuccPtr)
 			cond := c.nextReg()
@@ -1395,7 +1570,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			resPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTResult*", resPtr, objXt)
 			valPtrPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 4", valPtrPtr, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 5", valPtrPtr, resPtr)
 			valPtr := c.nextReg()
 			c.emit("  %s = load i8*, i8** %s", valPtr, valPtrPtr)
 			resI64 := c.nextReg()
@@ -1407,7 +1582,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			resPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTResult*", resPtr, objXt)
 			errPtrPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 5", errPtrPtr, resPtr)
+			c.emit("  %s = getelementptr %%XTResult, %%XTResult* %s, i32 0, i32 6", errPtrPtr, resPtr)
 			errPtr := c.nextReg()
 			c.emit("  %s = load i8*, i8** %s", errPtr, errPtrPtr)
 			resI64 := c.nextReg()
@@ -1419,7 +1594,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			objPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, objXt)
 			typeIdPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
 			typeId := c.nextReg()
 			c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
 
@@ -1437,7 +1612,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			aPtr := c.nextReg()
 			c.emit("  %s = bitcast %%XTObject* %s to %%XTArray*", aPtr, objPtr)
 			alPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", alPtr, aPtr)
+			c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 4", alPtr, aPtr)
 			alVal := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", alVal, alPtr)
 			c.emit("  store i64 %s, i64* %s", c.ensureI64(alVal, "raw_i64"), resAddr)
@@ -1449,7 +1624,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			dPtr := c.nextReg()
 			c.emit("  %s = bitcast %%XTObject* %s to %%XTDict*", dPtr, objPtr)
 			dlPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTDict, %%XTDict* %s, i32 0, i32 3", dlPtr, dPtr)
+			c.emit("  %s = getelementptr %%XTDict, %%XTDict* %s, i32 0, i32 4", dlPtr, dPtr)
 			dlVal := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", dlVal, dlPtr)
 			c.emit("  store i64 %s, i64* %s", c.ensureI64(dlVal, "raw_i64"), resAddr)
@@ -1459,19 +1634,22 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			sPtr := c.nextReg()
 			c.emit("  %s = bitcast %%XTObject* %s to %%XTString*", sPtr, objPtr)
 			slPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 3", slPtr, sPtr)
+			c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 4", slPtr, sPtr)
 			slVal := c.nextReg()
 			c.emit("  %s = load i64, i64* %s", slVal, slPtr)
 			c.emit("  store i64 %s, i64* %s", c.ensureI64(slVal, "raw_i64"), resAddr)
 			c.emit("  br label %%%s", mergeLabel)
-		} else if e.Member.Value == "取字节" {
+		} else if e.Member.Value == "取字节" || e.Member.Value == "字节" {
 			argReg, argType, _ := c.compileExpression(e.Arguments[0])
 			idxXt := c.ensureI64(argReg, argType)
 			idxUntag := c.nextReg()
 			c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, idxXt)
 			resI64 := c.nextReg()
 			c.emit("  %s = call i64 @xt_string_get_byte(i64 %s, i64 %s)", resI64, objXt, idxUntag)
-			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
+			// ↓ 把 tagged 返回值 untag 成 raw_i64
+			resRaw := c.nextReg()
+			c.emit("  %s = ashr i64 %s, 1", resRaw, resI64)
+			c.emit("  store i64 %s, i64* %s", resRaw, resAddr) // 改成 store resRaw
 			c.emit("  call void @xt_release(i64 %s)", idxXt)
 			c.emit("  br label %%%s", mergeLabel)
 		} else if e.Member.Value == "字节数" {
@@ -1524,7 +1702,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			objPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, objXt)
 			typeIdPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
 			typeId := c.nextReg()
 			c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
 			isStr := c.nextReg()
@@ -1671,7 +1849,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				fPtrObj := c.nextReg()
 				c.emit("  %s = inttoptr i64 %s to %%XTFunction*", fPtrObj, dynRes)
 				fRawPtrPtr := c.nextReg()
-				c.emit("  %s = getelementptr %%XTFunction, %%XTFunction* %s, i32 0, i32 2", fRawPtrPtr, fPtrObj)
+				c.emit("  %s = getelementptr %%XTFunction, %%XTFunction* %s, i32 0, i32 3", fRawPtrPtr, fPtrObj)
 				fRawPtr := c.nextReg()
 				c.emit("  %s = load i8*, i8** %s", fRawPtr, fRawPtrPtr)
 				args := []string{"i64 " + objXt}
@@ -1699,7 +1877,6 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				c.emit("  br label %%%s", mergeLabel)
 			} else {
 				c.emit("  store i64 %s, i64* %s", dynRes, resAddr)
-				c.emit("  call void @xt_release(i64 %s)", dynRes)
 				c.emit("  call void @xt_release(i64 %s)", keyXt)
 				c.emit("  br label %%%s", mergeLabel)
 			}
@@ -1812,7 +1989,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			objPtr := c.nextReg()
 			c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, lXt)
 			typeIdPtr := c.nextReg()
-			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
 			typeIdPtrVal := c.nextReg()
 			c.emit("  %s = load i32, i32* %s", typeIdPtrVal, typeIdPtr)
 			typeIdPtrValI64 := c.nextReg()
@@ -1836,164 +2013,187 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 
 		isArithmeticOrCompare := false
 		switch e.Operator {
-		case "+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=":
+		case "+", "-", "*", "/", "%", "==", "!=", "<", ">", "<=", ">=", "加", "减", "乘", "除", "取模", "相等", "不等", "小于", "大于", "小于等于", "大于等于", "位与", "位或", "异或", "左移", "右移":
 			isArithmeticOrCompare = true
 		}
 		if isArithmeticOrCompare {
-			// P1: 整数算术快速路径 (避免脱壳/装壳和 ARC)
-			if leftType == "raw_i64" && rightType == "raw_i64" {
-				switch e.Operator {
-				case "+", "-", "*", "/", "%":
-					var op string
-					switch e.Operator {
-					case "+":
-						op = "add"
-					case "-":
-						op = "sub"
-					case "*":
-						op = "mul"
-					case "/":
-						op = "sdiv"
-					case "%":
-						op = "srem"
-					}
-					res := c.nextReg()
-					c.emit("  %s = %s i64 %s, %s", res, op, leftReg, rightReg)
-					return res, "raw_i64", ""
-				case "==", "!=", "<", ">", "<=", ">=":
-					var cond string
-					switch e.Operator {
-					case "==", "是":
-						cond = "eq"
-					case "!=":
-						cond = "ne"
-					case "<":
-						cond = "slt"
-					case ">":
-						cond = "sgt"
-					case "<=":
-						cond = "sle"
-					case ">=":
-						cond = "sge"
-					}
-					resI1 := c.nextReg()
-					c.emit("  %s = icmp %s i64 %s, %s", resI1, cond, leftReg, rightReg)
-					res := c.nextReg()
-					c.emit("  %s = select i1 %s, i64 4, i64 2", res, resI1)
-					return res, "i64", ""
-				}
-			}
+			// P1: 整数算术快速路径
+			// 只有双方都是标量类型时，才直接使用 icmp/fcmp
+			if c.isScalarType(leftType) && c.isScalarType(rightType) {
+				lRaw := c.ensureRawI64(leftReg, leftType)
+				rRaw := c.ensureRawI64(rightReg, rightType)
+				op := c.mapOperator(e.Operator)
 
-			magicMethod := ""
-			switch e.Operator {
-			case "+":
-				magicMethod = "_加_"
-			case "-":
-				magicMethod = "_减_"
-			case "*":
-				magicMethod = "_乘_"
-			case "/":
-				magicMethod = "_除_"
-			case "%":
-				magicMethod = "_模_"
-			case "==":
-				magicMethod = "_等_"
-			case "是":
-				magicMethod = "_是_"
-			}
-			if magicMethod != "" {
-				keyAlias := c.addString(magicMethod)
-				keyRaw := c.nextReg()
-				c.emit("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, i64 0, i64 0", keyRaw, len(magicMethod)+1, len(magicMethod)+1, keyAlias)
-				keyObj := c.nextReg()
-				c.emit("  %s = call %%XTString* @xt_string_new(i8* %s)", keyObj, keyRaw)
-				keyXt := c.nextReg()
-				c.emit("  %s = ptrtoint %%XTString* %s to i64", keyXt, keyObj)
-				objXt := c.ensureI64(leftReg, leftType)
-				funcObj := c.nextReg()
-				c.emit("  %s = call i64 @xt_dict_get(i64 %s, i64 %s)", funcObj, objXt, keyXt)
-				isFunc := c.nextReg()
-				c.emit("  %s = icmp ne i64 %s, 0", isFunc, funcObj)
-				overloadLabel := c.nextLabel("op.overload")
-				fallbackLabel := c.nextLabel("op.fallback")
-				mergeLabel := c.nextLabel("op.merge")
-				resAddr := c.nextReg()
-				c.emitAlloca("%s = alloca i64", resAddr)
-				c.emit("  br i1 %s, label %%%s, label %%%s", isFunc, overloadLabel, fallbackLabel)
-				c.emit("%s:", overloadLabel)
-				fPtrObj := c.nextReg()
-				c.emit("  %s = inttoptr i64 %s to %%XTFunction*", fPtrObj, funcObj)
-				fRawPtrPtr := c.nextReg()
-				c.emit("  %s = getelementptr %%XTFunction, %%XTFunction* %s, i32 0, i32 2", fRawPtrPtr, fPtrObj)
-				fRawPtr := c.nextReg()
-				c.emit("  %s = load i8*, i8** %s", fRawPtr, fRawPtrPtr)
-				fTyped := c.nextReg()
-				c.emit("  %s = bitcast i8* %s to i64 (i64, i64)*", fTyped, fRawPtr)
-				rightXt := c.ensureI64(rightReg, rightType)
-				ovRes := c.nextReg()
-				c.emit("  %s = call i64 %s(i64 %s, i64 %s)", ovRes, fTyped, objXt, rightXt)
-				c.emit("  store i64 %s, i64* %s", ovRes, resAddr)
-				c.emit("  br label %%%s", mergeLabel)
-				c.emit("%s:", fallbackLabel)
-
-				// Fallback to built-in logic
-				var fbRes string
-				if e.Operator == "==" || e.Operator == "!=" || e.Operator == "是" {
-					fbCond := c.nextReg()
-					if leftType == "raw_i64" && rightType == "raw_i64" {
-						if e.Operator == "==" || e.Operator == "是" {
-							c.emit("  %s = icmp eq i64 %s, %s", fbCond, leftReg, rightReg)
-						} else {
-							c.emit("  %s = icmp ne i64 %s, %s", fbCond, leftReg, rightReg)
-						}
+				if op != "" {
+					if strings.HasPrefix(op, "icmp") || strings.HasPrefix(op, "fcmp") {
+						resI1 := c.nextReg()
+						c.emit("  %s = %s i64 %s, %s", resI1, op, lRaw, rRaw)
+						res := c.nextReg()
+						c.emit("  %s = select i1 %s, i64 4, i64 2", res, resI1)
+						return res, "i64", ""
 					} else {
-						lXt := c.ensureI64(leftReg, leftType)
-						rXt := c.ensureI64(rightReg, rightType)
-						cmpRes := c.nextReg()
-						c.emit("  %s = call i32 @xt_compare(i64 %s, i64 %s)", cmpRes, lXt, rXt)
-						if e.Operator == "==" || e.Operator == "是" {
-							c.emit("  %s = icmp eq i32 %s, 0", fbCond, cmpRes)
-						} else {
-							c.emit("  %s = icmp ne i32 %s, 0", fbCond, cmpRes)
-						}
+						res := c.nextReg()
+						c.emit("  %s = %s i64 %s, %s", res, op, lRaw, rRaw)
+						return res, "raw_i64", ""
 					}
-					fbRes = c.nextReg()
-					c.emit("  %s = select i1 %s, i64 4, i64 2", fbRes, fbCond)
-				} else {
-					// Arithmetic operators
-					lRaw := c.ensureRawI64(leftReg, leftType)
-					rRaw := c.ensureRawI64(rightReg, rightType)
-					var op string
-					switch e.Operator {
-					case "+":
-						op = "add"
-					case "-":
-						op = "sub"
-					case "*":
-						op = "mul"
-					case "/":
-						op = "sdiv"
-					case "%":
-						op = "srem"
-					}
-					fbRaw := c.nextReg()
-					c.emit("  %s = %s i64 %s, %s", fbRaw, op, lRaw, rRaw)
-					fbRes = c.ensureI64(fbRaw, "raw_i64")
 				}
-				c.emit("  store i64 %s, i64* %s", fbRes, resAddr)
-				c.emit("  br label %%%s", mergeLabel)
+			}
 
-				c.emit("%s:", mergeLabel)
-				finalRes := c.nextReg()
-				c.emit("  %s = load i64, i64* %s", finalRes, resAddr)
-				c.emit("  call void @xt_release(i64 %s)", keyXt)
+			// P2: 内置类型（如字符串）比较路径
+			if e.Operator == "==" || e.Operator == "!=" || e.Operator == "相等" || e.Operator == "不等" || e.Operator == "<" || e.Operator == ">" || e.Operator == "<=" || e.Operator == ">=" || e.Operator == "小于" || e.Operator == "大于" || e.Operator == "小于等于" || e.Operator == "大于等于" {
+				lXt := c.ensureI64(leftReg, leftType)
+				rXt := c.ensureI64(rightReg, rightType)
+				cmpRes := c.nextReg()
+				c.emit("  %s = call i32 @xt_compare(i64 %s, i64 %s)", cmpRes, lXt, rXt)
+				op := c.mapOperator(e.Operator)
+				pred := strings.TrimPrefix(op, "icmp ")
+				cond := c.nextReg()
+				c.emit("  %s = icmp %s i32 %s, 0", cond, pred, cmpRes)
+				res := c.nextReg()
+				c.emit("  %s = select i1 %s, i64 4, i64 2", res, cond)
 				if !c.isScalarType(leftType) {
-					c.emit("  call void @xt_release(i64 %s)", objXt)
+					c.emit("  call void @xt_release(i64 %s)", lXt)
 				}
-				return finalRes, "i64", ""
+				if !c.isScalarType(rightType) {
+					c.emit("  call void @xt_release(i64 %s)", rXt)
+				}
+				return res, "i64", ""
+			}
+
+			// P3: 通用算术/位运算 (Fallback to runtime)
+			lXt := c.ensureI64(leftReg, leftType)
+			rXt := c.ensureI64(rightReg, rightType)
+			rtFunc := ""
+			switch e.Operator {
+			case "+", "加":
+				rtFunc = "xt_add"
+			case "-", "减":
+				rtFunc = "xt_sub"
+			case "*", "乘":
+				rtFunc = "xt_mul"
+			case "/", "除":
+				rtFunc = "xt_div"
+			case "%", "取模":
+				rtFunc = "xt_mod"
+			case "位与":
+				rtFunc = "xt_bit_and"
+			case "位或":
+				rtFunc = "xt_bit_or"
+			case "异或":
+				rtFunc = "xt_bit_xor"
+			case "左移":
+				rtFunc = "xt_bit_shl"
+			case "右移":
+				rtFunc = "xt_bit_shr"
+			}
+
+			if rtFunc != "" {
+				res := c.nextReg()
+				c.emit("  %s = call i64 @%s(i64 %s, i64 %s)", res, rtFunc, lXt, rXt)
+				if !c.isScalarType(leftType) {
+					c.emit("  call void @xt_release(i64 %s)", lXt)
+				}
+				if !c.isScalarType(rightType) {
+					c.emit("  call void @xt_release(i64 %s)", rXt)
+				}
+				return res, "i64", ""
 			}
 		}
-		if e.Operator == "&" {
+
+		magicMethod := ""
+		switch e.Operator {
+		case "+", "加":
+			magicMethod = "_加_"
+		case "-", "减":
+			magicMethod = "_减_"
+		case "*", "乘":
+			magicMethod = "_乘_"
+		case "/", "除":
+			magicMethod = "_除_"
+		case "%", "取模":
+			magicMethod = "_模_"
+		case "==", "相等":
+			magicMethod = "_等_"
+		case "是":
+			magicMethod = "_是_"
+		}
+		if magicMethod != "" {
+			keyAlias := c.addString(magicMethod)
+			keyRaw := c.nextReg()
+			c.emit("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, i64 0, i64 0", keyRaw, len(magicMethod)+1, len(magicMethod)+1, keyAlias)
+			keyObj := c.nextReg()
+			c.emit("  %s = call %%XTString* @xt_string_new(i8* %s)", keyObj, keyRaw)
+			keyXt := c.nextReg()
+			c.emit("  %s = ptrtoint %%XTString* %s to i64", keyXt, keyObj)
+			objXt := c.ensureI64(leftReg, leftType)
+			funcObj := c.nextReg()
+			c.emit("  %s = call i64 @xt_dict_get(i64 %s, i64 %s)", funcObj, objXt, keyXt)
+			isFunc := c.nextReg()
+			c.emit("  %s = icmp ne i64 %s, 0", isFunc, funcObj)
+			overloadLabel := c.nextLabel("op.overload")
+			fallbackLabel := c.nextLabel("op.fallback")
+			mergeLabel := c.nextLabel("op.merge")
+			resAddr := c.nextReg()
+			c.emitAlloca("%s = alloca i64", resAddr)
+			c.emit("  br i1 %s, label %%%s, label %%%s", isFunc, overloadLabel, fallbackLabel)
+			c.emit("%s:", overloadLabel)
+			fPtrObj := c.nextReg()
+			c.emit("  %s = inttoptr i64 %s to %%XTFunction*", fPtrObj, funcObj)
+			fRawPtrPtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTFunction, %%XTFunction* %s, i32 0, i32 3", fRawPtrPtr, fPtrObj)
+			fRawPtr := c.nextReg()
+			c.emit("  %s = load i8*, i8** %s", fRawPtr, fRawPtrPtr)
+			fTyped := c.nextReg()
+			c.emit("  %s = bitcast i8* %s to i64 (i64, i64)*", fTyped, fRawPtr)
+			rightXt := c.ensureI64(rightReg, rightType)
+			ovRes := c.nextReg()
+			c.emit("  %s = call i64 %s(i64 %s, i64 %s)", ovRes, fTyped, objXt, rightXt)
+			c.emit("  store i64 %s, i64* %s", ovRes, resAddr)
+			c.emit("  br label %%%s", mergeLabel)
+			c.emit("%s:", fallbackLabel)
+
+			// Fallback to built-in logic
+			var fbRes string
+			if e.Operator == "==" || e.Operator == "!=" || e.Operator == "是" || e.Operator == "相等" || e.Operator == "不等" {
+				fbCond := c.nextReg()
+				if leftType == "raw_i64" && rightType == "raw_i64" {
+					op := c.mapOperator(e.Operator)
+					c.emit("  %s = %s i64 %s, %s", fbCond, op, leftReg, rightReg)
+				} else {
+					lXt := c.ensureI64(leftReg, leftType)
+					rXt := c.ensureI64(rightReg, rightType)
+					cmpRes := c.nextReg()
+					c.emit("  %s = call i32 @xt_compare(i64 %s, i64 %s)", cmpRes, lXt, rXt)
+					op := c.mapOperator(e.Operator)
+					// 去掉 icmp 前缀，因为 emit 中已经有了
+					pred := strings.TrimPrefix(op, "icmp ")
+					c.emit("  %s = icmp %s i32 %s, 0", fbCond, pred, cmpRes)
+				}
+				fbRes = c.nextReg()
+				c.emit("  %s = select i1 %s, i64 4, i64 2", fbRes, fbCond)
+			} else {
+				// Arithmetic operators
+				lRaw := c.ensureRawI64(leftReg, leftType)
+				rRaw := c.ensureRawI64(rightReg, rightType)
+				op := c.mapOperator(e.Operator)
+				fbRaw := c.nextReg()
+				c.emit("  %s = %s i64 %s, %s", fbRaw, op, lRaw, rRaw)
+				fbRes = c.ensureI64(fbRaw, "raw_i64")
+			}
+			c.emit("  store i64 %s, i64* %s", fbRes, resAddr)
+			c.emit("  br label %%%s", mergeLabel)
+
+			c.emit("%s:", mergeLabel)
+			finalRes := c.nextReg()
+			c.emit("  %s = load i64, i64* %s", finalRes, resAddr)
+			c.emit("  call void @xt_release(i64 %s)", keyXt)
+			if !c.isScalarType(leftType) {
+				c.emit("  call void @xt_release(i64 %s)", objXt)
+			}
+			return finalRes, "i64", ""
+		}
+
+		if e.Operator == "&" || e.Operator == "连接" {
 			lXt := c.ensureI64(leftReg, leftType)
 			rXt := c.ensureI64(rightReg, rightType)
 			lStr := c.nextReg()
@@ -2018,21 +2218,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = ptrtoint %%XTString* %s to i64", resI64, res)
 			return resI64, "i64", ""
 		}
-		leftRaw := c.ensureRawI64(leftReg, leftType)
-		rightRaw := c.ensureRawI64(rightReg, rightType)
-		var op string
-		switch e.Operator {
-		case "+":
-			op = "add"
-		case "-":
-			op = "sub"
-		case "*":
-			op = "mul"
-		case "/":
-			op = "sdiv"
-		case "%":
-			op = "srem"
-		case "..":
+		if e.Operator == ".." || e.Operator == "范围" {
 			lXt := c.ensureI64(leftReg, leftType)
 			rXt := c.ensureI64(rightReg, rightType)
 			res := c.nextReg()
@@ -2045,90 +2231,54 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			}
 			return res, "i64", ""
 		}
-		if op != "" {
-			reg := c.nextReg()
-			c.emit("  %s = %s i64 %s, %s", reg, op, leftRaw, rightRaw)
-			if !c.isScalarType(leftType) {
-				c.emit("  call void @xt_release(i64 %s)", c.ensureI64(leftReg, leftType))
-			}
-			if !c.isScalarType(rightType) {
-				c.emit("  call void @xt_release(i64 %s)", c.ensureI64(rightReg, rightType))
-			}
-			return reg, "raw_i64", ""
-		}
-		cond := c.nextReg()
-		switch e.Operator {
-		case "==", "!=":
-			if leftType == "raw_i64" && rightType == "raw_i64" {
-				if e.Operator == "==" {
-					c.emit("  %s = icmp eq i64 %s, %s", cond, leftReg, rightReg)
-				} else {
-					c.emit("  %s = icmp ne i64 %s, %s", cond, leftReg, rightReg)
-				}
-			} else {
-				lXt := c.ensureI64(leftReg, leftType)
-				rXt := c.ensureI64(rightReg, rightType)
-				cmpRes := c.nextReg()
-				c.emit("  %s = call i32 @xt_compare(i64 %s, i64 %s)", cmpRes, lXt, rXt)
-				if e.Operator == "==" {
-					c.emit("  %s = icmp eq i32 %s, 0", cond, cmpRes)
-				} else {
-					c.emit("  %s = icmp ne i32 %s, 0", cond, cmpRes)
-				}
-			}
-		case "<", ">", "<=", ">=":
-			if leftType == "raw_i64" && rightType == "raw_i64" {
-				var cmpOp string
-				switch e.Operator {
-				case "<":
-					cmpOp = "slt"
-				case ">":
-					cmpOp = "sgt"
-				case "<=":
-					cmpOp = "sle"
-				case ">=":
-					cmpOp = "sge"
-				}
-				c.emit("  %s = icmp %s i64 %s, %s", cond, cmpOp, leftReg, rightReg)
-			} else {
-				lXt := c.ensureI64(leftReg, leftType)
-				rXt := c.ensureI64(rightReg, rightType)
-				cmpRes := c.nextReg()
-				c.emit("  %s = call i32 @xt_compare(i64 %s, i64 %s)", cmpRes, lXt, rXt)
-				var cmpOp string
-				switch e.Operator {
-				case "<":
-					cmpOp = "slt"
-				case ">":
-					cmpOp = "sgt"
-				case "<=":
-					cmpOp = "sle"
-				case ">=":
-					cmpOp = "sge"
-				}
-				c.emit("  %s = icmp %s i32 %s, 0", cond, cmpOp, cmpRes)
-			}
-		}
-		reg := c.nextReg()
-		c.emit("  %s = select i1 %s, i64 4, i64 2", reg, cond)
-		if !c.isScalarType(leftType) {
-			c.emit("  call void @xt_release(i64 %s)", c.ensureI64(leftReg, leftType))
-		}
-		if !c.isScalarType(rightType) {
-			c.emit("  call void @xt_release(i64 %s)", c.ensureI64(rightReg, rightType))
-		}
-		return reg, "i64", ""
+
+		return "0", "i64", ""
 	}
 	return "0", "i64", ""
 }
 
+func (c *LLVMCompiler) mapOperator(op string) string {
+	switch op {
+	case "+", "加":
+		return "add"
+	case "-", "减":
+		return "sub"
+	case "*", "乘":
+		return "mul"
+	case "/", "除":
+		return "sdiv"
+	case "%", "取模":
+		return "srem"
+	case "==", "相等", "是":
+		return "icmp eq"
+	case "!=", "不等":
+		return "icmp ne"
+	case "<", "小于":
+		return "icmp slt"
+	case ">", "大于":
+		return "icmp sgt"
+	case "<=", "小于等于":
+		return "icmp sle"
+	case ">=", "大于等于":
+		return "icmp sge"
+	case "位与":
+		return "and"
+	case "位或":
+		return "or"
+	case "异或":
+		return "xor"
+	case "左移":
+		return "shl"
+	case "右移":
+		return "ashr"
+	default:
+		return ""
+	}
+}
+
 func (c *LLVMCompiler) compileLogicalAnd(e *ast.InfixExpression) (string, string, string) {
 	leftReg, leftType, _ := c.compileExpression(e.Left)
-	lI1 := leftReg
-	if leftType == "i64" {
-		lI1 = c.nextReg()
-		c.emit("  %s = icmp eq i64 %s, 4", lI1, leftReg)
-	}
+	lI1 := c.generateBooleanCondition(leftReg, leftType)
 	rhsLabel := c.nextLabel("and.rhs")
 	falseLabel := c.nextLabel("and.false")
 	endLabel := c.nextLabel("and.end")
@@ -2143,11 +2293,7 @@ func (c *LLVMCompiler) compileLogicalAnd(e *ast.InfixExpression) (string, string
 		c.emit("  call void @xt_release(i64 %s)", c.ensureI64(leftReg, leftType))
 	}
 	rightReg, rightType, _ := c.compileExpression(e.Right)
-	rI1 := rightReg
-	if rightType == "i64" {
-		rI1 = c.nextReg()
-		c.emit("  %s = icmp eq i64 %s, 4", rI1, rightReg)
-	}
+	rI1 := c.generateBooleanCondition(rightReg, rightType)
 	rhsBlock := c.currentLabel
 	if !c.isScalarType(rightType) {
 		c.emit("  call void @xt_release(i64 %s)", c.ensureI64(rightReg, rightType))
@@ -2163,11 +2309,7 @@ func (c *LLVMCompiler) compileLogicalAnd(e *ast.InfixExpression) (string, string
 
 func (c *LLVMCompiler) compileLogicalOr(e *ast.InfixExpression) (string, string, string) {
 	leftReg, leftType, _ := c.compileExpression(e.Left)
-	lI1 := leftReg
-	if leftType == "i64" {
-		lI1 = c.nextReg()
-		c.emit("  %s = icmp eq i64 %s, 4", lI1, leftReg)
-	}
+	lI1 := c.generateBooleanCondition(leftReg, leftType)
 	rhsLabel := c.nextLabel("or.rhs")
 	trueLabel := c.nextLabel("or.true")
 	endLabel := c.nextLabel("or.end")
@@ -2182,11 +2324,7 @@ func (c *LLVMCompiler) compileLogicalOr(e *ast.InfixExpression) (string, string,
 		c.emit("  call void @xt_release(i64 %s)", c.ensureI64(leftReg, leftType))
 	}
 	rightReg, rightType, _ := c.compileExpression(e.Right)
-	rI1 := rightReg
-	if rightType == "i64" {
-		rI1 = c.nextReg()
-		c.emit("  %s = icmp eq i64 %s, 4", rI1, rightReg)
-	}
+	rI1 := c.generateBooleanCondition(rightReg, rightType)
 	rhsBlock := c.currentLabel
 	if !c.isScalarType(rightType) {
 		c.emit("  call void @xt_release(i64 %s)", c.ensureI64(rightReg, rightType))
@@ -2198,6 +2336,30 @@ func (c *LLVMCompiler) compileLogicalOr(e *ast.InfixExpression) (string, string,
 	reg := c.nextReg()
 	c.emit("  %s = select i1 %s, i64 4, i64 2", reg, resReg)
 	return reg, "i64", ""
+}
+
+func (c *LLVMCompiler) generateBooleanCondition(reg string, typ string) string {
+	if typ == "i1" {
+		return reg
+	}
+	if typ == "i64" || typ == "整" || typ == "逻" || typ == "bool" {
+		// 只要不是 假(2) 且不是 空(0)，就视为真
+		isNotFalse := c.nextReg()
+		c.emit("  %s = icmp ne i64 %s, 2", isNotFalse, reg)
+		isNotNull := c.nextReg()
+		c.emit("  %s = icmp ne i64 %s, 0", isNotNull, reg)
+		resI1 := c.nextReg()
+		c.emit("  %s = and i1 %s, %s", resI1, isNotFalse, isNotNull)
+		return resI1
+	}
+	if typ == "raw_i64" {
+		res := c.nextReg()
+		c.emit("  %s = icmp ne i64 %s, 0", res, reg)
+		return res
+	}
+	// Default: convert to i64 and compare
+	vI64 := c.ensureI64(reg, typ)
+	return c.generateBooleanCondition(vI64, "i64")
 }
 
 func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
@@ -2218,7 +2380,7 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 					objPtr := c.nextReg()
 					c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, vI64)
 					typeIdPtr := c.nextReg()
-					c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+					c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
 					typeId := c.nextReg()
 					c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
 					isResult := c.nextReg()
@@ -2290,7 +2452,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	objPtr := c.nextReg()
 	c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, iI64)
 	typeIdPtr := c.nextReg()
-	c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+	c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
 	typeId := c.nextReg()
 	c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
 	isDict := c.nextReg()
@@ -2315,7 +2477,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	actualObjPtr := c.nextReg()
 	c.emit("  %s = inttoptr i64 %s to %%XTObject*", actualObjPtr, actualIterI64)
 	actualTypeIdPtr := c.nextReg()
-	c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", actualTypeIdPtr, actualObjPtr)
+	c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", actualTypeIdPtr, actualObjPtr)
 	actualTypeId := c.nextReg()
 	c.emit("  %s = load i32, i32* %s", actualTypeId, actualTypeIdPtr)
 	for _, v := range s.Variables {
@@ -2345,7 +2507,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	aPtrLen := c.nextReg()
 	c.emit("  %s = bitcast %%XTObject* %s to %%XTArray*", aPtrLen, actualObjPtr)
 	lenPtrArr := c.nextReg()
-	c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", lenPtrArr, aPtrLen)
+	c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 4", lenPtrArr, aPtrLen)
 	lenValArrRaw := c.nextReg()
 	c.emit("  %s = load i64, i64* %s", lenValArrRaw, lenPtrArr)
 	c.emit("  br label %%%s", lenMergeLabel)
@@ -2353,7 +2515,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	sPtrLen := c.nextReg()
 	c.emit("  %s = bitcast %%XTObject* %s to %%XTString*", sPtrLen, actualObjPtr)
 	lenPtrStr := c.nextReg()
-	c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 3", lenPtrStr, sPtrLen)
+	c.emit("  %s = getelementptr %%XTString, %%XTString* %s, i32 0, i32 4", lenPtrStr, sPtrLen)
 	lenValStrRaw := c.nextReg()
 	c.emit("  %s = load i64, i64* %s", lenValStrRaw, lenPtrStr)
 	c.emit("  br label %%%s", lenMergeLabel)
@@ -2373,7 +2535,7 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	aPtrElem := c.nextReg()
 	c.emit("  %s = bitcast %%XTObject* %s to %%XTArray*", aPtrElem, actualObjPtr)
 	elemPtrPtr := c.nextReg()
-	c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 2", elemPtrPtr, aPtrElem)
+	c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", elemPtrPtr, aPtrElem)
 	elemsPtr := c.nextReg()
 	c.emit("  %s = load i8**, i8*** %s", elemsPtr, elemPtrPtr)
 	elemPtr := c.nextReg()
@@ -2476,7 +2638,7 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 			c.emit("  %s = bitcast %s %s to %%XTObject*", objPtr, leftType, leftReg)
 		}
 		typeIdPtr := c.nextReg()
-		c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 1", typeIdPtr, objPtr)
+		c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
 		typeId := c.nextReg()
 		c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
 		isDict := c.nextReg()
@@ -2497,7 +2659,7 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		idxUntag := c.nextReg()
 		c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, c.ensureI64(idxReg, idxType))
 		elemPtrPtr := c.nextReg()
-		c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 2", elemPtrPtr, aPtr)
+		c.emit("  %s = getelementptr %%XTArray, %%XTArray* %s, i32 0, i32 3", elemPtrPtr, aPtr)
 		elemsPtr := c.nextReg()
 		c.emit("  %s = load i8**, i8*** %s", elemsPtr, elemPtrPtr)
 		elemPtr := c.nextReg()
@@ -2549,7 +2711,9 @@ func (c *LLVMCompiler) compileExternalFunctionStatement(s *ast.ExternalFunctionS
 	}
 	paramStr := strings.Join(params, ", ")
 
-	c.globalOutput.WriteString(fmt.Sprintf("declare %s @\"%s\"(%s)\n", retType, s.Name.Value, paramStr))
+	addrReg := "@\"" + s.Name.Value + "\""
+	c.globalOutput.WriteString(fmt.Sprintf("declare %s %s(%s)\n", retType, addrReg, paramStr))
+	c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, IsGlobal: true, Type: retType}
 }
 
 func (c *LLVMCompiler) compileTypeDefinitionStatement(s *ast.TypeDefinitionStatement) {

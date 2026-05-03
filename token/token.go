@@ -38,6 +38,7 @@ const (
 	TOKEN_RANGE     TokenType = ".."
 	TOKEN_PIPE      TokenType = "|"
 	TOKEN_QUESTION  TokenType = "?"
+	TOKEN_DOLLAR    TokenType = "$"
 	TOKEN_ARROW     TokenType = "->"
 
 	TOKEN_PRINT     TokenType = "示"
