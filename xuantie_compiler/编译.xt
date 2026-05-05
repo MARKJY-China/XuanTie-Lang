@@ -23,6 +23,7 @@
     设 当前型名称 // 用于访问控制检查
     设 变量类型表 // 用于跟踪变量类型
     设 函数返回类型表 // 函数名 → 内部返回类型（"raw_i64"/"double"/"i1"），调用处自动脱壳
+    设 arena池变量 // 集合，记录哪些 alloca 寄存器是 Arena 池，出作用域时最后释放
     设 已访引入 // 用于防止重复引入
     设 已定义全局 // 用于多趟编译中的定义追踪
     设 程序缓存 // 用于多趟编译共享 AST
@@ -47,6 +48,7 @@
         此.符号表 = {}
         此.变量类型表 = {}
         此.函数返回类型表 = {}
+        此.arena池变量 = {}
         此.已访引入 = {}
         此.已定义全局 = {}
         此.程序缓存 = {}
@@ -184,17 +186,17 @@
 
     // 将任何值转为安全的 IR 符号串，防止“空”字污染
     函 符(值) {
-        若 值 == 空 { 返 "%NULL_SYMBOL_ERR" }
+        若 值 == 空 { 示("致命: 符() 收到空值，编译器内部状态异常"); 终 1 }
         设 s = "" & 值
-        若 s == "空" { 返 "%NULL_STR_ERR" }
+        若 s == "空" { 示("致命: 符() 收到字符串\"空\"，疑似空对象被序列化"); 终 1 }
         返 s
     }
 
     // 将任何值转为安全的 IR 标签串
     函 标(值) {
-        若 值 == 空 { 返 "NULL_LABEL_ERR" }
+        若 值 == 空 { 示("致命: 标() 收到空值，编译器内部状态异常"); 终 1 }
         设 s = "" & 值
-        若 s == "空" { 返 "NULL_LABEL_STR_ERR" }
+        若 s == "空" { 示("致命: 标() 收到字符串\"空\"，疑似空对象被序列化"); 终 1 }
         返 s
     }
 
@@ -288,10 +290,18 @@
     }
 
     函 预扫描引入(节点, 基础前缀, 父文件路径) {
-        设 实际路径 = 此.解析完整路径(父文件路径, 节点.路径)
+        设 实际路径 = 节点.路径
+        // 若路径尚未解析（不含目录分隔符），则拼接为完整路径；已解析过的跳过，防止自引用二次拼接
+        若 非 节点.路径.包含?("\\") 且 非 节点.路径.包含?("/") {
+            实际路径 = 此.解析完整路径(父文件路径, 节点.路径)
+            节点.路径 = 实际路径
+        }
         
-        // 更新节点路径为完整路径，方便后续阶段使用
-        节点.路径 = 实际路径
+        // 防止自引用：若引入路径与当前文件相同，跳过
+        若 实际路径 == 父文件路径 {
+            示("编译错误: 检测到自引用 -> 文件 '" & 实际路径 & "' 试图引用自身，这没有意义。请移除该引用语句。")
+            终 1
+        }
         
         设 程序 = 空
         若 此.程序缓存.含?(实际路径) {
@@ -362,6 +372,8 @@
     函 语义分析引入(节点) {
         设 路径 = 节点.路径
         若 此.已访语义.含?(路径) { 返 空 }
+        // 防止自引用
+        若 路径 == 此.主文件路径 { 返 空 }
         此.已访语义[路径] = 真
         
         若 此.程序缓存.含?(路径) {
@@ -458,12 +470,12 @@
         此.写出("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"")
         此.写出("target triple = \"x86_64-w64-windows-gnu\"")
         此.写出("")
-        此.写出("%XTObject = type { i32, i32 }")
-        此.写出("%XTString = type { i32, i32, i8*, i64, i32 }")
-        此.写出("%XTArray = type { i32, i32, i8**, i64, i64 }")
-        此.写出("%XTDict = type { i32, i32, i8***, i64, i64 }")
-        此.写出("%XTFunction = type { i32, i32, i8* }")
-        此.写出("%XTResult = type { i32, i32, i32, i32, i64, i64 }")
+        此.写出("%XTObject = type { i32, i32, i32 }")
+        此.写出("%XTString = type { i32, i32, i32, i8*, i64, i32 }")
+        此.写出("%XTArray = type { i32, i32, i32, i8**, i64, i64 }")
+        此.写出("%XTDict = type { i32, i32, i32, i8***, i64, i64 }")
+        此.写出("%XTFunction = type { i32, i32, i32, i8* }")
+        此.写出("%XTResult = type { i32, i32, i32, i32, i32, i64, i64 }")
         此.写出("declare void @\"xt_init\"()")
         此.写出("declare void @\"xt_print_value\"(i64)")
         此.写出("declare void @\"xt_retain\"(i64)")
@@ -583,6 +595,24 @@
         若 此.作用域栈.长度 > 0 {
             设 顶层 = 此.作用域栈.长度 - 1
             此.作用域栈[顶层].追加(地址寄存器)
+        }
+    }
+
+    // 检测表达式是否是 xt_arena_new() 调用，标记为 Arena 池变量
+    函 标记arena池(语句, 变量名) {
+        若 语句.声明值 == 空 { 返 空 }
+        若 语句.声明值.节点类别 == "调用表达式" {
+            设 调用 = 语句.声明值
+            若 调用.函数表达式.节点类别 == "标识符" {
+                若 调用.函数表达式.标识符名称 == "xt_arena_new" {
+                    若 此.符号表.含?(变量名) {
+                        设 存址 = 此.符号表[变量名]
+                        若 存址 != 空 且 存址.字节数 > 0 {
+                            此.arena池变量[存址] = 真
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -740,7 +770,7 @@
                 设 objPtr = 此.取新寄存器()
                 此.写出("  " & objPtr & " = inttoptr i64 " & 目标Xt & " to %XTObject*")
                 设 typeIdPtr = 此.取新寄存器()
-                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
                 
@@ -826,7 +856,7 @@
         设 typePtr = 此.取新寄存器()
         此.写出("  " & typePtr & " = inttoptr i64 " & 目标Xt & " to %XTObject*")
         设 typeIdPtr = 此.取新寄存器()
-        此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & typePtr & ", i32 0, i32 1")
+        此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & typePtr & ", i32 0, i32 2")
         设 typeId = 此.取新寄存器()
         此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
         
@@ -860,7 +890,7 @@
         设 aPtr = 此.取新寄存器()
         此.写出("  " & aPtr & " = inttoptr i64 " & 目标Xt & " to %XTArray*")
         设 aLenPtr = 此.取新寄存器()
-        此.写出("  " & aLenPtr & " = getelementptr %XTArray, %XTArray* " & aPtr & ", i32 0, i32 3")
+        此.写出("  " & aLenPtr & " = getelementptr %XTArray, %XTArray* " & aPtr & ", i32 0, i32 4")
         设 aLen = 此.取新寄存器()
         此.写出("  " & aLen & " = load i64, i64* " & aLenPtr)
         此.生成循环逻辑(节点, 目标Xt, aLen, 假, "数组")
@@ -871,7 +901,7 @@
         设 sPtr = 此.取新寄存器()
         此.写出("  " & sPtr & " = inttoptr i64 " & 目标Xt & " to %XTString*")
         设 sLenPtr = 此.取新寄存器()
-        此.写出("  " & sLenPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 3")
+        此.写出("  " & sLenPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 4")
         设 sLen = 此.取新寄存器()
         此.写出("  " & sLen & " = load i64, i64* " & sLenPtr)
         此.生成循环逻辑(节点, 目标Xt, sLen, 假, "字符串")
@@ -884,7 +914,7 @@
         设 akPtr = 此.取新寄存器()
         此.写出("  " & akPtr & " = inttoptr i64 " & keysArr & " to %XTArray*")
         设 akLenPtr = 此.取新寄存器()
-        此.写出("  " & akLenPtr & " = getelementptr %XTArray, %XTArray* " & akPtr & ", i32 0, i32 3")
+        此.写出("  " & akLenPtr & " = getelementptr %XTArray, %XTArray* " & akPtr & ", i32 0, i32 4")
         设 akLen = 此.取新寄存器()
         此.写出("  " & akLen & " = load i64, i64* " & akLenPtr)
         此.生成循环逻辑(节点, keysArr, akLen, 真, "数组")
@@ -968,7 +998,7 @@
             翻译结果 = 此.编译表达式(节点.返回值)
         }
         
-        // 性能优化：如果推导类型是“整”，直接进行标记位包装并返回
+        // 性能优化：如果推导类型是"整"，直接进行标记位包装并返回
         若 节点.推导类型 == "整" 且 翻译结果[1] == "raw_i64" {
              此.出作用域(真)
              设 val = 此.符(翻译结果[0])
@@ -1199,23 +1229,25 @@
              }
             设 内部类型 = 此.映射类型注解(注解)
             
+            // 标量参数：传入值为标记 i64，先脱壳再存 raw 值
             若 此.是标量类型(内部类型) {
-                // 标量参数：传入值为标记 i64，先脱壳再存 raw 值
                 设 unboxed = 此.确保RawI64(argReg, "i64")
                 此.写出("  store i64 " & unboxed & ", i64* " & varAddr)
                 此.符号表[arg节点2.标识符名称] = varAddr
                 此.变量类型表[arg节点2.标识符名称] = 内部类型
+                k = k + 1
+                续
+            }
+            
+            此.写出("  store i64 " & argReg & ", i64* " & varAddr)
+            此.写出("  call void @xt_retain(i64 " & argReg & ")")
+            此.追踪对象(varAddr)
+            此.符号表[arg节点2.标识符名称] = varAddr
+            // 设置参数类型，如果是 "此" 则使用当前型
+            若 arg节点2.标识符名称 == "此" 且 此.当前型名称 != "" {
+                此.变量类型表[arg节点2.标识符名称] = "型:" & 此.当前型名称
             } 否 {
-                此.写出("  store i64 " & argReg & ", i64* " & varAddr)
-                此.写出("  call void @xt_retain(i64 " & argReg & ")")
-                此.追踪对象(varAddr)
-                此.符号表[arg节点2.标识符名称] = varAddr
-                // 设置参数类型，如果是 "此" 则使用当前型
-                若 arg节点2.标识符名称 == "此" 且 此.当前型名称 != "" {
-                    此.变量类型表[arg节点2.标识符名称] = "型:" & 此.当前型名称
-                } 否 {
-                    此.变量类型表[arg节点2.标识符名称] = "i64"
-                }
+                此.变量类型表[arg节点2.标识符名称] = "i64"
             }
             k = k + 1
         }
@@ -1356,7 +1388,11 @@
     函 编译变量声明语句(语句) {
         设 翻译结果 = 此.编译表达式(语句.声明值)
         设 xt_val = 此.符(此.确保I64(翻译结果[0], 翻译结果[1]))
-        设 类型名 = 翻译结果[1]
+        若 翻译结果[1] == "raw_i64" {
+            设 类型名 = "i64"
+        } 否 {
+            设 类型名 = 翻译结果[1]
+        }
 
         若 语句.是解构 {
             // 解构赋值处理
@@ -1398,6 +1434,8 @@
 
         设 变量名 = 此.符(语句.声明名称)
         此.注册局部变量(变量名, xt_val, 类型名)
+        // 标记 Arena 池变量，确保出作用域时最后释放
+        此.标记arena池(语句, 语句.声明名称)
     }
 
     函 注册局部变量(变量名, xt_val, 类型名) {
@@ -1679,7 +1717,7 @@
                     设 objPtr = 此.符(此.取新寄存器())
                     此.写出("  " & objPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTObject*")
                     设 typeIdPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                    此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                     设 typeId = 此.符(此.取新寄存器())
                     此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
                     
@@ -1700,7 +1738,7 @@
                     设 sPtr = 此.符(此.取新寄存器())
                     此.写出("  " & sPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTString*")
                     设 slenPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & slenPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 3")
+                    此.写出("  " & slenPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 4")
                     设 sVal = 此.符(此.取新寄存器())
                     此.写出("  " & sVal & " = load i64, i64* " & slenPtr)
                     此.写_存储_xt(sVal, "raw_i64", resAddr)
@@ -1714,7 +1752,7 @@
                     设 aPtr = 此.符(此.取新寄存器())
                     此.写出("  " & aPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTArray*")
                     设 alenPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & alenPtr & " = getelementptr %XTArray, %XTArray* " & aPtr & ", i32 0, i32 3")
+                    此.写出("  " & alenPtr & " = getelementptr %XTArray, %XTArray* " & aPtr & ", i32 0, i32 4")
                     设 aVal = 此.符(此.取新寄存器())
                     此.写出("  " & aVal & " = load i64, i64* " & alenPtr)
                     此.写_存储_xt(aVal, "raw_i64", resAddr)
@@ -1756,7 +1794,7 @@
                     设 resPtr = 此.符(此.取新寄存器())
                     此.写出("  " & resPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTResult*")
                     设 isSuccPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                    此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
                     设 isSuccI32 = 此.符(此.取新寄存器())
                     此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
                     设 isSucc = 此.符(此.取新寄存器())
@@ -1771,7 +1809,7 @@
                     设 resPtr = 此.符(此.取新寄存器())
                     此.写出("  " & resPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTResult*")
                     设 valPtrPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
+                    此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
                     设 valPtr = 此.符(此.取新寄存器())
                     此.写出("  " & valPtr & " = load i64, i64* " & valPtrPtr)
                     此.写出("  call void @xt_retain(i64 " & valPtr & ")")
@@ -1783,7 +1821,7 @@
                     设 resPtr = 此.取新寄存器()
                     此.写出("  " & resPtr & " = inttoptr i64 " & 对象寄存器 & " to %XTResult*")
                     设 errPtrPtr = 此.取新寄存器()
-                    此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
+                    此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 6")
                     设 errPtr = 此.取新寄存器()
                     此.写出("  " & errPtr & " = load i64, i64* " & errPtrPtr)
                     此.写出("  call void @xt_retain(i64 " & errPtr & ")")
@@ -1823,7 +1861,7 @@
                 设 objPtr = 此.取新寄存器()
                 此.写出("  " & objPtr & " = inttoptr i64 " & 对象寄存器 & " to %XTObject*")
                 设 typeIdPtr = 此.取新寄存器()
-                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
                 
@@ -1944,7 +1982,7 @@
         此.写出("  " & objPtr & " = inttoptr i64 " & leftXtVal & " to %XTObject*")
         
         设 typeIdPtr = 此.取新寄存器()
-        此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+        此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
         设 typeId = 此.取新寄存器()
         此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
         
@@ -1975,7 +2013,7 @@
         
         // 提取 is_success
         设 succPtr = 此.取新寄存器()
-        此.写出("  " & succPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+        此.写出("  " & succPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
         设 isSuccess = 此.取新寄存器()
         此.写出("  " & isSuccess & " = load i32, i32* " & succPtr)
         
@@ -1987,7 +2025,7 @@
         此.写出(trueLabel_final & ":")
         // 如果成功，提取 value 并作为表达式结果
         设 valPtr = 此.取新寄存器()
-        此.写出("  " & valPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
+        此.写出("  " & valPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
         设 finalVal = 此.取新寄存器()
         此.写出("  " & finalVal & " = load i64, i64* " & valPtr)
         此.写出("  call void @xt_retain(i64 " & finalVal & ")")
@@ -2114,6 +2152,8 @@
     函 编译引入(节点) {
         设 路径 = 节点.路径
         若 此.已访引入.含?(路径) { 返 ["0", "i64"] }
+        // 防止自引用：若引入路径与主文件相同，跳过
+        若 路径 == 此.主文件路径 { 返 ["0", "i64"] }
         此.已访引入[路径] = 真
         
         // 别名预注册：即使文件读取失败，也要防止别名被当作普通函数
@@ -2353,7 +2393,7 @@
         设 函指Ptr = 此.取新寄存器()
         此.写出("  " & 函指Ptr & " = inttoptr i64 " & 函指Xt & " to %XTFunction*")
         设 函指_raw_ptr = 此.取新寄存器()
-        此.写出("  " & 函指_raw_ptr & " = getelementptr %XTFunction, %XTFunction* " & 函指Ptr & ", i32 0, i32 2")
+        此.写出("  " & 函指_raw_ptr & " = getelementptr %XTFunction, %XTFunction* " & 函指Ptr & ", i32 0, i32 3")
         设 函指_raw = 此.取新寄存器()
         此.写出("  " & 函指_raw & " = load i8*, i8** " & 函指_raw_ptr)
         设 调用签名 = "i64 ("
@@ -2551,7 +2591,7 @@
                     终Raw = 此.确保RawI64(翻译终[0], 翻译终[1])
                 } 否 {
                     设 lenPtr = 此.取新寄存器()
-                    此.写出("  " & lenPtr & " = getelementptr %XTString, %XTString* " & strPtr & ", i32 0, i32 3")
+                    此.写出("  " & lenPtr & " = getelementptr %XTString, %XTString* " & strPtr & ", i32 0, i32 4")
                     此.写出("  " & 终Raw & " = load i64, i64* " & lenPtr)
                 }
                 设 res = 此.取新寄存器()
@@ -2571,7 +2611,7 @@
                 设 objPtr = 此.取新寄存器()
                 此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
                 设 typeIdPtr = 此.取新寄存器()
-                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
                 
@@ -2608,7 +2648,7 @@
                 设 objPtr = 此.取新寄存器()
                 此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
                 设 typeIdPtr = 此.取新寄存器()
-                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
                 
@@ -2746,15 +2786,15 @@
                 设 resPtr = 此.取新寄存器()
                 此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
                 设 isSuccPtr = 此.取新寄存器()
-                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
                 设 isSuccI32 = 此.取新寄存器()
                 此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
                 设 isSucc = 此.取新寄存器()
                 此.写出("  " & isSucc & " = icmp ne i32 " & isSuccI32 & ", 0")
                 设 valPtrPtr = 此.取新寄存器()
-                此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
+                此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
                 设 errPtrPtr = 此.取新寄存器()
-                此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
+                此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 6")
                 设 valPtr = 此.取新寄存器()
                 此.写出("  " & valPtr & " = load i64, i64* " & valPtrPtr)
                 设 errPtr = 此.取新寄存器()
@@ -2773,7 +2813,7 @@
                 设 resPtr = 此.取新寄存器()
                 此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
                 设 isSuccPtr = 此.取新寄存器()
-                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
                 设 isSuccI32 = 此.取新寄存器()
                 此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
                 设 isSucc = 此.取新寄存器()
@@ -2789,7 +2829,7 @@
                 
                 此.写出(thenLabel & ":")
                 设 valPtrPtr = 此.取新寄存器()
-                此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 4")
+                此.写出("  " & valPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
                 设 val = 此.取新寄存器()
                 此.写出("  " & val & " = load i64, i64* " & valPtrPtr)
                 
@@ -2813,7 +2853,7 @@
                 设 resPtr = 此.取新寄存器()
                 此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
                 设 isSuccPtr = 此.取新寄存器()
-                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 2")
+                此.写出("  " & isSuccPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 3")
                 设 isSuccI32 = 此.取新寄存器()
                 此.写出("  " & isSuccI32 & " = load i32, i32* " & isSuccPtr)
                 设 isFail = 此.取新寄存器()
@@ -2829,7 +2869,7 @@
                 
                 此.写出(failLabel & ":")
                 设 errPtrPtr = 此.取新寄存器()
-                此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 5")
+                此.写出("  " & errPtrPtr & " = getelementptr %XTResult, %XTResult* " & resPtr & ", i32 0, i32 6")
                 设 err = 此.取新寄存器()
                 此.写出("  " & err & " = load i64, i64* " & errPtrPtr)
                 
@@ -2885,7 +2925,6 @@
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 返 [res, "i64"]
             }
-            
             若 成员名 == "追加" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
@@ -2896,7 +2935,7 @@
                 设 objPtr = 此.取新寄存器()
                 此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
                 设 typeIdPtr = 此.取新寄存器()
-                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 1")
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
                 
@@ -2969,7 +3008,7 @@
                 设 sPtr = 此.取新寄存器()
                 此.写出("  " & sPtr & " = inttoptr i64 " & reg & " to %XTString*")
                 设 dataPtrPtr = 此.取新寄存器()
-                此.写出("  " & dataPtrPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 2")
+                此.写出("  " & dataPtrPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 3")
                 设 realData = 此.取新寄存器()
                 此.写出("  " & realData & " = load i8*, i8** " & dataPtrPtr)
                 final参数声明.追加("i8* " & realData)
@@ -3245,15 +3284,28 @@
                     此.写出("  " & oldVal & " = load i64, i64* " & 存址)
                     此.写出("  call void @xt_release(i64 " & oldVal & ")")
                 }
-                // 标量变量存原始值，非标量存标记值并 retain
+                // 标量和非标量统一存 tagged 值；非标量额外 retain
                 若 此.是标量类型(类型右) {
-                    此.写出("  store i64 " & 此.符(翻译右[0]) & ", i64* " & 存址)
+                    此.写出("  store i64 " & xt_val & ", i64* " & 存址)
                 } 否 {
                     此.写出("  store i64 " & xt_val & ", i64* " & 存址)
                     此.写出("  call void @xt_retain(i64 " & xt_val & ")")
                 }
                 // 更新变量类型
-                此.变量类型表[变量名] = 类型右
+                若 类型右 == "raw_i64" {
+                    此.变量类型表[变量名] = "i64"
+                } 否 {
+                    此.变量类型表[变量名] = 类型右
+                }
+                // 检测是否被赋值为 Arena 池
+                若 节点.中缀右.节点类别 == "调用表达式" {
+                    设 调用 = 节点.中缀右
+                    若 调用.函数表达式.节点类别 == "标识符" {
+                        若 调用.函数表达式.标识符名称 == "xt_arena_new" {
+                            此.arena池变量[存址] = 真
+                        }
+                    }
+                }
             }
         } 抑 节点.中缀左.节点类别 == "索引表达式" {
             设 翻译左 = 此.编译表达式(节点.中缀左.左表达式)

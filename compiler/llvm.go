@@ -2525,6 +2525,10 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	condReg := c.nextReg()
 	c.emit("  %s = icmp slt i64 %s, %s", condReg, idxReg, lenReg)
 	c.emit("  br i1 %s, label %%%s, label %%%s", condReg, bodyLabel, endLabel)
+	stepLabel := c.nextLabel("for.step")
+	c.breakLabels = append(c.breakLabels, endLabel)
+	c.continueLabels = append(c.continueLabels, stepLabel)
+	c.loopDepths = append(c.loopDepths, len(c.scopeStack))
 	c.emit("%s:", bodyLabel)
 	c.enterScope()
 	elemArrLabel := c.nextLabel("for.elem_arr")
@@ -2580,6 +2584,8 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	}
 	c.exitScope(false)
 
+	c.emit("  br label %%%s", stepLabel)
+	c.emit("%s:", stepLabel)
 	incrArrLabel := c.nextLabel("for.incr_arr")
 	c.emit("  br i1 %s, label %%%s, label %%%s", isArrForLen, incrArrLabel, condLabel)
 	c.emit("%s:", incrArrLabel)
@@ -2588,6 +2594,9 @@ func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	c.emit("  store i64 %s, i64* %s", newIdx, idxAddr)
 	c.emit("  br label %%%s", condLabel)
 	c.emit("%s:", endLabel)
+	c.breakLabels = c.breakLabels[:len(c.breakLabels)-1]
+	c.continueLabels = c.continueLabels[:len(c.continueLabels)-1]
+	c.loopDepths = c.loopDepths[:len(c.loopDepths)-1]
 }
 
 func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStatement) {
