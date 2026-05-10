@@ -3330,7 +3330,30 @@
             设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
             设 翻译索引 = 此.编译表达式(节点.中缀左.索引)
             设 索引Xt = 此.确保I64(翻译索引[0], 翻译索引[1])
+
+            // 读取 type_id 做类型分派：字典走 xt_dict_set，数组走 xt_array_set
+            设 objPtr = 此.取新寄存器()
+            此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
+            设 typeIdPtr = 此.取新寄存器()
+            此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
+            设 typeId = 此.取新寄存器()
+            此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+            设 isDict = 此.取新寄存器()
+            此.写出("  " & isDict & " = icmp eq i32 " & typeId & ", 6")
+            设 dictLabel = 此.标(此.取新标签("idx_asg.dict"))
+            设 arrLabel = 此.标(此.取新标签("idx_asg.arr"))
+            设 mergeLabel_ia = 此.标(此.取新标签("idx_asg.merge"))
+            此.写出("  br i1 " & isDict & ", label %" & dictLabel & ", label %" & arrLabel)
+
+            此.写出(dictLabel & ":")
+            此.写出("  call void @xt_dict_set(i64 " & 对象Xt & ", i64 " & 索引Xt & ", i64 " & xt_val & ")")
+            此.写出("  br label %" & mergeLabel_ia)
+
+            此.写出(arrLabel & ":")
             此.写出("  call void @xt_array_set(i64 " & 对象Xt & ", i64 " & 索引Xt & ", i64 " & xt_val & ")")
+            此.写出("  br label %" & mergeLabel_ia)
+
+            此.写出(mergeLabel_ia & ":")
             此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
             此.写出("  call void @xt_release(i64 " & 索引Xt & ")")
         } 抑 节点.中缀左.节点类别 == "成员访问" {
