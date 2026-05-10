@@ -1,3 +1,4 @@
+
 # 过滤所有 .exe 文件
 *.exe
 *.ll
@@ -45,4 +46,6 @@ AGENTS.md
 IR_DIFF_REPORT.md
 INVESTIGATION_xt.md
 
+!/Test
+/Test/*.xt
 !/Test/[0-9][0-9]_*.xt
