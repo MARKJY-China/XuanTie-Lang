@@ -1259,6 +1259,13 @@ size_t xt_dict_size(XTValue dict_val) {
     return ((XTDict*)dict_val)->size;
 }
 
+size_t xt_array_length(XTValue arr_val) {
+    if (!XT_IS_PTR(arr_val) || arr_val == XT_NULL) return 0;
+    XTObject* obj = (XTObject*)arr_val;
+    if (obj->type_id != XT_TYPE_ARRAY) return 0;
+    return ((XTArray*)arr_val)->length;
+}
+
 int xt_dict_contains(XTValue dict_val, XTValue key) {
     return xt_dict_get(dict_val, key) != XT_NULL;
 }

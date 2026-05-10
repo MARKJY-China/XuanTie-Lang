@@ -159,6 +159,7 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("%XTInstance = type { i32, i32, i32, i8***, i64, i64, i8* }\n")
 	res.WriteString("%XTResult = type { i32, i32, i32, i32, i32, i64, i64 }\n")
 	res.WriteString("declare %XTArray* @xt_dict_keys(%XTDict*)\n")
+	res.WriteString("declare %XTArray* @xt_dict_values(%XTDict*)\n")
 	res.WriteString("declare void @xt_init()\n")
 	res.WriteString("declare void @xt_print_int(i64)\n")
 	res.WriteString("declare void @xt_print_string(%XTString*)\n")
@@ -1646,10 +1647,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = call i64 @xt_to_int(i64 %s)", idxUntag, idxXt)
 			resI64 := c.nextReg()
 			c.emit("  %s = call i64 @xt_string_get_byte(i64 %s, i64 %s)", resI64, objXt, idxUntag)
-			// ↓ 把 tagged 返回值 untag 成 raw_i64
-			resRaw := c.nextReg()
-			c.emit("  %s = ashr i64 %s, 1", resRaw, resI64)
-			c.emit("  store i64 %s, i64* %s", resRaw, resAddr) // 改成 store resRaw
+			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
 			c.emit("  call void @xt_release(i64 %s)", idxXt)
 			c.emit("  br label %%%s", mergeLabel)
 		} else if e.Member.Value == "字节数" {
@@ -1759,6 +1757,24 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = ptrtoint %%XTString* %s to i64", resI64, joinRes)
 			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
 			c.emit("  call void @xt_release(i64 %s)", sepXt)
+			c.emit("  br label %%%s", mergeLabel)
+		} else if e.Member.Value == "键" {
+			dPtr := c.nextReg()
+			c.emit("  %s = inttoptr i64 %s to %%XTDict*", dPtr, objXt)
+			keysArr := c.nextReg()
+			c.emit("  %s = call %%XTArray* @xt_dict_keys(%%XTDict* %s)", keysArr, dPtr)
+			resI64 := c.nextReg()
+			c.emit("  %s = ptrtoint %%XTArray* %s to i64", resI64, keysArr)
+			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
+			c.emit("  br label %%%s", mergeLabel)
+		} else if e.Member.Value == "值" {
+			dPtr := c.nextReg()
+			c.emit("  %s = inttoptr i64 %s to %%XTDict*", dPtr, objXt)
+			valsArr := c.nextReg()
+			c.emit("  %s = call %%XTArray* @xt_dict_values(%%XTDict* %s)", valsArr, dPtr)
+			resI64 := c.nextReg()
+			c.emit("  %s = ptrtoint %%XTArray* %s to i64", resI64, valsArr)
+			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
 			c.emit("  br label %%%s", mergeLabel)
 		} else if e.Member.Value == "截取" {
 			startReg, startType, _ := c.compileExpression(e.Arguments[0])

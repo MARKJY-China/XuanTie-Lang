@@ -1,7 +1,6 @@
 # 过滤所有 .exe 文件
 *.exe
 *.ll
-测试*
 test*
 *.pdb
 *.bak
@@ -15,6 +14,7 @@ simple.xt
 v0.17.0性能测试.xt
 .kill.log
 *.ps1
+litellm-config.yaml
 
 玄铁编译器功能实现清单.md
 功能实现清单.md
@@ -32,7 +32,6 @@ runtime_updates.md
 /.trae/
 
 /Trae/
-/Test/
 /publicity/
 /.claude/
 /release/
@@ -45,3 +44,5 @@ xt.xt
 AGENTS.md
 IR_DIFF_REPORT.md
 INVESTIGATION_xt.md
+
+!/Test/[0-9][0-9]_*.xt

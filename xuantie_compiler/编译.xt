@@ -511,6 +511,7 @@
         此.写出("declare i64 @\"xt_dict_keys\"(i64)")
         此.写出("declare i64 @\"xt_dict_values\"(i64)")
         此.写出("declare i64 @\"xt_dict_get\"(i64, i64)")
+        此.写出("declare i32 @\"xt_dict_contains\"(i64, i64)")
         此.写出("declare i64 @\"xt_bytes_new\"(i64)")
         此.写出("declare void @\"xt_bytes_append\"(i64, i8)")
         此.写出("declare i64 @\"xt_task_new\"(i64)")
@@ -518,6 +519,7 @@
         此.写出("declare void @\"xt_channel_send\"(i64, i64)")
         此.写出("declare i64 @\"xt_channel_receive\"(i64)")
         此.写出("declare i64 @\"xt_dict_size\"(i64)")
+        此.写出("declare i64 @\"xt_array_length\"(i64)")
         此.写出("declare i64 @\"xt_get_member\"(i64, i64)")
         此.写出("declare i32 @\"xt_eq\"(i8*, i8*)")
         此.写出("declare i32 @\"xt_compare\"(i8*, i8*)")
@@ -888,22 +890,16 @@
         // 数组遍历实现
         此.写出(arrayLabel & ":")
         设 aPtr = 此.取新寄存器()
-        此.写出("  " & aPtr & " = inttoptr i64 " & 目标Xt & " to %XTArray*")
-        设 aLenPtr = 此.取新寄存器()
-        此.写出("  " & aLenPtr & " = getelementptr %XTArray, %XTArray* " & aPtr & ", i32 0, i32 4")
         设 aLen = 此.取新寄存器()
-        此.写出("  " & aLen & " = load i64, i64* " & aLenPtr)
+        此.写出("  " & aLen & " = call i64 @xt_array_length(i64 " & 目标Xt & ")")
         此.生成循环逻辑(节点, 目标Xt, aLen, 假, "数组")
         此.写出("  br label %" & endLabel)
 
         // 字符串遍历实现
         此.写出(stringLabel & ":")
         设 sPtr = 此.取新寄存器()
-        此.写出("  " & sPtr & " = inttoptr i64 " & 目标Xt & " to %XTString*")
-        设 sLenPtr = 此.取新寄存器()
-        此.写出("  " & sLenPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 4")
         设 sLen = 此.取新寄存器()
-        此.写出("  " & sLen & " = load i64, i64* " & sLenPtr)
+        此.写出("  " & sLen & " = call i64 @xt_string_byte_length(i64 " & 目标Xt & ")")
         此.生成循环逻辑(节点, 目标Xt, sLen, 假, "字符串")
         此.写出("  br label %" & endLabel)
         
@@ -912,11 +908,8 @@
         设 keysArr = 此.取新寄存器()
         此.写出("  " & keysArr & " = call i64 @xt_dict_keys(i64 " & 目标Xt & ")")
         设 akPtr = 此.取新寄存器()
-        此.写出("  " & akPtr & " = inttoptr i64 " & keysArr & " to %XTArray*")
-        设 akLenPtr = 此.取新寄存器()
-        此.写出("  " & akLenPtr & " = getelementptr %XTArray, %XTArray* " & akPtr & ", i32 0, i32 4")
         设 akLen = 此.取新寄存器()
-        此.写出("  " & akLen & " = load i64, i64* " & akLenPtr)
+        此.写出("  " & akLen & " = call i64 @xt_array_length(i64 " & keysArr & ")")
         此.生成循环逻辑(节点, keysArr, akLen, 真, "数组")
         此.写出("  br label %" & endLabel)
         
@@ -1735,13 +1728,9 @@
                     此.写出("  br i1 " & isStr & ", label %" & strLabel & ", label %" & arrLabel)
                     
                     此.写出(strLabel & ":")
-                    设 sPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & sPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTString*")
-                    设 slenPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & slenPtr & " = getelementptr %XTString, %XTString* " & sPtr & ", i32 0, i32 4")
-                    设 sVal = 此.符(此.取新寄存器())
-                    此.写出("  " & sVal & " = load i64, i64* " & slenPtr)
-                    此.写_存储_xt(sVal, "raw_i64", resAddr)
+                    设 sLen = 此.符(此.取新寄存器())
+                    此.写出("  " & sLen & " = call i64 @xt_string_byte_length(i64 " & 此.符(对象寄存器) & ")")
+                    此.写出("  store i64 " & sLen & ", i64* " & resAddr)
                     此.写出("  br label %" & mergeLabel)
                     
                     此.写出(arrLabel & ":")
@@ -1749,15 +1738,10 @@
                     此.写出("  " & isArr & " = icmp eq i32 " & typeId & ", 5")
                     此.写出("  br i1 " & isArr & ", label %" & arrLabel & ".true, label %" & dictLabel)
                     此.写出(arrLabel & ".true:")
-                    设 aPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & aPtr & " = inttoptr i64 " & 此.符(对象寄存器) & " to %XTArray*")
-                    设 alenPtr = 此.符(此.取新寄存器())
-                    此.写出("  " & alenPtr & " = getelementptr %XTArray, %XTArray* " & aPtr & ", i32 0, i32 4")
-                    设 aVal = 此.符(此.取新寄存器())
-                    此.写出("  " & aVal & " = load i64, i64* " & alenPtr)
-                    此.写_存储_xt(aVal, "raw_i64", resAddr)
+                    设 aLen = 此.符(此.取新寄存器())
+                    此.写出("  " & aLen & " = call i64 @xt_array_length(i64 " & 此.符(对象寄存器) & ")")
+                    此.写_存储_xt(aLen, "raw_i64", resAddr)
                     此.写出("  br label %" & mergeLabel)
-                    
                     此.写出(dictLabel & ":")
                     设 isDict = 此.符(此.取新寄存器())
                     此.写出("  " & isDict & " = icmp eq i32 " & typeId & ", 6")
@@ -2590,9 +2574,9 @@
                     设 翻译终 = 此.编译表达式(节点.调用参数[1])
                     终Raw = 此.确保RawI64(翻译终[0], 翻译终[1])
                 } 否 {
-                    设 lenPtr = 此.取新寄存器()
-                    此.写出("  " & lenPtr & " = getelementptr %XTString, %XTString* " & strPtr & ", i32 0, i32 4")
-                    此.写出("  " & 终Raw & " = load i64, i64* " & lenPtr)
+                    设 lenXt = 此.取新寄存器()
+                    此.写出("  " & lenXt & " = call i64 @xt_string_byte_length(i64 " & 对象Xt & ")")
+                    此.写出("  " & 终Raw & " = ashr i64 " & lenXt & ", 1")
                 }
                 设 res = 此.取新寄存器()
                 此.写出("  " & res & " = call %XTString* @xt_string_substring(%XTString* " & strPtr & ", i64 " & 始Raw & ", i64 " & 终Raw & ")")
@@ -2888,20 +2872,54 @@
                 返 [finalVal, "i64"]
             }
 
-            若 成员名 == "含?" {
+            若 成员名 == "含?" 或 成员名 == "包含?" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
                 设 翻译参 = 此.编译表达式(节点.调用参数[0])
                 设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
-                
-                设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i32 @xt_dict_contains(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
-                
-                设 cond = 此.取新寄存器()
-                此.写出("  " & cond & " = icmp ne i32 " & res & ", 0")
+
+                // 读取 type_id 做类型分派
+                设 objPtr = 此.取新寄存器()
+                此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
+                设 typeIdPtr = 此.取新寄存器()
+                此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
+                设 typeId = 此.取新寄存器()
+                此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+                设 isStr = 此.取新寄存器()
+                此.写出("  " & isStr & " = icmp eq i32 " & typeId & ", 3")
+                设 strLabel = 此.标(此.取新标签("contains.str"))
+                设 dictLabel = 此.标(此.取新标签("contains.dict"))
+                设 mergeLabel_c = 此.标(此.取新标签("contains.merge"))
+                此.写出("  br i1 " & isStr & ", label %" & strLabel & ", label %" & dictLabel)
+
+                此.写出(strLabel & ":")
+                设 s1Ptr = 此.取新寄存器()
+                此.写出("  " & s1Ptr & " = inttoptr i64 " & 对象Xt & " to %XTString*")
+                设 argI8Ptr = 此.取新寄存器()
+                此.写出("  " & argI8Ptr & " = inttoptr i64 " & 参Xt & " to i8*")
+                设 s2Ptr = 此.取新寄存器()
+                此.写出("  " & s2Ptr & " = bitcast i8* " & argI8Ptr & " to %XTString*")
+                设 sRes = 此.取新寄存器()
+                此.写出("  " & sRes & " = call i32 @xt_string_contains(%XTString* " & s1Ptr & ", %XTString* " & s2Ptr & ")")
+                设 sCond = 此.取新寄存器()
+                此.写出("  " & sCond & " = icmp ne i32 " & sRes & ", 0")
+                设 sResI64 = 此.取新寄存器()
+                此.写出("  " & sResI64 & " = select i1 " & sCond & ", i64 4, i64 2")
+                此.写出("  br label %" & mergeLabel_c)
+
+                此.写出(dictLabel & ":")
+                设 dRes = 此.取新寄存器()
+                此.写出("  " & dRes & " = call i32 @xt_dict_contains(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                设 dCond = 此.取新寄存器()
+                此.写出("  " & dCond & " = icmp ne i32 " & dRes & ", 0")
+                设 dResI64 = 此.取新寄存器()
+                此.写出("  " & dResI64 & " = select i1 " & dCond & ", i64 4, i64 2")
+                此.写出("  br label %" & mergeLabel_c)
+
+                此.写出(mergeLabel_c & ":")
                 设 resI64 = 此.取新寄存器()
-                此.写出("  " & resI64 & " = select i1 " & cond & ", i64 4, i64 2")
-                
+                此.写出("  " & resI64 & " = phi i64 [ " & sResI64 & ", %" & strLabel & " ], [ " & dResI64 & ", %" & dictLabel & " ]")
+
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 参Xt & ")")
                 返 [resI64, "i64"]

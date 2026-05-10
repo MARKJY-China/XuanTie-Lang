@@ -268,6 +268,7 @@ void xt_dict_remove(XTValue dict_val, XTValue key);
 XTValue xt_dict_keys(XTValue dict_val);
 XTValue xt_dict_values(XTValue dict_val);
 size_t xt_dict_size(XTValue dict_val);
+size_t xt_array_length(XTValue arr_val);
 
 /// 比较两个 XTValue 的大小/相等性
 int xt_compare(XTValue a, XTValue b);
