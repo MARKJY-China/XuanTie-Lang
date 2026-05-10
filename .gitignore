@@ -26,6 +26,8 @@ litellm-config.yaml
 NOTES.md
 runtime_updates.md
 
+.memlog
+
 # 过滤根目录下的 bin 文件夹及其内容
 /bin/
 
