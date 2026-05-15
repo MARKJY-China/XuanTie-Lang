@@ -49,11 +49,13 @@ typedef struct XTArena {
 // 全局状态
 static XTArena* g_current_arena = NULL; ///< 当前活动的内存区域
 static XTValue g_xt_args = XT_NULL;      ///< 命令行参数缓存
+static XTWeakSlot* g_weak_slots = NULL;   ///< 弱引用旁路链表头部
 
 // 函数原型声明
 XTArena* xt_arena_new(size_t size);
 void* xt_arena_alloc_raw(size_t size);
 void* xt_arena_alloc(size_t size, uint32_t type_id);
+static uint64_t xt_hash_value(XTValue val);
 
 /**
  * @brief 初始化运行时环境
@@ -569,15 +571,102 @@ static inline void xt_check_obj(void* val) {
 }
 
 /**
+ * @brief 注册弱引用槽位
+ *
+ * 将 slot_addr 注册为指向 obj 的弱引用。当 obj 被释放时，*slot_addr 会被置为 XT_NULL。
+ */
+void xt_weak_init(XTValue* slot_addr, XTValue obj_val) {
+    if (!xt_is_real_ptr(obj_val) || obj_val == XT_NULL) return;
+    XTObject* obj = (XTObject*)obj_val;
+    XTWeakSlot* ws = (XTWeakSlot*)malloc(sizeof(XTWeakSlot));
+    if (!ws) return;
+    ws->obj = (void*)obj;
+    ws->slot_addr = slot_addr;
+    ws->next = g_weak_slots;
+    g_weak_slots = ws;
+}
+
+/**
+ * @brief 字典弱引用赋值：存值但不 retain，不 release 旧值
+ */
+void xt_dict_set_weak(XTValue dict_val, XTValue key, XTValue value) {
+    if (!XT_IS_PTR(dict_val) || dict_val == XT_NULL) return;
+    XTObject* obj = (XTObject*)dict_val;
+    if (obj->type_id != XT_TYPE_DICT && obj->type_id != XT_TYPE_INSTANCE) return;
+    XTDict* dict = (XTDict*)dict_val;
+
+    uint64_t hash = xt_hash_value(key);
+    size_t idx = hash % dict->capacity;
+
+    XTDictEntry* entry = dict->buckets[idx];
+    while (entry) {
+        if (xt_eq(entry->key, key)) {
+            entry->value = value;  // 不 release 旧值，不 retain 新值
+            return;
+        }
+        entry = entry->next;
+    }
+    // 新建条目
+    XTDictEntry* new_entry = (XTDictEntry*)malloc(sizeof(XTDictEntry));
+    if (!new_entry) return;
+    new_entry->key = key; new_entry->value = value;
+    new_entry->next = dict->buckets[idx];
+    dict->buckets[idx] = new_entry;
+    dict->size++;
+    xt_retain(key);   // 键仍然 retain
+    // 值不 retain——弱引用核心语义
+}
+
+/**
+ * @brief 注册字典弱引用槽位
+ */
+void xt_dict_weak_init(XTValue dict_val, XTValue key, XTValue obj_val) {
+    if (!xt_is_real_ptr(obj_val) || obj_val == XT_NULL) return;
+    XTObject* obj = (XTObject*)obj_val;
+    XTWeakSlot* ws = (XTWeakSlot*)malloc(sizeof(XTWeakSlot));
+    if (!ws) return;
+    ws->obj = (void*)obj;
+    ws->slot_addr = NULL;
+    ws->dict_val = dict_val;
+    ws->dict_key = key;
+    ws->next = g_weak_slots;
+    g_weak_slots = ws;
+}
+
+/**
+ * @brief 清空指向特定对象的所有弱引用槽位
+ */
+static void xt_weak_clear(XTObject* obj) {
+    XTWeakSlot** p = &g_weak_slots;
+    while (*p) {
+        XTWeakSlot* ws = *p;
+        if (ws->obj == (void*)obj) {
+            if (ws->slot_addr) {
+                *ws->slot_addr = XT_NULL;
+            } else {
+                xt_dict_set_weak(ws->dict_val, ws->dict_key, XT_NULL);
+            }
+            *p = ws->next;
+            free(ws);
+        } else {
+            p = &ws->next;
+        }
+    }
+}
+
+/**
  * @brief 深度递归释放对象
- * 
+ *
  * 只有当引用计数降为 0 且非 Arena 对象时才会被调用。
  */
 static void xt_free_obj(XTObject* obj) {
     if (!obj) return;
-    
+
     // 安全检查：绝对不释放长生不老对象
     if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
+
+    // 清空所有指向此对象的弱引用槽位
+    xt_weak_clear(obj);
 
     switch (obj->type_id) {
         case XT_TYPE_STRING: {

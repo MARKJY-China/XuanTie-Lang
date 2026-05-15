@@ -94,6 +94,22 @@ typedef uintptr_t XTValue;
 // 内存管理常量
 #define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
 
+// --- 弱引用支持 ---
+typedef struct XTWeakSlot {
+    void* obj;                  ///< 被弱引用的对象 (XTObject*)
+    XTValue* slot_addr;         ///< alloca 槽位（局部变量方式，可为 NULL）
+    XTValue dict_val;           ///< 字典/实例值（字典方式，可为 XT_NULL）
+    XTValue dict_key;           ///< 字典键（字典方式）
+    struct XTWeakSlot* next;    ///< 链表指针
+} XTWeakSlot;
+
+/// 注册弱引用槽位：当 obj 被释放时 *slot_addr 将被置为 XT_NULL(0)
+void xt_weak_init(XTValue* slot_addr, XTValue obj_val);
+/// 字典弱引用赋值：不 retain 值，不 release 旧值（弱引用语义）
+void xt_dict_set_weak(XTValue dict_val, XTValue key, XTValue value);
+/// 注册字典弱引用槽位：当 obj 被释放时 dict[key] 将被置为 XT_NULL
+void xt_dict_weak_init(XTValue dict_val, XTValue key, XTValue obj_val);
+
 /**
  * @brief 函数对象结构
  */
