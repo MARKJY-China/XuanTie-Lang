@@ -289,7 +289,7 @@ func (c *LLVMCompiler) mapTypeAnnotation(xtType string) string {
 		return "raw_i64"
 	case "小数":
 		return "double"
-	case "逻":
+	case "判":
 		return "i1"
 	default:
 		return "i64"
@@ -451,7 +451,7 @@ func (c *LLVMCompiler) ensureI64(reg, typ string) string {
 		c.emit("  %s = or i64 %s, 1", newReg, shifted)
 		return newReg
 	}
-	if typ == "i1" || typ == "逻" {
+	if typ == "i1" || typ == "判" {
 		newReg := c.nextReg()
 		c.emit("  %s = select i1 %s, i64 4, i64 2", newReg, reg)
 		return newReg
@@ -494,7 +494,7 @@ func (c *LLVMCompiler) ensureRawI64(reg, typ string) string {
 		c.emit("  %s = ashr i64 %s, 1", newReg, reg)
 		return newReg
 	}
-	if typ == "i1" || typ == "逻" {
+	if typ == "i1" || typ == "判" {
 		newReg := c.nextReg()
 		c.emit("  %s = zext i1 %s to i64", newReg, reg)
 		return newReg
@@ -655,7 +655,7 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 			c.emit("  ret i32 %s", i32Reg)
 		} else {
 			retVal := valReg
-			if valType == "i1" || valType == "逻" {
+			if valType == "i1" || valType == "判" {
 				reg := c.nextReg()
 				c.emit("  %s = select i1 %s, i64 4, i64 2", reg, valReg)
 				retVal = reg
@@ -1014,7 +1014,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			return "3", "i64", "" // 1 * 2 + 1 = 3
 		case "小数":
 			return "5", "i64", "" // 2 * 2 + 1 = 5
-		case "逻":
+		case "判":
 			return "9", "i64", "" // 4 * 2 + 1 = 9
 		case "数组":
 			return "11", "i64", "" // 5 * 2 + 1 = 11
@@ -2358,7 +2358,7 @@ func (c *LLVMCompiler) generateBooleanCondition(reg string, typ string) string {
 	if typ == "i1" {
 		return reg
 	}
-	if typ == "i64" || typ == "整" || typ == "逻" || typ == "bool" {
+	if typ == "i64" || typ == "整" || typ == "判" || typ == "bool" {
 		// 只要不是 假(2) 且不是 空(0)，就视为真
 		isNotFalse := c.nextReg()
 		c.emit("  %s = icmp ne i64 %s, 2", isNotFalse, reg)
@@ -2722,7 +2722,7 @@ func (c *LLVMCompiler) compileExternalFunctionStatement(s *ast.ExternalFunctionS
 		retType = "i64"
 	case "小数":
 		retType = "double"
-	case "逻", "逻辑":
+	case "判", "逻辑":
 		retType = "i1"
 	case "字", "字符串":
 		retType = "i8*"

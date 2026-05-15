@@ -2541,7 +2541,7 @@ func evalInfixExpression(line int, op string, left, right object.Object) object.
 				return &object.Boolean{Value: left.Type() == object.INTEGER_OBJ}
 			case "字", "字符串":
 				return &object.Boolean{Value: left.Type() == object.STRING_OBJ}
-			case "逻", "逻辑":
+			case "判", "逻辑":
 				return &object.Boolean{Value: left.Type() == object.BOOLEAN_OBJ}
 			case "小数":
 				return &object.Boolean{Value: left.Type() == object.FLOAT_OBJ}
@@ -2881,7 +2881,7 @@ func getXTTypeName(obj object.Object) string {
 	case object.STRING_OBJ:
 		return "字"
 	case object.BOOLEAN_OBJ:
-		return "逻"
+		return "判"
 	case object.ARRAY_OBJ:
 		return "数组"
 	case object.DICT_OBJ:
@@ -3043,7 +3043,7 @@ func checkTypeWithGenerics(expectedType string, val object.Object, env map[strin
 		if actualType == object.FLOAT_OBJ {
 			return nil
 		}
-	case "逻", "逻辑":
+	case "判", "逻辑":
 		if actualType == object.BOOLEAN_OBJ {
 			return nil
 		}
