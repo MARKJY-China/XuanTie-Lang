@@ -642,7 +642,7 @@ static void xt_weak_clear(XTObject* obj) {
         XTWeakSlot* ws = *p;
         if (ws->obj == (void*)obj) {
             if (ws->slot_addr) {
-                *ws->slot_addr = XT_NULL;
+                if (*ws->slot_addr == (XTValue)obj) { *ws->slot_addr = XT_NULL; }
             } else {
                 xt_dict_set_weak(ws->dict_val, ws->dict_key, XT_NULL);
             }
