@@ -1,0 +1,16 @@
+// Test 46: standalone function with self.method() call
+型 测试型 {
+    设 val
+    函 造(v) { 此.val = v }
+    函 获取值() { 返 此.val }
+    函 设置值(v) { 此.val = v }
+}
+
+函 独立函数(self) {
+    设 v = self.获取值()
+    返 v
+}
+
+设 obj = 造 测试型(42)
+设 result = 独立函数(obj)
+示("result=#{result}")

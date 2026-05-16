@@ -1,0 +1,17 @@
+// Test 48: standalone function calls method on self parameter
+型 X {
+    设 val
+    函 造(v) { 此.val = v }
+    函 get() { 返 此.val }
+    函 set(v) { 此.val = v }
+}
+
+函 独立操作(self, v) {
+    self.set(v)
+    设 result = self.get()
+    返 result
+}
+
+设 obj = 造 X(100)
+设 result = 独立操作(obj, 200)
+示("result=#{result}")  // should be 200

@@ -1,0 +1,15 @@
+// Test 47: calling standalone function from within a type method
+
+函 独立测试(x) { 返 x + 1 }
+
+型 T {
+    设 val
+    函 造(v) { 此.val = v }
+    函 调用独立() {
+        设 result = 独立测试(此.val)
+        示("result=#{result}")
+    }
+}
+
+设 obj = 造 T(41)
+obj.调用独立()
