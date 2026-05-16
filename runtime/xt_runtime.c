@@ -662,6 +662,7 @@ static void xt_weak_clear(XTObject* obj) {
 static void xt_free_obj(XTObject* obj) {
     if (!obj) return;
 
+
     // 安全检查：绝对不释放长生不老对象
     if (atomic_load(&obj->ref_count) >= XT_REF_COUNT_IMMORTAL) return;
 
