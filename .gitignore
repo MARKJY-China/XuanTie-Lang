@@ -17,6 +17,7 @@ v0.17.0性能测试.xt
 *.ps1
 litellm-config.yaml
 
+CLAUDE.md
 玄铁编译器功能实现清单.md
 功能实现清单.md
 玄铁自举技术架构白皮书.md
@@ -25,7 +26,6 @@ litellm-config.yaml
 你现在要执行的任务.md
 NOTES.md
 runtime_updates.md
-
 *.memlog
 
 # 过滤根目录下的 bin 文件夹及其内容

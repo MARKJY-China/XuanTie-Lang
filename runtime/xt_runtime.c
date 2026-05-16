@@ -629,6 +629,7 @@ void xt_dict_weak_init(XTValue dict_val, XTValue key, XTValue obj_val) {
     ws->slot_addr = NULL;
     ws->dict_val = dict_val;
     ws->dict_key = key;
+    xt_retain(key);
     ws->next = g_weak_slots;
     g_weak_slots = ws;
 }
@@ -645,6 +646,7 @@ static void xt_weak_clear(XTObject* obj) {
                 if (*ws->slot_addr == (XTValue)obj) { *ws->slot_addr = XT_NULL; }
             } else {
                 xt_dict_set_weak(ws->dict_val, ws->dict_key, XT_NULL);
+                xt_release(ws->dict_key);
             }
             *p = ws->next;
             free(ws);
