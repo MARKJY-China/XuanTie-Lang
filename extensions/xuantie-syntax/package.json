@@ -1,10 +1,14 @@
 {
     "name": "xuantie-syntax",
-    "displayName": "XuanTie Syntax Highlighting",
-    "description": "Syntax highlighting for XuanTie programming language",
-    "version": "0.4.0",
+    "displayName": "玄铁 (XuanTie)",
+    "description": "玄铁编程语言的VSCode插件。支持完善的语法高亮、代码片段补全、关键字提示等功能。",
+    "version": "1.0.1",
     "publisher": "xuantie",
     "icon": "icon.ico",
+    "main": "./extension.js",
+    "activationEvents": [
+        "onLanguage:xuantie"
+    ],
     "engines": {
         "vscode": "^1.60.0"
     },
@@ -36,11 +40,16 @@
                 "path": "./syntaxes/xuantie.tmLanguage.json"
             }
         ],
-        "snippets": [
-            {
-                "language": "xuantie",
-                "path": "./snippets/pinyin.code-snippets"
+        "configuration": {
+            "type": "object",
+            "title": "玄铁语言配置",
+            "properties": {
+                "xuantie.enableSnippets": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "是否开启玄铁关键字的代码片段补全。关闭时（默认），拼音补全仅插入关键字本身。"
+                }
             }
-        ]
+        }
     }
 }

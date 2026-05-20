@@ -428,7 +428,7 @@ XTArena* xt_arena_new(size_t size) {
     arena->header.type_id = XT_TYPE_ARENA;
     arena->header.magic = XT_MAGIC;
 
-    arena->buffer = (char*)malloc(size);
+    arena->buffer = (char*)calloc(1, size);
     if (!arena->buffer) { free(arena); return NULL; }
     arena->size = size;
     arena->offset = 0;
@@ -575,7 +575,23 @@ static inline void xt_check_obj(void* val) {
     if (!xt_is_real_ptr((XTValue)val)) return;
     XTObject* obj = (XTObject*)val;
     if (obj->magic != XT_MAGIC) {
-        fprintf(stderr, "运行时错误: 检测到堆损坏或非法指针访问 (Type=%d, Addr=%p)\n", obj->type_id, val);
+        fprintf(stderr, "运行时错误: 检测到堆损坏或非法指针访问 (Addr=%p Type=%08x Magic=%08x)\n", val, obj->type_id, obj->magic);
+        fprintf(stderr, "  值低8字节(hex): ");
+        for (int di = 0; di < 32 && di < (int)sizeof(XTObject); di++) {
+            fprintf(stderr, "%02x ", ((unsigned char*)val)[di]);
+        }
+        fprintf(stderr, "\n");
+        // Windows 栈回溯（原始地址）
+        #ifdef _WIN32
+        {
+            void* stack[16];
+            unsigned short frames = CaptureStackBackTrace(0, 16, stack, NULL);
+            fprintf(stderr, "  栈回溯 (%u 帧):\n", frames);
+            for (unsigned short fi = 0; fi < frames; fi++) {
+                fprintf(stderr, "    [%u] %p\n", fi, stack[fi]);
+            }
+        }
+        #endif
         exit(-1);
     }
 }
