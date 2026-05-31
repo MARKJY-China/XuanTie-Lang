@@ -11,6 +11,7 @@
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <process.h>
 #pragma comment(lib, "ws2_32.lib")
 typedef SOCKET xt_sock_t;
 #define XT_INVALID_SOCK INVALID_SOCKET
@@ -21,6 +22,7 @@ typedef SOCKET xt_sock_t;
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <pthread.h>
 typedef int xt_sock_t;
 #define XT_INVALID_SOCK (-1)
 #define xt_sock_close close
@@ -29,8 +31,6 @@ typedef int xt_sock_t;
 // 前向声明
 static int resolve_host(const char* host, struct sockaddr_in* addr);
 static xt_sock_t create_connection(const char* host, int port);
-void xt_net_close_obj(XTSocket* s);
-
 // ============================================================
 // 平台初始化
 // ============================================================
@@ -178,6 +178,23 @@ typedef struct {
     int running;
 } listener_ctx;
 
+// 引用主运行时 arena
+struct XTArena;
+extern struct XTArena* g_current_arena;
+
+// 每个连接独立线程处理：禁用 arena，调用回调，释放 socket
+struct conn_ctx { void (*cb)(void*); XTSocket* sock; };
+static unsigned __stdcall conn_handler(void* arg) {
+    struct conn_ctx* cc = (struct conn_ctx*)arg;
+    struct XTArena* saved = g_current_arena;
+    g_current_arena = NULL;
+    cc->cb(cc->sock);
+    g_current_arena = saved;
+    xt_release((XTValue)cc->sock);
+    free(cc);
+    return 0;
+}
+
 static void* accept_thread(void* arg) {
     listener_ctx* ctx = (listener_ctx*)arg;
 
@@ -189,11 +206,24 @@ static void* accept_thread(void* arg) {
             if (ctx->running) continue; else break;
         }
 
-        // 为每个连接创建 socket 对象并调用回调
         XTSocket* client_sock = xt_net_new_socket(client, 0);
-        ctx->callback(client_sock);
-        // 回调后 release（若回调 retain 了则保持存活）
-        xt_release((XTValue)client_sock);
+
+        // 每个连接在独立线程中处理——不阻塞 accept 循环
+        struct conn_ctx {
+            void (*cb)(void*);
+            XTSocket* sock;
+        };
+        struct conn_ctx* cc = malloc(sizeof(struct conn_ctx));
+        cc->cb = ctx->callback;
+        cc->sock = client_sock;
+
+#if defined(_WIN32)
+        _beginthreadex(NULL, 0, (unsigned(__stdcall*)(void*))conn_handler, cc, 0, NULL);
+#else
+        pthread_t t;
+        pthread_create(&t, NULL, conn_handler, cc);
+        pthread_detach(t);
+#endif
     }
     xt_sock_close(ctx->listen_sock);
     free(ctx);

@@ -2003,6 +2003,8 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		return c.compileAsync(e)
 	case *ast.ParallelExpression:
 		return c.compileParallel(e)
+	case *ast.FunctionLiteral:
+		return c.compileAnonymous(e)
 	case *ast.AwaitExpression:
 		taskReg, taskType, _ := c.compileExpression(e.Value)
 		taskXt := c.ensureI64(taskReg, taskType)
@@ -2775,6 +2777,91 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		c.emit("  call void @xt_release(i64 %s)", objXt)
 		c.emit("  call void @xt_release(i64 %s)", keyXt)
 	}
+}
+
+var anonCounter int
+
+// compileAnonymous 编译匿名函数为独立 LLVM 函数并返回 XTFunction
+func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string, string) {
+	anonCounter++
+	funcName := fmt.Sprintf("@\"__anon_%d\"", anonCounter)
+
+	// 保存当前状态
+	oldOutput := c.output
+	oldAlloca := c.allocaOutput
+	oldFunc := c.currentFunc
+	oldTable := make(map[string]SymbolInfo)
+	for k, v := range c.symbolTable { oldTable[k] = v }
+	oldScopeStack := c.scopeStack
+
+	c.output = bytes.Buffer{}
+	c.allocaOutput = bytes.Buffer{}
+	c.currentFunc = fmt.Sprintf("__anon_%d", anonCounter)
+	c.scopeStack = [][]string{}
+
+	// 参数列表
+	paramStrs := []string{}
+	for _, p := range fl.Parameters {
+		paramStrs = append(paramStrs, fmt.Sprintf("i64 %%\"%s_arg\"", p.Name.Value))
+	}
+
+	c.emit("define i64 %s(%s) {", funcName, strings.Join(paramStrs, ", "))
+	c.emit("__ALLOCAS_MARKER__")
+	c.currentLabel = "entry"
+	c.enterScope()
+
+	// 注册参数（直接 emit alloca 到 output，不通过 emitAlloca）
+	for _, p := range fl.Parameters {
+		addrReg := fmt.Sprintf("%%\"%s\"", p.Name.Value)
+		c.emit("  %s = alloca i64", addrReg)
+		c.emit("  store i64 0, i64* %s", addrReg)
+		c.emit("  store i64 %%\"%s_arg\", i64* %s", p.Name.Value, addrReg)
+		c.trackObject(addrReg)
+		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
+	}
+
+	// 编译函数体
+	for _, stmt := range fl.Body {
+		c.compileStatement(stmt)
+	}
+
+	c.exitScope(false)
+	c.emit("  ret i64 0")
+	c.emit("}")
+
+	// 拼装函数 IR（alloca + body）
+	funcBody := c.output.String()
+	funcAllocas := c.allocaOutput.String()
+	funcIR := strings.Replace(funcBody, "__ALLOCAS_MARKER__\n", "entry:\n"+funcAllocas, 1)
+	c.globalOutput.WriteString(funcIR + "\n")
+
+	// 恢复状态
+	c.output = oldOutput
+	c.allocaOutput = oldAlloca
+	c.currentFunc = oldFunc
+	c.symbolTable = oldTable
+	c.scopeStack = oldScopeStack
+
+	// 创建 XTFunction 包装（bitcast 签名中不含参数名，仅类型）
+	sigTypes := []string{}
+	for range fl.Parameters { sigTypes = append(sigTypes, "i64") }
+	paramSig := "i64 (" + strings.Join(sigTypes, ", ") + ")"
+	resReg := c.nextReg()
+	c.emit("  %s = call i64 @xt_func_new(i8* bitcast (%s* %s to i8*))",
+		resReg, paramSig, funcName)
+	return resReg, "i64", ""
+}
+
+func (c *LLVMCompiler) isLastLineReturn() bool {
+	lines := strings.Split(strings.TrimSpace(c.output.String()), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, ";") {
+			continue
+		}
+		return strings.HasPrefix(line, "ret ")
+	}
+	return false
 }
 
 // compileAsync 将异步块编译为独立 LLVM 函数并提交到线程池

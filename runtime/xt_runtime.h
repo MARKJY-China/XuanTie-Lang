@@ -180,7 +180,7 @@ typedef struct {
 /**
  * @brief 网络 Socket 对象 (v0.2)
  */
-typedef struct {
+typedef struct XTSocket {
     XTObject header;
     void* sock;       // 平台 socket 句柄 (SOCKET/int)
     int is_closed;    // 是否已关闭
@@ -386,6 +386,10 @@ XTValue xt_wait(XTValue task_val);
 XTValue xt_channel_new(size_t capacity);
 void xt_channel_send(XTValue chan_val, XTValue val);
 XTValue xt_channel_receive(XTValue chan_val);
+
+// --- Socket 操作（由 xt_net.c 实现）---
+struct XTSocket;
+void xt_net_close_obj(struct XTSocket* s);
 
 // ---/// 核心网络与系统原语 (v0.16.4+) ---
 XTValue xt_http_request(XTValue url_val);

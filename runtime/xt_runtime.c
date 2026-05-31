@@ -8,6 +8,7 @@
  * 设计核心原则：
  * 1. 标记指针 (Tagged Pointer)：利用 64 位指针的最低位 (LSB) 区分整数和对象指针。
  * 2. 自动引用计数 (ARC)：通过对象头部的原子计数器实现自动内存管理。
+n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
  * 3. 区域分配 (Arena)：为高性能自举编译提供批量内存分配和一次性回收能力。
  * 4. 跨 ABI 兼容性：专门针对 MinGW 工具链优化了变参 FFI 调用。
  */
@@ -49,7 +50,7 @@ typedef struct XTArena {
 } XTArena;
 
 // 全局状态
-static XTArena* g_current_arena = NULL; ///< 当前活动的内存区域
+XTArena* g_current_arena = NULL; ///< 当前活动的内存区域（供 xt_net.c accept 线程访问）
 
 #ifdef _WIN32
 static __declspec(thread) XTArena* g_thread_arena = NULL; // TLS: 每线程独立 Arena
@@ -1143,6 +1144,87 @@ XTValue xt_func_new(void* func_ptr) {
     return (XTValue)obj;
 }
 
+// --- Socket 方法实现 (v0.2) ---
+
+// 流.读() → 单参数版本（编译器无参调用只传 self）
+static XTValue xt_socket_read_method(XTValue self) {
+    if (!xt_is_real_ptr(self)) return XT_NULL;
+    XTSocket* s = (XTSocket*)self;
+    if (s->is_closed) return XT_NULL;
+    char* data = (char*)xt_net_read(s, 4096);
+    if (!data) return XT_NULL;
+    XTString* str = xt_string_new(data);
+    free(data);
+    return (XTValue)str;
+}
+
+// 流.写(消息) / 流.发(消息) — 双参数版本
+static XTValue xt_socket_write_method(XTValue self, XTValue msg) {
+    if (!xt_is_real_ptr(self)) return XT_NULL;
+    const char* text = "";
+    if (xt_is_real_ptr(msg)) {
+        XTObject* o = (XTObject*)msg;
+        if (o->type_id == XT_TYPE_STRING) text = ((XTString*)msg)->data;
+    }
+    XTSocket* s = (XTSocket*)self;
+    int rc = xt_net_write(s, text, (int)strlen(text));
+    return XT_FROM_BOOL(rc > 0);
+}
+
+// 流.关() — 单参数版本
+static XTValue xt_socket_close_method(XTValue self) {
+    if (!xt_is_real_ptr(self)) return XT_NULL;
+    xt_net_close_obj((XTSocket*)self);
+    return XT_TRUE;
+}
+
+// 流.转字() — 单参数版本
+static XTValue xt_socket_tostring_method(XTValue self) {
+    return (XTValue)xt_string_new("Socket连接");
+}
+
+// 在 socket 对象上注册方法
+void xt_socket_register_methods(XTSocket* s) {
+    // socket 对象本身没有 dict——方法通过编译器硬编码路径分发
+    // 此函数为空：方法在当前架构中通过 xt_dict_get 查找
+    // socket 的方法在对象创建后通过编译器/字典注册
+    (void)s;
+}
+
+// --- Result 方法实现 ---
+
+// 结果.接着(成功回调)
+static XTValue xt_result_then_method(XTValue self, XTValue callback) {
+    XTResult* r = (XTResult*)self;
+    if (r->is_success) {
+        // 调用回调：callback(value)
+        typedef XTValue (*xt_cb)(XTValue);
+        xt_cb cb = (xt_cb)((XTFunction*)callback)->func_ptr;
+        return cb((XTValue)r->value);
+    }
+    return self; // 返回自己以支持链式 .否则()
+}
+
+// 结果.否则(失败回调)
+static XTValue xt_result_else_method(XTValue self, XTValue callback) {
+    XTResult* r = (XTResult*)self;
+    if (!r->is_success) {
+        typedef XTValue (*xt_cb)(XTValue);
+        xt_cb cb = (xt_cb)((XTFunction*)callback)->func_ptr;
+        return cb((XTValue)r->error);
+    }
+    return self;
+}
+
+// 辅助：用 C 函数指针填装对象字典
+static void dict_set_method(XTValue obj, const char* name, void* func_ptr) {
+    XTValue key = (XTValue)xt_string_new(name);
+    XTValue fn  = xt_func_new(func_ptr);
+    xt_dict_set(obj, key, fn);
+    xt_release(key);
+    xt_release(fn);
+}
+
 // --- 字符串高级操作实现 ---
 
 /**
@@ -1304,6 +1386,8 @@ XTString* xt_obj_to_string(XTValue val) {
         }
         case XT_TYPE_DICT: return xt_string_new("字典对象");
         case XT_TYPE_ARRAY: return xt_string_new("数组对象");
+        case XT_TYPE_SOCKET: return xt_string_new("Socket连接");
+        case XT_TYPE_CHANNEL: return xt_string_new("通道对象");
         default: return xt_string_new("未知对象");
     }
 }
@@ -1399,6 +1483,25 @@ void xt_dict_set(XTValue dict_val, XTValue key, XTValue value) {
 XTValue xt_dict_get(XTValue dict_val, XTValue key) {
     if (!XT_IS_REAL_PTR(dict_val)) return XT_NULL;
     XTObject* obj = (XTObject*)dict_val;
+
+    // Socket/Result 方法表分发（自举编译器通过 xt_dict_get 做成员调用）
+    if (obj->type_id == XT_TYPE_SOCKET) {
+        if (!xt_is_real_ptr(key)) return XT_NULL;
+        const char* m = ((XTString*)key)->data;
+        if (strcmp(m, "读") == 0 || strcmp(m, "read") == 0) return xt_func_new((void*)xt_socket_read_method);
+        if (strcmp(m, "写") == 0 || strcmp(m, "发") == 0 || strcmp(m, "write") == 0 || strcmp(m, "send") == 0) return xt_func_new((void*)xt_socket_write_method);
+        if (strcmp(m, "关") == 0 || strcmp(m, "close") == 0) return xt_func_new((void*)xt_socket_close_method);
+        if (strcmp(m, "转字") == 0 || strcmp(m, "toString") == 0) return xt_func_new((void*)xt_socket_tostring_method);
+        return XT_NULL;
+    }
+    if (obj->type_id == XT_TYPE_RESULT) {
+        if (!xt_is_real_ptr(key)) return XT_NULL;
+        const char* m = ((XTString*)key)->data;
+        if (strcmp(m, "接着") == 0 || strcmp(m, "then") == 0) return xt_func_new((void*)xt_result_then_method);
+        if (strcmp(m, "否则") == 0 || strcmp(m, "else") == 0) return xt_func_new((void*)xt_result_else_method);
+        return XT_NULL;
+    }
+
     if (obj->type_id != XT_TYPE_DICT && obj->type_id != XT_TYPE_INSTANCE) return XT_NULL;
     XTDict* dict = (XTDict*)dict_val;
     if (dict->capacity == 0) return XT_NULL;
@@ -1437,9 +1540,36 @@ int xt_dict_contains(XTValue dict_val, XTValue key) {
 XTValue xt_get_member(XTValue obj_val, XTValue key_val) {
     if (!XT_IS_REAL_PTR(obj_val)) return XT_NULL;
     XTObject* obj = (XTObject*)obj_val;
+
+    // 字典/实例类型——标准字典查找
     if (obj->type_id == XT_TYPE_DICT || obj->type_id == XT_TYPE_INSTANCE) {
         return xt_dict_get(obj_val, key_val);
     }
+
+    // Socket 方法分发
+    if (obj->type_id == XT_TYPE_SOCKET) {
+        if (!xt_is_real_ptr(key_val)) return XT_NULL;
+        const char* method = ((XTString*)key_val)->data;
+        if (strcmp(method, "读") == 0 || strcmp(method, "read") == 0)
+            return xt_func_new((void*)xt_socket_read_method);
+        if (strcmp(method, "写") == 0 || strcmp(method, "发") == 0 || strcmp(method, "write") == 0 || strcmp(method, "send") == 0)
+            return xt_func_new((void*)xt_socket_write_method);
+        if (strcmp(method, "关") == 0 || strcmp(method, "close") == 0)
+            return xt_func_new((void*)xt_socket_close_method);
+        return XT_NULL;
+    }
+
+    // Result 方法分发
+    if (obj->type_id == XT_TYPE_RESULT) {
+        if (!xt_is_real_ptr(key_val)) return XT_NULL;
+        const char* method = ((XTString*)key_val)->data;
+        if (strcmp(method, "接着") == 0 || strcmp(method, "then") == 0)
+            return xt_func_new((void*)xt_result_then_method);
+        if (strcmp(method, "否则") == 0 || strcmp(method, "else") == 0)
+            return xt_func_new((void*)xt_result_else_method);
+        return XT_NULL;
+    }
+
     return XT_NULL;
 }
 
@@ -1748,7 +1878,13 @@ XTValue xt_http_request(XTValue url_val) {
 
 XTValue xt_listen(XTValue port_val, XTValue callback_val) {
     int64_t port = xt_to_int(port_val);
-    int rc = xt_net_listen((int)port, NULL);
+    // 从 XTFunction 中提取函数指针
+    if (!xt_is_real_ptr(callback_val)) {
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("回调函数无效"));
+    }
+    typedef XTValue (*xt_cb)(XTValue);
+    xt_cb cb = (xt_cb)((XTFunction*)callback_val)->func_ptr;
+    int rc = xt_net_listen((int)port, (void (*)(void*))cb);
     if (rc < 0) {
         char err[64];
         snprintf(err, sizeof(err), "监听端口 %d 失败", (int)port);

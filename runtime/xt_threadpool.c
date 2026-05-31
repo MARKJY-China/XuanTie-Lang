@@ -10,6 +10,7 @@
 // ============================================================
 
 #if defined(_WIN32)
+#include <process.h>   // _beginthreadex
 
 void xt_mutex_init(xt_mutex_t* m)   { InitializeCriticalSection(m); }
 void xt_mutex_destroy(xt_mutex_t* m) { DeleteCriticalSection(m); }
@@ -27,7 +28,7 @@ typedef struct {
     void* arg;
 } xt_thread_wrapper;
 
-static DWORD WINAPI xt_thread_proc(LPVOID p) {
+static unsigned __stdcall xt_thread_proc(void* p) {
     xt_thread_wrapper* w = (xt_thread_wrapper*)p;
     w->func(w->arg);
     free(w);
@@ -38,7 +39,7 @@ int xt_thread_create(xt_thread_t* t, xt_thread_func f, void* arg) {
     xt_thread_wrapper* w = (xt_thread_wrapper*)malloc(sizeof(xt_thread_wrapper));
     if (!w) return -1;
     w->func = f; w->arg = arg;
-    *t = CreateThread(NULL, 0, xt_thread_proc, w, 0, NULL);
+    *t = (HANDLE)_beginthreadex(NULL, 0, xt_thread_proc, w, 0, NULL);
     return (*t != NULL) ? 0 : -1;
 }
 
