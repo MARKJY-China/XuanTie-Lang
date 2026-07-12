@@ -255,9 +255,9 @@
     设 clang结果 = 执(clang指令)
     若 输出详细 { 示("[MAIN5] clang完成, 成功=" & clang结果.成功) }
     若 非 clang结果.成功 或 非 文件.存在?(o路径) {
-        若 非 clang结果.成功 { 示("clang失败, 错误=" & clang结果.错误) }
+        若 非 clang结果.成功 { 示("clang失败, 错误=" & clang结果.错误 & " | IR保留于: " & ll路径) }
         若 clang结果.成功 { 示("错误：未找到生成的对象文件 " & o路径) }
-        执("cmd /c del /q \"" & ll路径 & "\" 2>nul")
+        // 保留 .ll 文件以便调试
         xt_arena_destroy(池)
         终 1
     }
@@ -298,6 +298,46 @@
     若 非 文件.存在?(netFile) { netFile = "" }
     若 输出详细 且 netFile != "" { 示("网络栈文件: " & netFile) }
 
+    // 检测渲染库导入
+    设 使用渲染 = 假
+    设 渲染桥C = ""
+    设 渲染桥Obj = ""
+    设 raylibA = ""
+    // 在 common lib 路径下查找渲染桥
+    设 候选渲染桥列表 = ["lib\\渲染\\渲染桥.c", "..\\lib\\渲染\\渲染桥.c"]
+    遍历 _rc 于 候选渲染桥列表 {
+        若 文件.存在?(_rc) { 渲染桥C = _rc ; 断 }
+    }
+    // 查找 libraylib.a
+    若 渲染桥C != "" {
+        设 _raylibDirs = ["C:/raylib/raylib/src", "C:/raylib/w64devkit/lib"]
+        遍历 _rd 于 _raylibDirs {
+            设 _候选 = _rd & "\\libraylib.a"
+            若 文件.存在?(_候选) { raylibA = _候选 ; 断 }
+        }
+        若 raylibA != "" {
+            使用渲染 = 真
+            若 输出详细 { 示("检测到渲染库: " & 渲染桥C & " + " & raylibA) }
+        }
+    }
+
+    // 编译渲染桥
+    若 使用渲染 {
+        设 时间戳2 = 时.毫秒()
+        渲染桥Obj = 缓存目录 & "\\temp_" & 时间戳2 & "_bridge.o"
+        设 渲染包含目录 = raylibA.替换("\\libraylib.a", "")
+        设 桥clang指令 = "clang -g -target " & 目标三元组 & " " & 优化等级 & " -c \"" & 渲染桥C & "\" -o \"" & 渲染桥Obj & "\" -I \"" & 渲染包含目录 & "\""
+        若 输出详细 { 示("渲染桥 clang: " & 桥clang指令) }
+        设 桥clang结果 = 执(桥clang指令)
+        若 非 桥clang结果.成功 或 非 文件.存在?(渲染桥Obj) {
+            示("渲染桥编译失败: " & 桥clang结果.错误)
+            若 桥clang结果.成功 { 示("错误：未找到渲染桥对象文件") }
+            执("cmd /c del /q \"" & ll路径 & "\" \"" & o路径 & "\" 2>nul")
+            xt_arena_destroy(池)
+            终 1
+        }
+    }
+
     // 调用 gcc 进行链接
     若 输出详细 { 示("正在调用 MinGW 进行链接...") }
 
@@ -311,11 +351,13 @@
         链接指令 = "gcc -g -static -Wl,--stack,16777216 \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
+        若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm" }
         链接指令 = 链接指令 & " -lws2_32 -o \"" & 输出路径 & "\""
     } 否 {
         链接指令 = "gcc -g -Wl,--stack,16777216 \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
+        若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm" }
         链接指令 = 链接指令 & " -lws2_32 -o \"" & 输出路径 & "\""
     }
     

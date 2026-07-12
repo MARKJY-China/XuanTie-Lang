@@ -4,9 +4,9 @@
 
 R.初始化窗口(800, 600, "XuanTie Render — Rotating Sphere")
 
-// 加载字体（MS Gothic 包含 CJK 字符，若不存在则回退到 ASCII 默认字体）
-设 字体 = R.加载字体("C:/Windows/Fonts/msgothic.ttc", 20)
-设 字体小 = R.加载字体("C:/Windows/Fonts/msgothic.ttc", 14)
+// 完整 CJK + 加大字号补偿纹理密度不足
+设 字体 = R.加载字体("assets/HarmonyOS_Sans/HarmonyOS_Sans_SC/HarmonyOS_Sans_SC_Regular.ttf", 28)
+设 字体小 = R.加载字体("assets/HarmonyOS_Sans/HarmonyOS_Sans_SC/HarmonyOS_Sans_SC_Regular.ttf", 18)
 
 设 角度 = 0
 设 球X = 400
@@ -72,8 +72,8 @@ R.初始化窗口(800, 600, "XuanTie Render — Rotating Sphere")
     R.绘椭圆(球X, 球Y, 球R, 球R * 0.25, 255, 255, 255, 25)
 
     // 标题
-    R.绘字体文字(字体, "XuanTie 3D Sphere Demo", 20, 20, 24, 2, 255, 255, 255, 255)
-    R.绘字体文字(字体小, "Lambertian Shading | 60 FPS", 20, 52, 14, 1, 200, 200, 220, 255)
+    R.绘字体文字(字体, "玄铁3D球体旋转", 20, 20, 28, 2, 255, 255, 255, 255)
+    R.绘字体文字(字体小, "Lambertian 光照 | 60 FPS", 20, 54, 18, 1, 200, 200, 220, 255)
     R.绘帧率(700, 20)
 
     R.结束绘图()

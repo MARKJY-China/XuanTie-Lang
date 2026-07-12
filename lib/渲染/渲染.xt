@@ -56,6 +56,7 @@
 
 // === 字体（支持中文） ===
 外 函 XT_LoadFont(filename: 字, fontSize: 整): 整
+外 函 XT_LoadFontEx(filename: 字, fontSize: 整, refText: 字): 整
 外 函 XT_UnloadFont(fontPtr: 整): 空
 外 函 XT_DrawTextEx(fontPtr: 整, text: 字, x: 整, y: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
 
@@ -188,6 +189,11 @@
 // 加载字体（支持中文，需指定系统字体路径）
 公 函 加载字体(文件, 字号) {
     返 XT_LoadFont(文件, 字号)
+}
+
+// 加载字体并依据参考文本精准提取所需字符码点（缺字无忧，纹理精简）
+公 函 加载字体精准(文件, 字号, 参考文本) {
+    返 XT_LoadFontEx(文件, 字号, 参考文本)
 }
 
 // 释放字体

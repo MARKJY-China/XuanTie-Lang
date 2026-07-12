@@ -459,10 +459,15 @@ static Font* xt_get_font(uintptr_t fontVal) {
 uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     if (xt_font_count >= 8) return XT_FROM_INT(0);
 
-    int cpCount = 352;  // 码点 32–383
+    // ASCII (32-126) + CJK 统一汉字基本区 (U+4E00–U+9FFF, ~21K)
+    int asciiCount = 95;
+    int cjkCount = 0x9FFF - 0x4E00 + 1;  // 20992 个汉字
+    int cpCount = asciiCount + cjkCount;
     int* codepoints = (int*)malloc((size_t)cpCount * sizeof(int));
     if (!codepoints) return XT_FROM_INT(0);
-    for (int i = 0; i < cpCount; i++) codepoints[i] = 32 + i;
+    int idx = 0;
+    for (int c = 32; c <= 126; c++) codepoints[idx++] = c;
+    for (int c = 0x4E00; c <= 0x9FFF; c++) codepoints[idx++] = c;
 
     Font f = LoadFontEx(xt_get_cstr(filename), (int)XT_TO_INT(fontSize), codepoints, cpCount);
     free(codepoints);
@@ -471,6 +476,44 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     xt_font_pool[xt_font_count] = f;
     xt_font_count++;
     return XT_FROM_INT(xt_font_count);  // 返回 1-based 整数索引
+}
+
+// 加载字体 + 从参考文本提取码点（精准模式，纹理更小，100% 覆盖所需字符）
+uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refText) {
+    if (xt_font_count >= 8) return XT_FROM_INT(0);
+
+    const char* ref = xt_get_cstr(refText);
+    int refLen = (int)strlen(ref);
+
+    // 最多 95 ASCII + refLen 个额外码点
+    int* codepoints = (int*)malloc((size_t)(95 + refLen) * sizeof(int));
+    if (!codepoints) return XT_FROM_INT(0);
+    int idx = 0;
+    for (int c = 32; c <= 126; c++) codepoints[idx++] = c;
+
+    // UTF-8 解码参考文本，收集非 ASCII 码点（去重）
+    int bp = 0;
+    while (bp < refLen) {
+        int cp = 0;
+        unsigned char b0 = (unsigned char)ref[bp];
+        if (b0 < 0x80)      { cp = b0; bp += 1; }
+        else if (b0 < 0xE0) { cp = ((b0 & 0x1F) << 6)  | (ref[bp+1] & 0x3F); bp += 2; }
+        else if (b0 < 0xF0) { cp = ((b0 & 0x0F) << 12) | ((ref[bp+1] & 0x3F) << 6) | (ref[bp+2] & 0x3F); bp += 3; }
+        else                { cp = ((b0 & 0x07) << 18) | ((ref[bp+1] & 0x3F) << 12) | ((ref[bp+2] & 0x3F) << 6) | (ref[bp+3] & 0x3F); bp += 4; }
+        if (cp < 32 || cp > 126) {  // 非 ASCII
+            int dup = 0;
+            for (int j = 95; j < idx; j++) { if (codepoints[j] == cp) { dup = 1; break; } }
+            if (!dup) codepoints[idx++] = cp;
+        }
+    }
+
+    Font f = LoadFontEx(xt_get_cstr(filename), (int)XT_TO_INT(fontSize), codepoints, idx);
+    free(codepoints);
+    if (f.glyphCount == 0) f = GetFontDefault();
+
+    xt_font_pool[xt_font_count] = f;
+    xt_font_count++;
+    return XT_FROM_INT(xt_font_count);
 }
 
 void XT_UnloadFont(uintptr_t fontHandle) {
