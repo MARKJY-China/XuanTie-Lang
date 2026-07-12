@@ -2296,18 +2296,34 @@ XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
  */
 XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
-    XTString* s = (XTString*)str_val; XTString* old_s = (XTString*)old_val; XTString* new_s = (XTString*)new_val;
-    char* pos = strstr(s->data, old_s->data);
-    if (!pos) { xt_retain(str_val); return str_val; }
-    size_t prefix_len = pos - s->data;
-    size_t suffix_len = s->length - prefix_len - old_s->length;
-    size_t total_len = prefix_len + new_s->length + suffix_len;
+    XTString* s = (XTString*)str_val;
+    XTString* old_s = (XTString*)old_val;
+    XTString* new_s = (XTString*)new_val;
+    if (old_s->length == 0) { xt_retain(str_val); return str_val; }
+
+    // 统计匹配次数
+    size_t count = 0;
+    const char* scan = s->data;
+    while ((scan = strstr(scan, old_s->data)) != NULL) { count++; scan += old_s->length; }
+    if (count == 0) { xt_retain(str_val); return str_val; }
+
+    // 一次分配，全部替换
+    size_t total_len = s->length + count * (new_s->length - old_s->length);
     char* buf = (char*)malloc(total_len + 1);
-    memcpy(buf, s->data, prefix_len);
-    memcpy(buf + prefix_len, new_s->data, new_s->length);
-    memcpy(buf + prefix_len + new_s->length, pos + old_s->length, suffix_len);
+    if (!buf) return XT_NULL;
+
+    const char* src = s->data;
+    char* dst = buf;
+    while (1) {
+        const char* pos = strstr(src, old_s->data);
+        if (!pos) { size_t rem = s->length - (size_t)(src - s->data); memcpy(dst, src, rem); dst += rem; break; }
+        size_t pre = (size_t)(pos - src);
+        memcpy(dst, src, pre); dst += pre;
+        memcpy(dst, new_s->data, new_s->length); dst += new_s->length;
+        src = pos + old_s->length;
+    }
     buf[total_len] = '\0';
-    XTString* res = xt_string_new(buf);
+    XTString* res = xt_string_new_len(buf, total_len);
     free(buf); return (XTValue)res;
 }
 
