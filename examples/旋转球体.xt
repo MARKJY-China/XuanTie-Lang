@@ -5,8 +5,8 @@
 R.初始化窗口(800, 600, "XuanTie Render — Rotating Sphere")
 
 // 完整 CJK + 加大字号补偿纹理密度不足
-设 字体 = R.加载字体("assets/HarmonyOS_Sans/HarmonyOS_Sans_SC/HarmonyOS_Sans_SC_Regular.ttf", 28)
-设 字体小 = R.加载字体("assets/HarmonyOS_Sans/HarmonyOS_Sans_SC/HarmonyOS_Sans_SC_Regular.ttf", 18)
+设 字体 = R.加载字体("../assets/HarmonyOS_Sans_SC_Regular.ttf", 28)
+设 字体小 = R.加载字体("../assets/HarmonyOS_Sans_SC_Regular.ttf", 18)
 
 设 角度 = 0
 设 球X = 400
