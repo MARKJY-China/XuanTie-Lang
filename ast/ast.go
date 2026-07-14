@@ -278,7 +278,7 @@ func (ts *TryCatchStatement) String() string {
 
 // TypeLiteral 类型字面量（用于“是”判断）
 type TypeLiteral struct {
-	Token token.Token // "整", "字", "判", "小数", "数组", "字典", "空"
+	Token token.Token // "整", "字", "布尔", "小数", "数组", "字典", "空"
 	Value string
 }
 

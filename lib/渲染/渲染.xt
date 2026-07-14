@@ -16,9 +16,9 @@
 // 外部函数声明 — 窗口管理
 // ============================================================
 外 函 XT_InitWindow(w: 整, h: 整, title: 字): 空
-外 函 XT_WindowShouldClose(): 判
+外 函 XT_WindowShouldClose(): 布尔
 外 函 XT_CloseWindow(): 空
-外 函 XT_IsWindowReady(): 判
+外 函 XT_IsWindowReady(): 布尔
 外 函 XT_SetTargetFPS(fps: 整): 空
 外 函 XT_GetFPS(): 整
 外 函 XT_GetFrameTime(): 小数
@@ -71,11 +71,11 @@
 // ============================================================
 // 输入
 // ============================================================
-外 函 XT_IsKeyDown(key: 整): 判
-外 函 XT_IsKeyPressed(key: 整): 判
+外 函 XT_IsKeyDown(key: 整): 布尔
+外 函 XT_IsKeyPressed(key: 整): 布尔
 外 函 XT_GetKeyPressed(): 整
-外 函 XT_IsMouseButtonDown(button: 整): 判
-外 函 XT_IsMouseButtonPressed(button: 整): 判
+外 函 XT_IsMouseButtonDown(button: 整): 布尔
+外 函 XT_IsMouseButtonPressed(button: 整): 布尔
 外 函 XT_GetMouseX(): 整
 外 函 XT_GetMouseY(): 整
 外 函 XT_GetMouseWheelMove(): 整

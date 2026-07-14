@@ -1724,7 +1724,7 @@ func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression, isAssignment bo
 				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.Int64)", left)
 			case "字", "字符串":
 				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.String)", left)
-			case "判", "逻辑":
+			case "布尔", "逻辑":
 				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.Bool)", left)
 			case "小数":
 				return fmt.Sprintf("(reflect.TypeOf(%s).Kind() == reflect.Float64)", left)

@@ -111,7 +111,7 @@ const (
 	TOKEN_FLOAT_TYPE  TokenType = "小数"
 	TOKEN_BYTES_TYPE  TokenType = "字节"
 	TOKEN_TASK_TYPE   TokenType = "任务"
-	TOKEN_BOOL_TYPE   TokenType = "判"
+	TOKEN_BOOL_TYPE   TokenType = "布尔"
 	TOKEN_ARRAY_TYPE  TokenType = "数组"
 	TOKEN_DICT_TYPE   TokenType = "字典"
 
