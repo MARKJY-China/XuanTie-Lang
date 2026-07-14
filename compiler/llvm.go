@@ -1152,6 +1152,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		}
 
 		funcName := ""
+		isDynamicCall := false
 		if ident, ok := e.Function.(*ast.Identifier); ok {
 			switch ident.Value {
 			case "整":
@@ -1161,8 +1162,15 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			case "字":
 				funcName = "@xt_convert_to_string"
 			default:
-				if info, ok := c.symbolTable[ident.Value]; ok && info.IsGlobal {
-					funcName = info.AddrReg
+				if info, ok := c.symbolTable[ident.Value]; ok {
+					if info.IsGlobal {
+						funcName = info.AddrReg
+					} else {
+						// 局部变量持有函数对象 → 动态调用
+						fReg, _, _ := c.compileExpression(e.Function)
+						funcName = fReg
+						isDynamicCall = true
+					}
 				} else {
 					funcName = "@\"" + ident.Value + "\""
 				}
@@ -1227,10 +1235,39 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 
 		reg := c.nextReg()
 		isVoidCall := declaredRetType == "void"
-		callFmt := "  %s = call %s %s(%s)"
-		if isVoidCall {
-			callFmt = "  call void %s(%s)"
-		}
+		if isDynamicCall {
+			// 通过 XTFunction 结构体动态调用
+			fPtr := c.nextReg()
+			c.emit("  %s = inttoptr i64 %s to %%XTFunction*", fPtr, funcName)
+			fpPtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTFunction, %%XTFunction* %s, i32 0, i32 3", fpPtr, fPtr)
+			fpRaw := c.nextReg()
+			c.emit("  %s = load i8*, i8** %s", fpRaw, fpPtr)
+			var sig string
+			if isVoidCall {
+				argTypes := make([]string, len(args))
+				for i, a := range args {
+					argTypes[i] = strings.Split(a, " ")[0]
+				}
+				sig = "void (" + strings.Join(argTypes, ", ") + ")*"
+				fpCasted := c.nextReg()
+				c.emit("  %s = bitcast i8* %s to "+sig, fpCasted, fpRaw)
+				c.emit("  call void %s(%s)", fpCasted, strings.Join(args, ", "))
+			} else {
+				argTypes := make([]string, len(args))
+				for i, a := range args {
+					argTypes[i] = strings.Split(a, " ")[0]
+				}
+				sig = declaredRetType + " (" + strings.Join(argTypes, ", ") + ")*"
+				fpCasted := c.nextReg()
+				c.emit("  %s = bitcast i8* %s to "+sig, fpCasted, fpRaw)
+				c.emit("  %s = call "+declaredRetType+" %s(%s)", reg, fpCasted, strings.Join(args, ", "))
+			}
+		} else {
+			callFmt := "  %s = call %s %s(%s)"
+			if isVoidCall {
+				callFmt = "  call void %s(%s)"
+			}
 		if !strings.HasPrefix(funcName, "@") {
 			funcName = "@" + funcName
 		}
@@ -1261,6 +1298,7 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			} else {
 				c.emit(callFmt, reg, declaredRetType, funcName, strings.Join(args, ", "))
 			}
+		}
 		}
 		for _, argReg := range argRegs {
 			c.emit("  call void @xt_release(i64 %s)", argReg)

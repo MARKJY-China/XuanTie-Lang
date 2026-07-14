@@ -772,6 +772,13 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 						TypeArguments: typeArgs,
 						Arguments:     p.parseCallArguments(),
 					}
+					// 尾随闭包语法糖: f<T>(args) 函() { ... }
+					for p.peek.Type == token.TOKEN_FUNCTION {
+						p.nextToken() // skip ), then 函
+						if closure := p.parseFunctionLiteral(); closure != nil {
+							leftExp.(*ast.CallExpression).Arguments = append(leftExp.(*ast.CallExpression).Arguments, closure)
+						}
+					}
 				} else {
 					// 即使没空格，如果没有 ( 也可能是 a < b
 					// 由于已经消耗了 <，我们需要尝试恢复。
@@ -1400,6 +1407,16 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	}
 
 	exp.Arguments = p.parseCallArguments()
+
+	// 尾随闭包语法糖: f(args) 函() { ... } → f(args, 函() { ... })
+	// 支持多个尾随闭包: f() 函{} 函{} → f(函{}, 函{})
+	for p.peek.Type == token.TOKEN_FUNCTION {
+		p.nextToken() // skip ), then 函
+		if closure := p.parseFunctionLiteral(); closure != nil {
+			exp.Arguments = append(exp.Arguments, closure)
+		}
+	}
+
 	return exp
 }
 
