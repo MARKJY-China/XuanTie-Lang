@@ -772,12 +772,19 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 						TypeArguments: typeArgs,
 						Arguments:     p.parseCallArguments(),
 					}
-					// 尾随闭包: f<T>(args) 函{} (仅同行)
-					ce := leftExp.(*ast.CallExpression)
-					for p.peek.Type == token.TOKEN_FUNCTION && p.peek.Line == p.cur.Line {
-						p.nextToken()
-						if closure := p.parseFunctionLiteral(); closure != nil {
-							ce.Arguments = append(ce.Arguments, closure)
+					// 尾随闭包语法糖: f<T>(args) 函() { ... }
+					for p.peek.Type == token.TOKEN_FUNCTION {
+						savedCur := p.cur
+						savedPeek := p.peek
+						p.nextToken() // cur = 函
+						if p.peek.Type == token.TOKEN_LPAREN || p.peek.Type == token.TOKEN_LT {
+							if closure := p.parseFunctionLiteral(); closure != nil {
+								leftExp.(*ast.CallExpression).Arguments = append(leftExp.(*ast.CallExpression).Arguments, closure)
+							}
+						} else {
+							p.cur = savedCur
+							p.peek = savedPeek
+							break
 						}
 					}
 				} else {
@@ -1410,11 +1417,22 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	exp.Arguments = p.parseCallArguments()
 
 	// 尾随闭包语法糖: f(args) 函() { ... } → f(args, 函() { ... })
-	// 仅当 函 与 ) 同行时才视为尾随闭包，跨行的 函 是下一语句
-	for p.peek.Type == token.TOKEN_FUNCTION && p.peek.Line == p.cur.Line {
+	// 支持多个尾随闭包: f() 函{} 函{} → f(函{}, 函{})
+	// 区分: 函( =匿名尾随, 函 名 =命名函数定义(不消费)
+	for p.peek.Type == token.TOKEN_FUNCTION {
+		savedCur := p.cur
+		savedPeek := p.peek
 		p.nextToken() // cur = 函
-		if closure := p.parseFunctionLiteral(); closure != nil {
-			exp.Arguments = append(exp.Arguments, closure)
+		if p.peek.Type == token.TOKEN_LPAREN || p.peek.Type == token.TOKEN_LT {
+			// 匿名函数 → 作为尾随闭包
+			if closure := p.parseFunctionLiteral(); closure != nil {
+				exp.Arguments = append(exp.Arguments, closure)
+			}
+		} else {
+			// 命名函数定义 → 恢复状态，退出循环
+			p.cur = savedCur
+			p.peek = savedPeek
+			break
 		}
 	}
 
