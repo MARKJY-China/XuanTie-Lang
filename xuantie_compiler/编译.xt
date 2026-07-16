@@ -4206,7 +4206,8 @@
             此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
             此.写出("  call void @xt_release(i64 " & 键Xt & ")")
         }
-        设 _r = [xt_val, "i64"]
+        // 返回 raw_i64 防止调用方写_释放_xt 二次释放已存值
+        设 _r = [xt_val, "raw_i64"]
         返 _r
     }
 

@@ -772,11 +772,12 @@ func (p *Parser) parseExpression(precedence int) ast.Expression {
 						TypeArguments: typeArgs,
 						Arguments:     p.parseCallArguments(),
 					}
-					// 尾随闭包语法糖: f<T>(args) 函() { ... }
-					for p.peek.Type == token.TOKEN_FUNCTION {
-						p.nextToken() // skip ), then 函
+					// 尾随闭包: f<T>(args) 函{} (仅同行)
+					ce := leftExp.(*ast.CallExpression)
+					for p.peek.Type == token.TOKEN_FUNCTION && p.peek.Line == p.cur.Line {
+						p.nextToken()
 						if closure := p.parseFunctionLiteral(); closure != nil {
-							leftExp.(*ast.CallExpression).Arguments = append(leftExp.(*ast.CallExpression).Arguments, closure)
+							ce.Arguments = append(ce.Arguments, closure)
 						}
 					}
 				} else {
@@ -1409,9 +1410,9 @@ func (p *Parser) parseCallExpression(function ast.Expression) ast.Expression {
 	exp.Arguments = p.parseCallArguments()
 
 	// 尾随闭包语法糖: f(args) 函() { ... } → f(args, 函() { ... })
-	// 支持多个尾随闭包: f() 函{} 函{} → f(函{}, 函{})
-	for p.peek.Type == token.TOKEN_FUNCTION {
-		p.nextToken() // skip ), then 函
+	// 仅当 函 与 ) 同行时才视为尾随闭包，跨行的 函 是下一语句
+	for p.peek.Type == token.TOKEN_FUNCTION && p.peek.Line == p.cur.Line {
+		p.nextToken() // cur = 函
 		if closure := p.parseFunctionLiteral(); closure != nil {
 			exp.Arguments = append(exp.Arguments, closure)
 		}
