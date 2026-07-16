@@ -1141,6 +1141,7 @@ void* xt_result_new(int is_success, void* value, void* error) {
 XTValue xt_func_new(void* func_ptr) {
     XTFunction* obj = (XTFunction*)xt_malloc(sizeof(XTFunction), XT_TYPE_FUNCTION);
     obj->func_ptr = func_ptr;
+    obj->env = NULL;
     return (XTValue)obj;
 }
 

@@ -122,6 +122,7 @@ void xt_dict_weak_init(XTValue dict_val, XTValue key, XTValue obj_val);
 typedef struct {
     XTObject header;
     void* func_ptr; ///< 底层 C 函数指针
+    void* env;      ///< 闭包捕获环境
 } XTFunction;
 
 /**
