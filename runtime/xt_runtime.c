@@ -2420,26 +2420,142 @@ XTString* xt_json_serialize(XTValue val) {
 }
 
 /**
- * @brief 简化版 JSON 反序列化 (演示用)
+ * @brief 递归下降 JSON 反序列化器 (支持对象/数组/嵌套)
  */
+
+// --- JSON 递归下降解析器 ---
+
+static void json_skip_ws(const char** p) {
+    while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
+}
+
+static XTValue json_parse_value(const char** p);
+
+static XTString* json_parse_string(const char** p) {
+    if (**p != '"') return NULL;
+    (*p)++;
+    char buf[4096];
+    size_t pos = 0;
+    while (**p && **p != '"' && pos < sizeof(buf) - 1) {
+        if (**p == '\\') {
+            (*p)++;
+            switch (**p) {
+                case '"':  buf[pos++] = '"';  break;
+                case '\\': buf[pos++] = '\\'; break;
+                case '/':  buf[pos++] = '/';  break;
+                case 'n':  buf[pos++] = '\n'; break;
+                case 't':  buf[pos++] = '\t'; break;
+                case 'r':  buf[pos++] = '\r'; break;
+                case 'f':  buf[pos++] = '\f'; break;
+                case 'b':  buf[pos++] = '\b'; break;
+                case 'u': {
+                    char hex[5] = {0};
+                    int h = 0;
+                    for (; h < 4 && **p; h++) hex[h] = *((*p)++);
+                    if (h == 4) {
+                        unsigned codepoint = (unsigned)strtol(hex, NULL, 16);
+                        if (codepoint < 0x80) { buf[pos++] = (char)codepoint; }
+                        else if (codepoint < 0x800) { buf[pos++] = (char)(0xC0 | (codepoint >> 6)); buf[pos++] = (char)(0x80 | (codepoint & 0x3F)); }
+                        else { buf[pos++] = (char)(0xE0 | (codepoint >> 12)); buf[pos++] = (char)(0x80 | ((codepoint >> 6) & 0x3F)); buf[pos++] = (char)(0x80 | (codepoint & 0x3F)); }
+                        (*p)--;
+                    }
+                    break;
+                }
+                default: buf[pos++] = **p; break;
+            }
+        } else {
+            buf[pos++] = **p;
+        }
+        (*p)++;
+    }
+    if (**p == '"') (*p)++;
+    buf[pos] = '\0';
+    return xt_string_new(buf);
+}
+
+static XTValue json_parse_number(const char** p) {
+    const char* start = *p;
+    if (**p == '-') (*p)++;
+    while (**p >= '0' && **p <= '9') (*p)++;
+    if (**p == '.') {
+        (*p)++;
+        while (**p >= '0' && **p <= '9') (*p)++;
+    }
+    if (**p == 'e' || **p == 'E') {
+        (*p)++;
+        if (**p == '+' || **p == '-') (*p)++;
+        while (**p >= '0' && **p <= '9') (*p)++;
+    }
+    size_t len = *p - start;
+    if (len == 0 || (len == 1 && start[0] == '-')) { *p = start; return XT_NULL; }
+    char num[128];
+    if (len >= sizeof(num)) len = sizeof(num) - 1;
+    memcpy(num, start, len); num[len] = '\0';
+    return XT_FROM_INT((int64_t)atoll(num));
+}
+
+static XTValue json_parse_object(const char** p) {
+    if (**p != '{') return XT_NULL;
+    (*p)++;
+    XTValue dict = xt_dict_new(16);
+    json_skip_ws(p);
+    if (**p == '}') { (*p)++; return dict; }
+    while (1) {
+        json_skip_ws(p);
+        XTString* key = json_parse_string(p);
+        if (!key) { xt_release(dict); return XT_NULL; }
+        json_skip_ws(p);
+        if (**p != ':') { xt_release((XTValue)key); xt_release(dict); return XT_NULL; }
+        (*p)++;
+        json_skip_ws(p);
+        XTValue val = json_parse_value(p);
+        xt_dict_set(dict, (XTValue)key, val);
+        xt_release((XTValue)key);
+        if (val != XT_NULL && !XT_IS_INT(val)) xt_release(val);
+        json_skip_ws(p);
+        if (**p == '}') { (*p)++; return dict; }
+        if (**p != ',') { xt_release(dict); return XT_NULL; }
+        (*p)++;
+    }
+}
+
+static XTValue json_parse_array(const char** p) {
+    if (**p != '[') return XT_NULL;
+    (*p)++;
+    XTValue arr = xt_array_new(16);
+    json_skip_ws(p);
+    if (**p == ']') { (*p)++; return arr; }
+    while (1) {
+        json_skip_ws(p);
+        XTValue val = json_parse_value(p);
+        xt_array_append(arr, val);
+        if (val != XT_NULL && !XT_IS_INT(val)) xt_release(val);
+        json_skip_ws(p);
+        if (**p == ']') { (*p)++; return arr; }
+        if (**p != ',') { xt_release(arr); return XT_NULL; }
+        (*p)++;
+    }
+}
+
+static XTValue json_parse_value(const char** p) {
+    json_skip_ws(p);
+    if (**p == '"') {
+        XTString* s = json_parse_string(p);
+        return s ? (XTValue)s : XT_NULL;
+    }
+    if ((**p >= '0' && **p <= '9') || **p == '-') return json_parse_number(p);
+    if (**p == '{') return json_parse_object(p);
+    if (**p == '[') return json_parse_array(p);
+    if (strncmp(*p, "true", 4) == 0) { *p += 4; return XT_TRUE; }
+    if (strncmp(*p, "false", 5) == 0) { *p += 5; return XT_FALSE; }
+    if (strncmp(*p, "null", 4) == 0) { *p += 4; return XT_NULL; }
+    return XT_NULL;
+}
+
 XTValue xt_json_deserialize(XTString* json_str) {
     if (!json_str || json_str->length == 0) return XT_NULL;
-    char* data = json_str->data;
-    if (strcmp(data, "true") == 0) return XT_TRUE;
-    if (strcmp(data, "false") == 0) return XT_FALSE;
-    if (strcmp(data, "null") == 0) return XT_NULL;
-    if (data[0] >= '0' && data[0] <= '9') return XT_FROM_INT(atoll(data));
-    if (data[0] == '"') {
-        size_t len = strlen(data);
-        if (len < 2 || data[len - 1] != '"') {
-            return (XTValue)xt_string_new(data); // 未闭合的字符串，原样返回
-        }
-        char* inner = xt_strdup(data + 1);
-        inner[len - 2] = '\0'; // 安全：len>=2 保证 len-2>=0
-        XTValue res = (XTValue)xt_string_new(inner);
-        free(inner); return res;
-    }
-    return XT_NULL;
+    const char* p = json_str->data;
+    return json_parse_value(&p);
 }
 
 // --- 通用算术与位运算 Fallback ---
