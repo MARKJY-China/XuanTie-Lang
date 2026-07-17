@@ -3695,12 +3695,12 @@
                 此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+                设 mergeLabel_c = 此.标(此.取新标签("contains.merge"))
                 设 isStr = 此.取新寄存器()
                 此.写出("  " & isStr & " = icmp eq i32 " & typeId & ", 3")
                 设 strLabel = 此.标(此.取新标签("contains.str"))
-                设 dictLabel = 此.标(此.取新标签("contains.dict"))
-                设 mergeLabel_c = 此.标(此.取新标签("contains.merge"))
-                此.写出("  br i1 " & isStr & ", label %" & strLabel & ", label %" & dictLabel)
+                设 notStrLabel = 此.标(此.取新标签("contains.notstr"))
+                此.写出("  br i1 " & isStr & ", label %" & strLabel & ", label %" & notStrLabel)
 
                 此.写出(strLabel & ":")
                 设 s1Ptr = 此.取新寄存器()
@@ -3717,6 +3717,22 @@
                 此.写出("  " & sResI64 & " = select i1 " & sCond & ", i64 4, i64 2")
                 此.写出("  br label %" & mergeLabel_c)
 
+                此.写出(notStrLabel & ":")
+                设 isArr = 此.取新寄存器()
+                此.写出("  " & isArr & " = icmp eq i32 " & typeId & ", 5")
+                设 arrLabel = 此.标(此.取新标签("contains.arr"))
+                设 dictLabel = 此.标(此.取新标签("contains.dict"))
+                此.写出("  br i1 " & isArr & ", label %" & arrLabel & ", label %" & dictLabel)
+
+                此.写出(arrLabel & ":")
+                设 aRes = 此.取新寄存器()
+                此.写出("  " & aRes & " = call i64 @xt_array_contains(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                设 aCond = 此.取新寄存器()
+                此.写出("  " & aCond & " = icmp ne i64 " & aRes & ", 2")
+                设 aResI64 = 此.取新寄存器()
+                此.写出("  " & aResI64 & " = select i1 " & aCond & ", i64 4, i64 2")
+                此.写出("  br label %" & mergeLabel_c)
+
                 此.写出(dictLabel & ":")
                 设 dRes = 此.取新寄存器()
                 此.写出("  " & dRes & " = call i32 @xt_dict_contains(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
@@ -3728,7 +3744,7 @@
 
                 此.写出(mergeLabel_c & ":")
                 设 resI64 = 此.取新寄存器()
-                此.写出("  " & resI64 & " = phi i64 [ " & sResI64 & ", %" & strLabel & " ], [ " & dResI64 & ", %" & dictLabel & " ]")
+                此.写出("  " & resI64 & " = phi i64 [ " & sResI64 & ", %" & strLabel & " ], [ " & aResI64 & ", %" & arrLabel & " ], [ " & dResI64 & ", %" & dictLabel & " ]")
 
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 参Xt & ")")

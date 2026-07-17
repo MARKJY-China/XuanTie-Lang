@@ -164,7 +164,7 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("%XTString = type { i32, i32, i32, i8*, i64, i32 }\n")
 	res.WriteString("%XTArray = type { i32, i32, i32, i8**, i64, i64 }\n")
 	res.WriteString("%XTDict = type { i32, i32, i32, i8***, i64, i64 }\n")
-	res.WriteString("%XTFunction = type { i32, i32, i32, i8*, i64 }\n")
+	res.WriteString("%XTFunction = type { i32, i32, i32, i8* }\n")
 	res.WriteString("%XTInstance = type { i32, i32, i32, i8***, i64, i64, i8* }\n")
 	res.WriteString("%XTResult = type { i32, i32, i32, i32, i32, i64, i64 }\n")
 	res.WriteString("declare %XTArray* @xt_dict_keys(%XTDict*)\n")
