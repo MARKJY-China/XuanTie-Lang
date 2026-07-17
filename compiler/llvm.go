@@ -1,4 +1,4 @@
-// LLVMCompiler 编译器
+﻿// LLVMCompiler 编译器
 // 由TraeAI负责大部分代码编写。所有代码都已经过作者审核并经过ClaudeOpus4.7深度扫描分析。
 
 package compiler
@@ -164,7 +164,7 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("%XTString = type { i32, i32, i32, i8*, i64, i32 }\n")
 	res.WriteString("%XTArray = type { i32, i32, i32, i8**, i64, i64 }\n")
 	res.WriteString("%XTDict = type { i32, i32, i32, i8***, i64, i64 }\n")
-	res.WriteString("%XTFunction = type { i32, i32, i32, i8* }\n")
+	res.WriteString("%XTFunction = type { i32, i32, i32, i8*, i64 }\n")
 	res.WriteString("%XTInstance = type { i32, i32, i32, i8***, i64, i64, i8* }\n")
 	res.WriteString("%XTResult = type { i32, i32, i32, i32, i32, i64, i64 }\n")
 	res.WriteString("declare %XTArray* @xt_dict_keys(%XTDict*)\n")
@@ -2793,6 +2793,13 @@ func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string
 	oldTable := make(map[string]SymbolInfo)
 	for k, v := range c.symbolTable { oldTable[k] = v }
 	oldScopeStack := c.scopeStack
+		// 隔离符号表：匿名函数仅可访问全局 + 参数 + 捕获
+		c.symbolTable = make(map[string]SymbolInfo)
+		for k, v := range oldTable {
+			if v.IsGlobal {
+				c.symbolTable[k] = v
+			}
+		}
 
 	c.output = bytes.Buffer{}
 	c.allocaOutput = bytes.Buffer{}
@@ -2820,6 +2827,18 @@ func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string
 		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
 	}
 
+		// 闭包捕获：为外层局部变量分配 alloca
+		for name, info := range oldTable {
+			if info.IsGlobal {
+				continue
+			}
+			if _, exists := c.symbolTable[name]; exists {
+				continue
+			}
+			addrReg := fmt.Sprintf("%%\"%s\"", name)
+			c.emitAlloca("%s = alloca i64", addrReg)
+			c.symbolTable[name] = SymbolInfo{AddrReg: addrReg, Type: info.Type, ClassName: info.ClassName}
+		}
 	// 编译函数体
 	for _, stmt := range fl.Body {
 		c.compileStatement(stmt)
