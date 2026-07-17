@@ -68,6 +68,7 @@ int xt_threadpool_submit(xt_pool_task func, void* arg);
 
 // 阻塞等待指定任务完成，返回任务结果
 void* xt_threadpool_wait(int task_id);
+void* xt_threadpool_try_wait(int task_id);
 
 // 获取当前 worker 数量
 int xt_threadpool_worker_count(void);

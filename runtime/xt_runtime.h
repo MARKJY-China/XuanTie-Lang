@@ -146,26 +146,45 @@ typedef struct {
 } XTTask;
 
 // 异步任务 API (v0.2: 对接线程池)
+#include "xt_scheduler.h"
+
 XTTask* xt_async_spawn(void* func_ptr, XTValue arg);
 XTValue xt_async_wait(XTTask* task);
+void    xt_async_notify_complete(XTTask* task);
 
 /**
- * @brief 通道结构 (简单环形队列，v0.2 已加锁)
+ * @brief 通道结构 (环形队列，v0.3: 条件变量支持阻塞)
  */
 #if defined(_WIN32)
 #include <windows.h>
 typedef CRITICAL_SECTION xt_chan_mutex_t;
+typedef CONDITION_VARIABLE xt_chan_cond_t;
 #define XT_CHAN_MUTEX_INIT(m)   InitializeCriticalSection(m)
 #define XT_CHAN_MUTEX_DESTROY(m) DeleteCriticalSection(m)
 #define XT_CHAN_MUTEX_LOCK(m)    EnterCriticalSection(m)
 #define XT_CHAN_MUTEX_UNLOCK(m)  LeaveCriticalSection(m)
+#define XT_CHAN_COND_INIT(c)     InitializeConditionVariable(c)
+#define XT_CHAN_COND_DESTROY(c)  /* no-op */
+#define XT_CHAN_COND_WAIT(c,m,ms) SleepConditionVariableCS(c,m,ms)
+#define XT_CHAN_COND_SIGNAL(c)   WakeConditionVariable(c)
+#define XT_CHAN_COND_BROADCAST(c) WakeAllConditionVariable(c)
 #else
 #include <pthread.h>
 typedef pthread_mutex_t xt_chan_mutex_t;
+typedef pthread_cond_t  xt_chan_cond_t;
 #define XT_CHAN_MUTEX_INIT(m)   pthread_mutex_init(m, NULL)
 #define XT_CHAN_MUTEX_DESTROY(m) pthread_mutex_destroy(m)
 #define XT_CHAN_MUTEX_LOCK(m)    pthread_mutex_lock(m)
 #define XT_CHAN_MUTEX_UNLOCK(m)  pthread_mutex_unlock(m)
+#define XT_CHAN_COND_INIT(c)     pthread_cond_init(c, NULL)
+#define XT_CHAN_COND_DESTROY(c)  pthread_cond_destroy(c)
+#define XT_CHAN_COND_WAIT(c,m,ms) ({ \
+    struct timespec _ts; clock_gettime(CLOCK_REALTIME, &_ts); \
+    _ts.tv_sec += (ms)/1000; _ts.tv_nsec += ((ms)%1000)*1000000; \
+    if (_ts.tv_nsec >= 1000000000) { _ts.tv_sec++; _ts.tv_nsec -= 1000000000; } \
+    pthread_cond_timedwait(c, m, &_ts); })
+#define XT_CHAN_COND_SIGNAL(c)   pthread_cond_signal(c)
+#define XT_CHAN_COND_BROADCAST(c) pthread_cond_broadcast(c)
 #endif
 
 typedef struct {
@@ -175,7 +194,9 @@ typedef struct {
     size_t capacity;
     size_t head;
     size_t tail;
-    xt_chan_mutex_t mu;   // 线程安全：保护所有字段
+    xt_chan_mutex_t mu;
+    xt_chan_cond_t  recv_cv;  // 接收者等待条件
+    xt_chan_cond_t  send_cv;  // 发送者等待条件
 } XTChannel;
 
 /**
@@ -387,6 +408,12 @@ XTValue xt_wait(XTValue task_val);
 XTValue xt_channel_new(size_t capacity);
 void xt_channel_send(XTValue chan_val, XTValue val);
 XTValue xt_channel_receive(XTValue chan_val);
+// 阻塞版本：等待直到有数据/空间或超时
+XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms);
+int    xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms);
+// 多通道选择：返回最先就绪的通道索引，超时返回 -1
+int    xt_channel_select(XTValue* channels, int count, int timeout_ms);
+int    xt_channel_select_array(XTValue arr_val, int timeout_ms);
 
 // --- Socket 操作（由 xt_net.c 实现）---
 struct XTSocket;

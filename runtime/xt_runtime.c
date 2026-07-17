@@ -80,6 +80,123 @@ static uint64_t xt_hash_value(XTValue val);
  * 1. 设置 Windows 控制台为 UTF-8 编码 (CP 65001)，解决中文显示问题。
  * 2. 设置区域设置 (Locale) 为 UTF8，确保 MinGW 的 printf/fprintf 能正确处理多字节字符。
  */
+// ============================================================
+// 用户态调度器 (P5)
+// ============================================================
+XTScheduler* g_scheduler = NULL;
+
+#if defined(_WIN32)
+static int64_t _sched_now_us() {
+    static LARGE_INTEGER _freq = {0};
+    if (_freq.QuadPart == 0) { QueryPerformanceFrequency(&_freq); }
+    LARGE_INTEGER _now; QueryPerformanceCounter(&_now);
+    return (int64_t)((_now.QuadPart * 1000000) / _freq.QuadPart);
+}
+#define _sched_sleep_us(us) do { if (us > 0) { HANDLE _t = CreateWaitableTimer(NULL, TRUE, NULL); \
+    LARGE_INTEGER _due; _due.QuadPart = -(LONGLONG)(us * 10); \
+    SetWaitableTimer(_t, &_due, 0, NULL, NULL, FALSE); WaitForSingleObject(_t, INFINITE); CloseHandle(_t); } } while(0)
+#else
+static int64_t _sched_now_us() {
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+#define _sched_sleep_us(us) do { if (us > 0) { struct timespec _ts = {0, (long)(us * 1000)}; nanosleep(&_ts, NULL); } } while(0)
+#endif
+
+static void _sched_timer_up(XTFiber** heap, int idx) {
+    while (idx > 0) { int p = (idx-1)/2; if (heap[idx]->wakeup_at >= heap[p]->wakeup_at) break;
+        XTFiber* t = heap[idx]; heap[idx] = heap[p]; heap[p] = t; idx = p; }
+}
+static void _sched_timer_down(XTFiber** heap, int count, int idx) {
+    for (;;) { int l=idx*2+1, r=idx*2+2, s=idx;
+        if (l<count && heap[l]->wakeup_at < heap[s]->wakeup_at) s=l;
+        if (r<count && heap[r]->wakeup_at < heap[s]->wakeup_at) s=r;
+        if (s==idx) break; XTFiber* t=heap[idx]; heap[idx]=heap[s]; heap[s]=t; idx=s; }
+}
+void xt_scheduler_timer_add(XTFiber* f, int64_t wakeup_at) {
+    if (g_scheduler->timer_count >= XT_TIMER_HEAP_SIZE) return;
+    f->wakeup_at = wakeup_at; f->status = XT_FIBER_SLEEPING;
+    int idx = g_scheduler->timer_count++;
+    g_scheduler->timer_heap[idx] = f;
+    _sched_timer_up(g_scheduler->timer_heap, idx);
+}
+void xt_scheduler_timer_tick(int64_t now) {
+    while (g_scheduler->timer_count > 0) {
+        XTFiber* f = g_scheduler->timer_heap[0];
+        if (f->wakeup_at > now) break;
+        g_scheduler->timer_heap[0] = g_scheduler->timer_heap[--g_scheduler->timer_count];
+        if (g_scheduler->timer_count > 0) _sched_timer_down(g_scheduler->timer_heap, g_scheduler->timer_count, 0);
+        f->status = XT_FIBER_READY; xt_scheduler_enqueue(f);
+    }
+}
+void xt_scheduler_enqueue(XTFiber* f) {
+    f->next = NULL;
+    if (g_scheduler->ready_tail) { g_scheduler->ready_tail->next = f; }
+    else { g_scheduler->ready_head = f; }
+    g_scheduler->ready_tail = f;
+}
+XTFiber* xt_scheduler_dequeue() {
+    XTFiber* f = g_scheduler->ready_head;
+    if (f) { g_scheduler->ready_head = f->next; if (!g_scheduler->ready_head) g_scheduler->ready_tail = NULL; f->next = NULL; }
+    return f;
+}
+void xt_scheduler_init() {
+    g_scheduler = (XTScheduler*)calloc(1, sizeof(XTScheduler));
+    g_scheduler->fibers = (XTFiber*)calloc(XT_MAX_FIBERS, sizeof(XTFiber));
+}
+XTFiber* xt_scheduler_spawn(void* state, int (*poll)(void*)) {
+    if (!g_scheduler || g_scheduler->fiber_count >= XT_MAX_FIBERS) return NULL;
+    XTFiber* f = &g_scheduler->fibers[g_scheduler->fiber_count++];
+    f->state = state; f->poll = poll; f->status = XT_FIBER_READY;
+    xt_scheduler_enqueue(f); return f;
+}
+void xt_scheduler_run() {
+    if (!g_scheduler || g_scheduler->fiber_count == 0) return;
+    g_scheduler->running = 1;
+    while (g_scheduler->running) {
+        g_scheduler->now_us = _sched_now_us();
+        xt_scheduler_timer_tick(g_scheduler->now_us);
+        XTFiber* f = xt_scheduler_dequeue();
+        if (!f) {
+            int64_t next_wake = 0;
+            if (g_scheduler->timer_count > 0) {
+                next_wake = g_scheduler->timer_heap[0]->wakeup_at - g_scheduler->now_us;
+                if (next_wake < 0) next_wake = 0;
+            }
+            if (next_wake == 0) {
+                int has_waiting = 0;
+                for (int i = 0; i < g_scheduler->fiber_count; i++)
+                    if (g_scheduler->fibers[i].status == XT_FIBER_WAITING) { has_waiting = 1; break; }
+                if (has_waiting) { _sched_sleep_us(1000); }
+                else { g_scheduler->running = 0; }
+            } else { _sched_sleep_us(next_wake < 100 ? 100 : next_wake); }
+            continue;
+        }
+        g_scheduler->current = f;
+        int result = f->poll(f->state);
+        g_scheduler->current = NULL;
+        if (result != 0) { f->status = XT_FIBER_DONE; }
+    }
+}
+void xt_scheduler_yield() {
+    if (g_scheduler->current) { g_scheduler->current->status = XT_FIBER_READY; xt_scheduler_enqueue(g_scheduler->current); }
+}
+void xt_scheduler_sleep_us(int64_t us) {
+    if (g_scheduler->current) { xt_scheduler_timer_add(g_scheduler->current, g_scheduler->now_us + us); }
+}
+void xt_scheduler_wait_task(void* task) {
+    if (g_scheduler->current) { g_scheduler->current->status = XT_FIBER_WAITING; g_scheduler->current->wait_target = task; }
+}
+void xt_scheduler_wake_task(void* task) {
+    if (!g_scheduler || !task) return;
+    for (int i = 0; i < g_scheduler->fiber_count; i++) {
+        XTFiber* f = &g_scheduler->fibers[i];
+        if (f->status == XT_FIBER_WAITING && f->wait_target == task) {
+            f->status = XT_FIBER_READY; f->wait_target = NULL; xt_scheduler_enqueue(f);
+        }
+    }
+}
+
 void xt_init() {
 #ifdef _WIN32
     SetConsoleOutputCP(65001);   // 将 Windows 控制台输出切换到 UTF-8
@@ -89,6 +206,7 @@ void xt_init() {
     XT_CHAN_MUTEX_INIT(&g_weak_mutex);  // 初始化弱引用全局锁
     xt_threadpool_init(0);              // 初始化线程池（0=自动检测CPU核数）
     xt_net_init();                      // 初始化网络子系统
+    xt_scheduler_init();                // 初始化用户态调度器
 }
 
 /**
@@ -776,6 +894,8 @@ static void xt_free_obj(XTObject* obj) {
         case XT_TYPE_CHANNEL: {
             XTChannel* chan = (XTChannel*)obj;
             XT_CHAN_MUTEX_DESTROY(&chan->mu);
+            XT_CHAN_COND_DESTROY(&chan->recv_cv);
+            XT_CHAN_COND_DESTROY(&chan->send_cv);
             if (chan->buffer) {
                 for (size_t i = 0; i < chan->size; i++) {
                     size_t idx = (chan->head + i) % chan->capacity;
@@ -1793,6 +1913,7 @@ XTValue xt_wait(XTValue task_val) {
 typedef struct {
     void* func_ptr;
     XTValue arg;
+    XTTask* task;  // 用于完成通知
 } async_ctx;
 
 static void* async_runner(void* p) {
@@ -1800,8 +1921,17 @@ static void* async_runner(void* p) {
     typedef XTValue (*xt_func)(XTValue);
     xt_func f = (xt_func)ctx->func_ptr;
     XTValue result = f(ctx->arg);
+    ctx->task->result = result;
+    ctx->task->status = 1;
+    xt_async_notify_complete(ctx->task);
     free(ctx);
     return (void*)result;
+}
+
+void xt_async_notify_complete(XTTask* task) {
+    if (g_scheduler && task) {
+        xt_scheduler_wake_task(task);
+    }
 }
 
 XTTask* xt_async_spawn(void* func_ptr, XTValue arg) {
@@ -1811,6 +1941,7 @@ XTTask* xt_async_spawn(void* func_ptr, XTValue arg) {
     async_ctx* ctx = (async_ctx*)malloc(sizeof(async_ctx));
     ctx->func_ptr = func_ptr;
     ctx->arg = arg;
+    ctx->task = t;
     t->pool_id = xt_threadpool_submit(async_runner, ctx);
     return t;
 }
@@ -1823,11 +1954,23 @@ XTValue xt_async_wait(XTTask* task) {
     return task->result;
 }
 
+int xt_async_try_wait(XTValue task) {
+    XTTask* t = (XTTask*)task;
+    if (!t || t->pool_id < 0 || t->status == 1) return 1;
+    void* raw = xt_threadpool_try_wait(t->pool_id);
+    if (raw == NULL) return 0;
+    t->result = (XTValue)raw;
+    t->status = 1;
+    return 1;
+}
+
 XTValue xt_channel_new(size_t capacity) {
     XTChannel* c = (XTChannel*)xt_malloc(sizeof(XTChannel), XT_TYPE_CHANNEL);
     c->buffer = (XTValue*)calloc(capacity, sizeof(XTValue));
     c->size = 0; c->capacity = capacity; c->head = 0; c->tail = 0;
     XT_CHAN_MUTEX_INIT(&c->mu);
+    XT_CHAN_COND_INIT(&c->recv_cv);
+    XT_CHAN_COND_INIT(&c->send_cv);
     return (XTValue)c;
 }
 
@@ -1842,6 +1985,7 @@ void xt_channel_send(XTValue chan_val, XTValue val) {
     c->buffer[c->tail] = val;
     xt_retain(val);
     c->tail = (c->tail + 1) % c->capacity; c->size++;
+    XT_CHAN_COND_SIGNAL(&c->recv_cv);  // 唤醒接收者
     XT_CHAN_MUTEX_UNLOCK(&c->mu);
 }
 
@@ -1853,8 +1997,96 @@ XTValue xt_channel_receive(XTValue chan_val) {
     XTValue val = c->buffer[c->head];
     c->buffer[c->head] = XT_NULL;
     c->head = (c->head + 1) % c->capacity; c->size--;
+    XT_CHAN_COND_SIGNAL(&c->send_cv);  // 唤醒发送者
     XT_CHAN_MUTEX_UNLOCK(&c->mu);
     return val;
+}
+
+// 阻塞接收：等待直到有数据或超时（-1 = 无限等待）
+XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms) {
+    if (XT_IS_INT(chan_val)) return XT_NULL;
+    XTChannel* c = (XTChannel*)chan_val;
+    XT_CHAN_MUTEX_LOCK(&c->mu);
+    while (c->size == 0) {
+        if (timeout_ms == 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); return XT_NULL; }
+        DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
+        if (!XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms)) {
+            // timeout
+            XT_CHAN_MUTEX_UNLOCK(&c->mu);
+            return XT_NULL;
+        }
+        if (timeout_ms > 0) timeout_ms = 0;  // 只等一次
+    }
+    XTValue val = c->buffer[c->head];
+    c->buffer[c->head] = XT_NULL;
+    c->head = (c->head + 1) % c->capacity; c->size--;
+    XT_CHAN_COND_SIGNAL(&c->send_cv);
+    XT_CHAN_MUTEX_UNLOCK(&c->mu);
+    return val;
+}
+
+// 阻塞发送：等待直到有空间或超时；返回 1=成功 0=超时
+int xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms) {
+    if (XT_IS_INT(chan_val)) return 0;
+    XTChannel* c = (XTChannel*)chan_val;
+    XT_CHAN_MUTEX_LOCK(&c->mu);
+    while (c->size >= c->capacity) {
+        if (timeout_ms == 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); return 0; }
+        DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
+        if (!XT_CHAN_COND_WAIT(&c->send_cv, &c->mu, wait_ms)) {
+            XT_CHAN_MUTEX_UNLOCK(&c->mu);
+            return 0;
+        }
+        if (timeout_ms > 0) timeout_ms = 0;
+    }
+    if (c->buffer[c->tail] != XT_NULL) xt_release(c->buffer[c->tail]);
+    c->buffer[c->tail] = val;
+    xt_retain(val);
+    c->tail = (c->tail + 1) % c->capacity; c->size++;
+    XT_CHAN_COND_SIGNAL(&c->recv_cv);
+    XT_CHAN_MUTEX_UNLOCK(&c->mu);
+    return 1;
+}
+
+// 多通道选择：轮询所有通道，返回最先就绪的索引，全空则等待并重试
+int xt_channel_select(XTValue* channels, int count, int timeout_ms) {
+    if (!channels || count <= 0) return -1;
+    for (;;) {
+        for (int i = 0; i < count; i++) {
+            if (XT_IS_INT(channels[i])) continue;
+            XTChannel* c = (XTChannel*)channels[i];
+            XT_CHAN_MUTEX_LOCK(&c->mu);
+            if (c->size > 0) {
+                XT_CHAN_MUTEX_UNLOCK(&c->mu);
+                return i;
+            }
+            XT_CHAN_MUTEX_UNLOCK(&c->mu);
+        }
+        if (timeout_ms == 0) return -1;
+        for (int i = 0; i < count; i++) {
+            if (XT_IS_INT(channels[i])) continue;
+            XTChannel* c = (XTChannel*)channels[i];
+            XT_CHAN_MUTEX_LOCK(&c->mu);
+            if (c->size > 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); break; }
+            DWORD wait_ms = (timeout_ms < 0) ? 100 : (DWORD)(timeout_ms < 100 ? timeout_ms : 100);
+            XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms);
+            int had_data = (c->size > 0);
+            XT_CHAN_MUTEX_UNLOCK(&c->mu);
+            if (had_data) break;
+        }
+        if (timeout_ms > 0) {
+            timeout_ms -= 100;
+            if (timeout_ms <= 0) return -1;
+        }
+    }
+}
+
+// XTArray 包装：从数组对象提取通道句柄并调用 xt_channel_select
+int xt_channel_select_array(XTValue arr_val, int timeout_ms) {
+    if (!xt_is_real_ptr(arr_val)) return -1;
+    XTArray* arr = (XTArray*)arr_val;
+    if (arr->length == 0) return -1;
+    return xt_channel_select((XTValue*)arr->elements, (int)arr->length, timeout_ms);
 }
 
 // --- 系统原语与网络模拟 ---

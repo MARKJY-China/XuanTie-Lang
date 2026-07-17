@@ -248,5 +248,22 @@ void* xt_threadpool_wait(int task_id) {
     }
 }
 
+void* xt_threadpool_try_wait(int task_id) {
+    xt_mutex_lock(&g_pool.mu);
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (g_pool.tasks[i].id == task_id && g_pool.tasks[i].done) {
+            void* r = g_pool.tasks[i].result;
+            xt_mutex_unlock(&g_pool.mu);
+            return r;
+        }
+        if (g_pool.tasks[i].id == task_id) {
+            xt_mutex_unlock(&g_pool.mu);
+            return NULL; // found but not done
+        }
+    }
+    xt_mutex_unlock(&g_pool.mu);
+    return (void*)(intptr_t)-1; // task ID not found (may be completed)
+}
+
 int xt_threadpool_worker_count(void) { return g_pool.worker_count; }
 int xt_threadpool_pending_count(void) { return g_pool.task_count; }
