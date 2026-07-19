@@ -2892,7 +2892,13 @@ func (c *LLVMCompiler) compileAsync(e *ast.AsyncExpression) (string, string, str
 	oldOutput := c.output
 	oldFunc := c.currentFunc
 	oldLabel := c.currentLabel
+	oldAllocaOutput := c.allocaOutput
+	oldAllocaSet := c.allocaSet
+	oldScopeStack := c.scopeStack
 	c.output = bytes.Buffer{}
+	c.allocaOutput = bytes.Buffer{}
+	c.allocaSet = make(map[string]bool)
+	c.scopeStack = [][]string{}
 	c.currentFunc = fmt.Sprintf("__async_%d", asyncID)
 	c.emit("define i64 %s(i64) {", funcName)
 	c.emit("entry:")
@@ -2902,8 +2908,16 @@ func (c *LLVMCompiler) compileAsync(e *ast.AsyncExpression) (string, string, str
 	}
 	c.emit("  ret i64 0")
 	c.emit("}")
-	asyncFuncIR := c.output.String()
+	funcBody := c.output.String()
+	funcAllocas := c.allocaOutput.String()
+	asyncFuncIR := funcBody
+	if funcAllocas != "" {
+		asyncFuncIR = strings.Replace(funcBody, "entry:\n", "entry:\n"+funcAllocas, 1)
+	}
 	c.output = oldOutput
+	c.allocaOutput = oldAllocaOutput
+	c.allocaSet = oldAllocaSet
+	c.scopeStack = oldScopeStack
 	c.currentFunc = oldFunc
 	c.currentLabel = oldLabel
 
@@ -2929,6 +2943,11 @@ func (c *LLVMCompiler) compileParallel(e *ast.ParallelExpression) (string, strin
 		pid := c.asyncCounter; c.asyncCounter++
 		funcName := fmt.Sprintf("@\"__parallel_%d\"", pid)
 		oldOutput := c.output; oldFunc := c.currentFunc; oldLabel := c.currentLabel
+		oldAllocaOutput := c.allocaOutput; oldAllocaSet := c.allocaSet
+		oldScopeStack := c.scopeStack
+		c.allocaOutput = bytes.Buffer{}
+		c.allocaSet = make(map[string]bool)
+		c.scopeStack = [][]string{}
 		c.output = bytes.Buffer{}
 		c.currentFunc = fmt.Sprintf("__parallel_%d", pid)
 		c.emit("define i64 %s(i64) {", funcName)
@@ -2937,8 +2956,16 @@ func (c *LLVMCompiler) compileParallel(e *ast.ParallelExpression) (string, strin
 			c.compileStatement(stmt)
 		}
 		c.emit("  ret i64 0"); c.emit("}")
-		c.globalOutput.WriteString(c.output.String() + "\n")
-		c.output = oldOutput; c.currentFunc = oldFunc; c.currentLabel = oldLabel
+		parBody := c.output.String()
+		parAllocas := c.allocaOutput.String()
+		parIR := parBody
+		if parAllocas != "" {
+			parIR = strings.Replace(parBody, "entry:\n", "entry:\n"+parAllocas, 1)
+		}
+		c.globalOutput.WriteString(parIR + "\n")
+		c.output = oldOutput; c.allocaOutput = oldAllocaOutput
+		c.allocaSet = oldAllocaSet; c.scopeStack = oldScopeStack
+		c.currentFunc = oldFunc; c.currentLabel = oldLabel
 
 		fRaw := c.nextReg()
 		c.emit("  %s = bitcast i64 (i64)* %s to i8*", fRaw, funcName)
