@@ -1,0 +1,69 @@
+// Test/71_调度器正确性测试.xt
+// 测试调度器行为：多 fiber 调度、不同耗时交错、跨依赖
+
+示("=== Test 71: 调度器正确性测试 ===")
+
+// 测试1: 5个并发 fiber
+示("[测试1] 5 fiber")
+设 t1done = 0
+设 t1f1 = 异步 { 设 t1i1 = 异步 { t1done = t1done + 1 }; 等待(t1i1) }
+设 t1f2 = 异步 { 设 t1i2 = 异步 { t1done = t1done + 1 }; 等待(t1i2) }
+设 t1f3 = 异步 { 设 t1i3 = 异步 { t1done = t1done + 1 }; 等待(t1i3) }
+设 t1f4 = 异步 { 设 t1i4 = 异步 { t1done = t1done + 1 }; 等待(t1i4) }
+设 t1f5 = 异步 { 设 t1i5 = 异步 { t1done = t1done + 1 }; 等待(t1i5) }
+等待(t1f1); 等待(t1f2); 等待(t1f3); 等待(t1f4); 等待(t1f5)
+若 t1done == 5 { 示("PASS: 测试1") } 否 { 示("FAIL: done=" & t1done.转字()) }
+
+// 测试2: 不同耗时交错
+示("[测试2] 不同耗时交错")
+设 t2order = ""
+设 t2fast = 异步 { 设 t2fi = 异步 { 时.睡(50) }; 等待(t2fi); t2order = t2order & "F" }
+设 t2mid  = 异步 { 设 t2mi = 异步 { 时.睡(100) }; 等待(t2mi); t2order = t2order & "M" }
+设 t2slow = 异步 { 设 t2si = 异步 { 时.睡(150) }; 等待(t2si); t2order = t2order & "S" }
+等待(t2fast)
+等待(t2mid)
+等待(t2slow)
+若 t2order == "FMS" { 示("PASS: 测试2") } 否 { 示("FAIL: order=" & t2order) }
+
+// 测试3: 纯计算异步（N=0）
+示("[测试3] N=0")
+设 t3result = 0
+设 t3pure = 异步 { t3result = 42 * 2 }
+等待(t3pure)
+若 t3result == 84 { 示("PASS: 测试3") } 否 { 示("FAIL: " & t3result.转字()) }
+
+// 测试4: 跨 fiber 依赖
+示("[测试4] 跨依赖")
+设 t4val = 0
+设 t4inner = 异步 { t4val = 99 }
+设 t4outer = 异步 { 等待(t4inner); t4val = t4val + 1 }
+等待(t4outer)
+若 t4val == 100 { 示("PASS: 测试4") } 否 { 示("FAIL: val=" & t4val.转字()) }
+
+// 测试5: 50 fiber 压力
+示("[测试5] 50 fiber")
+设 t5counter = 0
+设 t5tasks = []
+设 t5i = 0
+当 t5i < 50 {
+    设 t5inner = 异步 { t5counter = t5counter + 1 }
+    设 t5outer = 异步 { 等待(t5inner) }
+    t5tasks.追加(t5outer)
+    t5i = t5i + 1
+}
+遍历 t5t 于 t5tasks { 等待(t5t) }
+若 t5counter == 50 { 示("PASS: 测试5") } 否 { 示("FAIL: counter=" & t5counter.转字()) }
+
+// 测试6: 混合 N=0 + N>0 调度
+示("[测试6] 混合调度")
+设 t6a = 0; 设 t6b = 0; 设 t6c = 0
+设 t6n0a = 异步 { t6a = 1 }       // N=0
+设 t6n0b = 异步 { t6b = 2 }       // N=0
+设 t6n1 = 异步 {                  // N=1
+    设 t6inn = 异步 { t6c = 3 }
+    等待(t6inn)
+}
+等待(t6n0a); 等待(t6n0b); 等待(t6n1)
+若 t6a == 1 且 t6b == 2 且 t6c == 3 { 示("PASS: 测试6") } 否 { 示("FAIL") }
+
+示("=== Test 71 完成 ===")

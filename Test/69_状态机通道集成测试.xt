@@ -1,0 +1,86 @@
+// Test/69_状态机通道集成测试.xt
+// 测试 收/发 在异步块内的阻塞行为、多等待+通道组合、生产者-消费者链路
+
+示("=== Test 69: 状态机通道集成测试 ===")
+
+// 测试1: 收在状态机内阻塞等待
+示("[测试1] 状态机阻塞收")
+设 t1ch = 道(1)
+设 t1sender = 异步 {
+    时.睡(200)
+    t1ch.发("msg1")
+}
+设 t1receiver = 异步 {
+    设 t1r = t1ch.收()
+    若 t1r == "msg1" { 示("PASS: 测试1") } 否 { 示("FAIL: got=" & t1r) }
+}
+等待(t1sender)
+等待(t1receiver)
+
+// 测试2: 发在状态机内阻塞
+示("[测试2] 状态机阻塞发")
+设 t2ch = 道(1)
+设 t2receiver = 异步 {
+    时.睡(200)
+    设 t2r = t2ch.收()
+    若 t2r == "first" { 示("PASS: 测试2") } 否 { 示("FAIL: got=" & t2r) }
+}
+设 t2sender = 异步 {
+    t2ch.发("first")
+    t2ch.发("second")
+}
+等待(t2receiver)
+等待(t2sender)
+
+// 测试3: 多等待+通道组合
+示("[测试3] 多等待+通道")
+设 t3ch = 道(3)
+设 t3inner = 异步 { 时.睡(100); t3ch.发("from_inner") }
+设 t3combo = 异步 {
+    等待(t3inner)
+    设 t3r = t3ch.收()
+    若 t3r == "from_inner" { 示("PASS: 测试3") } 否 { 示("FAIL: got=" & t3r) }
+}
+等待(t3combo)
+
+// 测试4: 生产者-消费者
+示("[测试4] 生产者-消费者")
+设 t4ch = 道(2)
+设 t4sum = 0
+设 t4producer = 异步 { t4ch.发(10); t4ch.发(20) }
+设 t4consumer = 异步 {
+    设 t4a = t4ch.收()
+    设 t4b = t4ch.收()
+    t4sum = t4a + t4b
+}
+等待(t4producer)
+等待(t4consumer)
+若 t4sum == 30 { 示("PASS: 测试4") } 否 { 示("FAIL: sum=" & t4sum.转字()) }
+
+// 测试5: 通道满时多接收者
+示("[测试5] 多接收者")
+设 t5ch = 道(1)
+设 t5r1ok = 假
+设 t5r2ok = 假
+设 t5sender = 异步 { t5ch.发("A"); t5ch.发("B") }
+设 t5recv1 = 异步 { 设 t5x = t5ch.收(); 若 t5x != 空 { t5r1ok = 真 } }
+设 t5recv2 = 异步 { 设 t5y = t5ch.收(); 若 t5y != 空 { t5r2ok = 真 } }
+等待(t5sender)
+等待(t5recv1)
+等待(t5recv2)
+若 t5r1ok 且 t5r2ok { 示("PASS: 测试5") } 否 { 示("FAIL") }
+
+// 测试6: 异步内混合操作
+示("[测试6] 异步内混合")
+设 t6ch = 道(2)
+设 t6done = 假
+设 t6task = 异步 {
+    t6ch.发("start")
+    时.睡(50)
+    设 t6r = t6ch.收()
+    若 t6r == "start" { t6done = 真 }
+}
+等待(t6task)
+若 t6done { 示("PASS: 测试6") } 否 { 示("FAIL") }
+
+示("=== Test 69 完成 ===")

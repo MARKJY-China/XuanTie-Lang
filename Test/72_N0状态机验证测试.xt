@@ -1,0 +1,78 @@
+// Test/72_N0状态机验证测试.xt
+// 验证 P6 统一编译：所有异步块走状态机，N=0 纯计算正确
+
+示("=== Test 72: N=0 状态机验证 ===")
+
+// 测试1: 纯计算赋值
+示("[测试1] 赋值")
+设 t1x = 0
+设 t1task = 异步 { t1x = 42 }
+等待(t1task)
+若 t1x == 42 { 示("PASS: 测试1") } 否 { 示("FAIL: x=" & t1x.转字()) }
+
+// 测试2: 纯计算算术
+示("[测试2] 算术")
+设 t2r = 0
+设 t2calc = 异步 { 设 t2a = 100; 设 t2b = 200; t2r = t2a + t2b }
+等待(t2calc)
+若 t2r == 300 { 示("PASS: 测试2") } 否 { 示("FAIL: r=" & t2r.转字()) }
+
+// 测试3: 字符串操作
+示("[测试3] 字符串")
+设 t3s = ""
+设 t3str = 异步 { t3s = "Hello" & " " & "World" }
+等待(t3str)
+若 t3s == "Hello World" { 示("PASS: 测试3") } 否 { 示("FAIL: s=" & t3s) }
+
+// 测试4: 混合 N=0 + N>0
+示("[测试4] 混合嵌套")
+设 t4val = 0
+设 t4inner = 异步 { t4val = 5 }
+设 t4outer = 异步 { 等待(t4inner); t4val = t4val * 10 }
+等待(t4outer)
+若 t4val == 50 { 示("PASS: 测试4") } 否 { 示("FAIL: val=" & t4val.转字()) }
+
+// 测试5: 多个 N=0 并发
+示("[测试5] 多 N=0 并发")
+设 t5a = 0; 设 t5b = 0; 设 t5c = 0
+设 t5t1 = 异步 { t5a = 10 }
+设 t5t2 = 异步 { t5b = 20 }
+设 t5t3 = 异步 { t5c = 30 }
+等待(t5t1); 等待(t5t2); 等待(t5t3)
+若 t5a == 10 且 t5b == 20 且 t5c == 30 { 示("PASS: 测试5") } 否 { 示("FAIL") }
+
+// 测试6: 50 个 N=0
+示("[测试6] 50 N=0")
+设 t6count = 0
+设 t6tasks = []
+设 t6i = 0
+当 t6i < 50 {
+    设 t6t = 异步 { t6count = t6count + 1 }
+    t6tasks.追加(t6t)
+    t6i = t6i + 1
+}
+遍历 t6t 于 t6tasks { 等待(t6t) }
+若 t6count == 50 { 示("PASS: 测试6") } 否 { 示("FAIL: count=" & t6count.转字()) }
+
+// 测试7: 闭包捕获外部变量
+示("[测试7] 闭包捕获")
+设 t7outer = "captured_val"
+设 t7captured = ""
+设 t7t = 异步 { t7captured = t7outer }
+等待(t7t)
+若 t7captured == "captured_val" { 示("PASS: 测试7") } 否 { 示("FAIL: captured=" & t7captured) }
+
+// 测试8: 100 个 N=0 压力
+示("[测试8] 100 N=0 压力")
+设 t8c = 0
+设 t8list = []
+设 t8j = 0
+当 t8j < 100 {
+    设 t8task = 异步 { t8c = t8c + 1 }
+    t8list.追加(t8task)
+    t8j = t8j + 1
+}
+遍历 t8t 于 t8list { 等待(t8t) }
+若 t8c == 100 { 示("PASS: 测试8") } 否 { 示("FAIL: c=" & t8c.转字()) }
+
+示("=== Test 72 完成 ===")

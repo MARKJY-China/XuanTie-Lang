@@ -1,0 +1,71 @@
+// Test/70_多等待高级模式测试.xt
+// 测试多等待状态机：双等待、三等待、多状态机并发、深嵌套
+
+示("=== Test 70: 多等待高级模式测试 ===")
+
+// 测试1: 双等待
+示("[测试1] 双等待")
+设 t1a = 异步 { 时.睡(200) }
+设 t1b = 异步 { 时.睡(100) }
+设 t1ok = 假
+设 t1dual = 异步 { 等待(t1a); 等待(t1b); t1ok = 真 }
+等待(t1dual)
+若 t1ok { 示("PASS: 测试1") } 否 { 示("FAIL") }
+
+// 测试2: 三等待
+示("[测试2] 三等待")
+设 t2x = 异步 { 时.睡(80) }
+设 t2y = 异步 { 时.睡(120) }
+设 t2z = 异步 { 时.睡(60) }
+设 t2ok = 假
+设 t2triple = 异步 { 等待(t2x); 等待(t2y); 等待(t2z); t2ok = 真 }
+等待(t2triple)
+若 t2ok { 示("PASS: 测试2") } 否 { 示("FAIL") }
+
+// 测试3: 三个独立状态机
+示("[测试3] 三状态机")
+设 t3count = 0
+设 t3s1 = 异步 { 设 t3inn1 = 异步 { t3count = t3count + 1 }; 等待(t3inn1) }
+设 t3s2 = 异步 { 设 t3inn2 = 异步 { t3count = t3count + 2 }; 等待(t3inn2) }
+设 t3s3 = 异步 { 设 t3inn3 = 异步 { t3count = t3count + 4 }; 等待(t3inn3) }
+等待(t3s1); 等待(t3s2); 等待(t3s3)
+若 t3count == 7 { 示("PASS: 测试3") } 否 { 示("FAIL: count=" & t3count.转字()) }
+
+// 测试4: 连续创建+等待
+示("[测试4] 连续等待")
+设 t4count = 0
+设 t4runner = 异步 {
+    设 t4x = 异步 { t4count = t4count + 1 }
+    等待(t4x)
+    设 t4y = 异步 { t4count = t4count + 1 }
+    等待(t4y)
+    设 t4z = 异步 { t4count = t4count + 1 }
+    等待(t4z)
+}
+等待(t4runner)
+若 t4count == 3 { 示("PASS: 测试4") } 否 { 示("FAIL: count=" & t4count.转字()) }
+
+// 测试5: 深嵌套等待
+示("[测试5] 深嵌套")
+设 t5depth = 0
+设 t5l3 = 异步 { t5depth = 3 }
+设 t5l2 = 异步 { 等待(t5l3); t5depth = t5depth - 1 }
+设 t5l1 = 异步 { 等待(t5l2); t5depth = t5depth - 1 }
+等待(t5l1)
+若 t5depth == 1 { 示("PASS: 测试5") } 否 { 示("FAIL: depth=" & t5depth.转字()) }
+
+// 测试6: 20个状态机
+示("[测试6] 20状态机")
+设 t6count = 0
+设 t6tasks = []
+设 t6idx6 = 0
+当 t6idx6 < 20 {
+    设 t6inner = 异步 { t6count = t6count + 1 }
+    设 t6outer = 异步 { 等待(t6inner) }
+    t6tasks.追加(t6outer)
+    t6idx6 = t6idx6 + 1
+}
+遍历 t6t 于 t6tasks { 等待(t6t) }
+若 t6count == 20 { 示("PASS: 测试6") } 否 { 示("FAIL: count=" & t6count.转字()) }
+
+示("=== Test 70 完成 ===")
