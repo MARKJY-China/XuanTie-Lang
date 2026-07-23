@@ -661,6 +661,22 @@ func (p *Parser) parseParallelExpression() *ast.ParallelExpression {
 func (p *Parser) parseExpressionStatement() ast.Statement {
 	exp := p.parseExpression(LOWEST)
 
+	// Detect missing func keyword: _name(params) { body }
+	if call, ok := exp.(*ast.CallExpression); ok {
+		if _, isIdent := call.Function.(*ast.Identifier); isIdent {
+			if p.peek.Type == token.TOKEN_LBRACE {
+				funcName := ""
+				if ident, ok2 := call.Function.(*ast.Identifier); ok2 {
+					funcName = ident.Value
+				}
+				p.errors = append(p.errors, fmt.Sprintf(
+					"[行:%d, 列:%d] 疑似缺少 '函' 关键字：'%s(...) { }' 不是合法的函数定义，请使用 '函 %s(...) { }'",
+					p.cur.Line, p.cur.Column, funcName, funcName))
+				return nil
+			}
+		}
+	}
+
 	// 支持索引赋值或成员赋值: exp = value
 	if p.peek.Type == token.TOKEN_ASSIGN {
 		// 检查 exp 是否是可赋值的 (Identifier, IndexExpression, MemberCallExpression)

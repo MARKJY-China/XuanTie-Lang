@@ -19,6 +19,10 @@ type Lexer struct {
 func New(input string) *Lexer {
 	l := &Lexer{input: input, line: 1, column: 0}
 	l.readChar()
+	// 跳过 UTF-8 BOM (0xFEFF)，Windows 记事本保存 UTF-8 时常带此标记
+	if l.ch == 0xFEFF {
+		l.readChar()
+	}
 	return l
 }
 
