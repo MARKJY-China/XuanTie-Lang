@@ -10,6 +10,7 @@
 #define XT_FIBER_WAITING  1  // 等待任务完成
 #define XT_FIBER_SLEEPING 2  // 定时睡眠
 #define XT_FIBER_DONE     3  // 已完成
+#define XT_FIBER_RUNNING  4  // 正在被 poll(出队即置位;poll 裸返回 PENDING 时若仍为此态,须重新入队)
 
 // 调度器配置
 #define XT_MAX_FIBERS      65535 // fiber 池;句柄=下标+1,须 ≤0x10000 以与指针对象区分

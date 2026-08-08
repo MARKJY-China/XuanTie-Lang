@@ -266,6 +266,9 @@ void xt_scheduler_run() {
         if (!f) {
             int64_t next_wake = 0;
             SCHED_LOCK();
+            // 队列判空必须与唤醒检查同一把锁内完成:worker 的 wake_task 也持该锁,
+            // 否则「dequeue 空 → worker 入队 → 扫描未见 WAITING → 退出」的交错会永久丢失唤醒(实测间歇死锁)
+            if (g_scheduler->ready_head != NULL) { SCHED_UNLOCK(); continue; }
             if (g_scheduler->timer_count > 0) {
                 next_wake = g_scheduler->timer_heap[0]->wakeup_at - g_scheduler->now_us;
                 if (next_wake < 0) next_wake = 0;
@@ -283,11 +286,27 @@ void xt_scheduler_run() {
 #else
                     _sched_sleep_us(1000);
 #endif
+                    // 丢失唤醒兜底:以 1ms 节奏把所有 WAITING fiber 重新入队重试。
+                    // 挂起路径(try_wait 之后、wait_task 生效前后)存在任务已完成却无人唤醒的窗口;
+                    // 重试幂等:未就绪者会再次 park,已就绪者经 prologue/重试点继续。
+                    SCHED_LOCK();
+                    for (int i = 0; i < g_scheduler->fiber_count; i++) {
+                        XTFiber* wf = &g_scheduler->fibers[i];
+                        if (wf->status == XT_FIBER_WAITING) {
+                            wf->status = XT_FIBER_READY;
+                            wf->wait_target = NULL;
+                            _sched_enqueue_nolock(wf);
+                        }
+                    }
+                    SCHED_UNLOCK();
                 }
-                else { g_scheduler->running = 0; }
+                else { SCHED_LOCK(); if (g_scheduler->ready_head == NULL) { g_scheduler->running = 0; } SCHED_UNLOCK(); }
             } else { SCHED_UNLOCK(); _sched_sleep_us(next_wake < 100 ? 100 : next_wake); }
             continue;
         }
+        // 出队即 RUNNING:poll 若未 park/睡眠/让出就返回 PENDING(裸 ret 0),
+        // 必须重新入队,否则 fiber 从所有簿记中消失(下游 等待 方将永久自旋)
+        f->status = XT_FIBER_RUNNING;
         g_scheduler->current = f;
         int result = f->poll(f->state);
         g_scheduler->current = NULL;
@@ -295,6 +314,9 @@ void xt_scheduler_run() {
             f->status = XT_FIBER_DONE;
             xt_scheduler_wake_task(f);
             xt_scheduler_wake_task((void*)(uintptr_t)(f - g_scheduler->fibers + 1));
+        } else if (f->status == XT_FIBER_RUNNING) {
+            f->status = XT_FIBER_READY;
+            xt_scheduler_enqueue(f);
         }
     }
 }

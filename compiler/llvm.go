@@ -1,4 +1,4 @@
-// LLVMCompiler 编译器
+﻿// LLVMCompiler 编译器
 // 由TraeAI负责大部分代码编写。所有代码都已经过作者审核并经过ClaudeOpus4.7深度扫描分析。
 
 package compiler
@@ -560,8 +560,6 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 			c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64", ClassName: valClass, IsGlobal: true}
 		} else {
 			if sym, ok := c.symbolTable[s.Name.Value]; ok && !sym.IsGlobal {
-				// 目标槽位为标记表征时，新值必须装箱存储以保持槽位表征一致
-				effScalar := isScalar && c.isScalarType(sym.Type)
 				// 如果已经存在且是标量类型，则不需要 release
 				if !c.isScalarType(sym.Type) {
 					oldVal := c.nextReg()
@@ -570,11 +568,8 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 				}
 				// 变量类型跟随赋值走
 				actualVal := xtVal
-				if isScalar && !effScalar {
-					actualVal = c.ensureI64(valReg, valType)
-				}
 				newType := "i64"
-				if effScalar {
+				if isScalar {
 					newType = valType
 				}
 				c.emit("  store i64 %s, i64* %s", actualVal, sym.AddrReg)
@@ -610,9 +605,8 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		xtVal := c.ensureI64(valReg, valType)
 
 		if sym, ok := c.symbolTable[s.Name]; ok {
-			// 只有局部变量且新值为标量、且目标槽位当前也是标量表征时，才走原始值快路径。
-			// 目标槽位为标记表征时(如已被装箱/曾赋过堆对象)，必须装箱存储以保持槽位表征一致。
-			isScalar := c.isScalarType(valType) && (c.currentFunc != "" || c.currentClass != "") && !sym.IsGlobal && c.isScalarType(sym.Type)
+			// 只有局部变量且新值为标量时，才尝试优化
+			isScalar := c.isScalarType(valType) && (c.currentFunc != "" || c.currentClass != "") && !sym.IsGlobal
 
 			if !isScalar {
 				c.emit("  call void @xt_retain(i64 %s)", xtVal)
@@ -826,64 +820,7 @@ func (c *LLVMCompiler) compileIfStatement(s *ast.IfStatement) {
 	c.emit("%s:", mergeLabel)
 }
 
-// collectLoopAssignedNames 递归收集循环体内被赋值/重声明的变量名。
-// 不进入嵌套函数定义（其拥有独立符号空间）；不深入表达式
-// （异步/并行等表达式块编译为独立函数，经由捕获机制访问外层变量）。
-func (c *LLVMCompiler) collectLoopAssignedNames(stmts []ast.Statement, out map[string]bool) {
-	for _, stmt := range stmts {
-		switch s := stmt.(type) {
-		case *ast.AssignStatement:
-			out[s.Name] = true
-		case *ast.VarStatement:
-			out[s.Name.Value] = true
-		case *ast.IfStatement:
-			c.collectLoopAssignedNames(s.ThenBlock, out)
-			for _, eif := range s.ElseIfs {
-				c.collectLoopAssignedNames(eif.Block, out)
-			}
-			c.collectLoopAssignedNames(s.ElseBlock, out)
-		case *ast.WhileStatement:
-			c.collectLoopAssignedNames(s.Block, out)
-		case *ast.LoopStatement:
-			c.collectLoopAssignedNames(s.Block, out)
-		case *ast.ForStatement:
-			c.collectLoopAssignedNames(s.Block, out)
-		case *ast.TryCatchStatement:
-			c.collectLoopAssignedNames(s.TryBlock, out)
-			c.collectLoopAssignedNames(s.CatchBlock, out)
-		case *ast.MatchStatement:
-			for _, mc := range s.Cases {
-				c.collectLoopAssignedNames(mc.Body, out)
-			}
-		}
-	}
-}
-
-// boxLoopAssignedVars 在循环入口将「循环体内会被赋值」的局部标量变量
-// 统一装箱为标记 i64 表征。
-// 背景：符号表的槽位表征(raw_i64/i1/double vs 标记 i64)按单遍顺序跟踪，
-// 循环体在运行时会重入——若某变量在循环体内的赋值改变了表征，
-// 第二轮迭代起读端将按陈旧表征解读槽位比特(实测产生双重打标 2x+1 递推)。
-// 在循环前置块一次性装箱，使表征在整个循环期间不变，消除该循环携带危害。
-func (c *LLVMCompiler) boxLoopAssignedVars(body []ast.Statement) {
-	names := make(map[string]bool)
-	c.collectLoopAssignedNames(body, names)
-	for name := range names {
-		sym, ok := c.symbolTable[name]
-		if !ok || sym.IsGlobal || !c.isScalarType(sym.Type) {
-			continue
-		}
-		cur := c.nextReg()
-		c.emit("  %s = load i64, i64* %s", cur, sym.AddrReg)
-		tagged := c.ensureI64(cur, sym.Type)
-		c.emit("  store i64 %s, i64* %s", tagged, sym.AddrReg)
-		sym.Type = "i64"
-		c.symbolTable[name] = sym
-	}
-}
-
 func (c *LLVMCompiler) compileWhileStatement(s *ast.WhileStatement) {
-	c.boxLoopAssignedVars(s.Block)
 	condLabel := c.nextLabel("while.cond")
 	bodyLabel := c.nextLabel("while.body")
 	endLabel := c.nextLabel("while.end")
@@ -922,7 +859,6 @@ func (c *LLVMCompiler) compileWhileStatement(s *ast.WhileStatement) {
 }
 
 func (c *LLVMCompiler) compileLoopStatement(s *ast.LoopStatement) {
-	c.boxLoopAssignedVars(s.Block)
 	bodyLabel := c.nextLabel("loop.body")
 	c.emit("  br label %%%s", bodyLabel)
 	c.emit("%s:", bodyLabel)
@@ -2591,7 +2527,6 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
 	c.enterScope()
 	defer c.exitScope(false)
-	c.boxLoopAssignedVars(s.Block)
 	iterReg, iterType, _ := c.compileExpression(s.Iterable)
 	iI64 := c.ensureI64(iterReg, iterType)
 	objPtr := c.nextReg()
