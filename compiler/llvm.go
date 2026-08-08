@@ -1,4 +1,4 @@
-﻿// LLVMCompiler 编译器
+// LLVMCompiler 编译器
 // 由TraeAI负责大部分代码编写。所有代码都已经过作者审核并经过ClaudeOpus4.7深度扫描分析。
 
 package compiler
@@ -820,7 +820,190 @@ func (c *LLVMCompiler) compileIfStatement(s *ast.IfStatement) {
 	c.emit("%s:", mergeLabel)
 }
 
+// ============ S1: 循环表征翻转的探测与规范化 ============
+// 根因:GSC 单遍编译按语句顺序跟踪变量表征(raw_i64/i1/double vs 标记 i64),
+// 循环回边使循环体在运行时重入——若变量在循环体内被赋予不同表征的值,
+// 第二轮迭代起读端按陈旧表征解读槽位比特(实测产生 2x+1 双重打标递推、堆损坏等)。
+// 方案:对无重型构造的循环先干跑探测(输出丢弃),检测表征翻转;
+// 有翻转则在循环前置块把该变量统一转换为循环结束时的表征并重编。
+// 无翻转循环的产物与单遍完全一致,保证零回归风险。
+
+// loopHasHeavyConstruct: 函数定义/匿名函数/异步/并行 等会产生全局发射或全局注册的构造
+// 不宜两遍编译(会重复发射定义),含之则退回单遍(接受潜在风险,优先保守正确)。
+func (c *LLVMCompiler) loopHasHeavyConstruct(stmts []ast.Statement) bool {
+	for _, st := range stmts {
+		if c.stmtIsHeavy(st) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *LLVMCompiler) stmtIsHeavy(st ast.Statement) bool {
+	switch s := st.(type) {
+	case *ast.FunctionStatement:
+		return true
+	case *ast.VarStatement:
+		return c.exprIsHeavy(s.Value)
+	case *ast.AssignStatement:
+		return c.exprIsHeavy(s.Value)
+	case *ast.ExpressionStatement:
+		return c.exprIsHeavy(s.Expression)
+	case *ast.IfStatement:
+		if c.exprIsHeavy(s.Condition) {
+			return true
+		}
+		if c.loopHasHeavyConstruct(s.ThenBlock) || c.loopHasHeavyConstruct(s.ElseBlock) {
+			return true
+		}
+		for _, eif := range s.ElseIfs {
+			if c.exprIsHeavy(eif.Condition) || c.loopHasHeavyConstruct(eif.Block) {
+				return true
+			}
+		}
+	case *ast.WhileStatement:
+		return c.exprIsHeavy(s.Condition) || c.loopHasHeavyConstruct(s.Block)
+	case *ast.LoopStatement:
+		return c.loopHasHeavyConstruct(s.Block)
+	case *ast.ForStatement:
+		return c.exprIsHeavy(s.Iterable) || c.loopHasHeavyConstruct(s.Block)
+	case *ast.TryCatchStatement:
+		return c.loopHasHeavyConstruct(s.TryBlock) || c.loopHasHeavyConstruct(s.CatchBlock)
+	case *ast.MatchStatement:
+		if c.exprIsHeavy(s.Value) {
+			return true
+		}
+		for _, mc := range s.Cases {
+			if c.loopHasHeavyConstruct(mc.Body) {
+				return true
+			}
+		}
+	case *ast.ReturnStatement:
+		return c.exprIsHeavy(s.ReturnValue)
+	case *ast.PrintStatement:
+		return c.exprIsHeavy(s.Value)
+	}
+	return false
+}
+
+func (c *LLVMCompiler) exprIsHeavy(e ast.Expression) bool {
+	if e == nil {
+		return false
+	}
+	switch x := e.(type) {
+	case *ast.FunctionLiteral, *ast.AsyncExpression, *ast.ParallelExpression:
+		return true
+	case *ast.CallExpression:
+		if c.exprIsHeavy(x.Function) {
+			return true
+		}
+		for _, a := range x.Arguments {
+			if c.exprIsHeavy(a) {
+				return true
+			}
+		}
+	case *ast.InfixExpression:
+		return c.exprIsHeavy(x.Left) || c.exprIsHeavy(x.Right)
+	case *ast.PrefixExpression:
+		return c.exprIsHeavy(x.Right)
+	case *ast.IndexExpression:
+		return c.exprIsHeavy(x.Left) || c.exprIsHeavy(x.Index)
+	case *ast.MemberCallExpression:
+		if c.exprIsHeavy(x.Object) {
+			return true
+		}
+		for _, a := range x.Arguments {
+			if c.exprIsHeavy(a) {
+				return true
+			}
+		}
+	case *ast.ArrayLiteral:
+		for _, el := range x.Elements {
+			if c.exprIsHeavy(el) {
+				return true
+			}
+		}
+	case *ast.DictLiteral:
+		for k, v := range x.Pairs {
+			if c.exprIsHeavy(k) || c.exprIsHeavy(v) {
+				return true
+			}
+		}
+	case *ast.AwaitExpression:
+		return c.exprIsHeavy(x.Value)
+	case *ast.NewExpression:
+		if c.exprIsHeavy(x.Data) {
+			return true
+		}
+		for _, a := range x.Arguments {
+			if c.exprIsHeavy(a) {
+				return true
+			}
+		}
+	default:
+		// 未覆盖的表达式类型:保守按重型处理,退回单遍,宁可不优化不可错编
+		switch e.(type) {
+		case *ast.Identifier, *ast.IntegerLiteral, *ast.FloatLiteral, *ast.StringLiteral, *ast.BooleanLiteral:
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// snapshotSymbolTypes 拍摄当前符号表的(表征)类型快照
+func (c *LLVMCompiler) snapshotSymbolTypes() map[string]string {
+	m := make(map[string]string, len(c.symbolTable))
+	for k, v := range c.symbolTable {
+		m[k] = v.Type
+	}
+	return m
+}
+
+// normalizeLoopFlips 把干跑后表征发生翻转的变量在循环前置位置统一转换为最终表征。
+// 仅处理 i64 <-> raw_i64 两类(整型翻转是实测唯一形态;i1/double 翻转极罕见,保守不动)。
+func (c *LLVMCompiler) normalizeLoopFlips(before map[string]string) {
+	for name, sym := range c.symbolTable {
+		oldT, ok := before[name]
+		if !ok || oldT == sym.Type || sym.IsGlobal {
+			continue
+		}
+		newT := sym.Type
+		pairOK := (oldT == "i64" || oldT == "raw_i64") && (newT == "i64" || newT == "raw_i64")
+		if !pairOK {
+			continue
+		}
+		cur := c.nextReg()
+		c.emit("  %s = load i64, i64* %s", cur, sym.AddrReg)
+		var conv string
+		if newT == "i64" {
+			conv = c.ensureI64(cur, oldT)
+		} else {
+			conv = c.ensureRawI64(cur, oldT)
+		}
+		c.emit("  store i64 %s, i64* %s", conv, sym.AddrReg)
+	}
+}
+
 func (c *LLVMCompiler) compileWhileStatement(s *ast.WhileStatement) {
+	if c.loopHasHeavyConstruct(s.Block) {
+		c.compileWhileStatementOnce(s)
+		return
+	}
+	// 干跑探测(输出丢弃)
+	saved := c.output
+	savedLabel := c.currentLabel
+	c.output = bytes.Buffer{}
+	before := c.snapshotSymbolTypes()
+	c.compileWhileStatementOnce(s)
+	c.output = saved
+	c.currentLabel = savedLabel
+	c.normalizeLoopFlips(before)
+	// 正式编译
+	c.compileWhileStatementOnce(s)
+}
+
+func (c *LLVMCompiler) compileWhileStatementOnce(s *ast.WhileStatement) {
 	condLabel := c.nextLabel("while.cond")
 	bodyLabel := c.nextLabel("while.body")
 	endLabel := c.nextLabel("while.end")
@@ -859,6 +1042,22 @@ func (c *LLVMCompiler) compileWhileStatement(s *ast.WhileStatement) {
 }
 
 func (c *LLVMCompiler) compileLoopStatement(s *ast.LoopStatement) {
+	if c.loopHasHeavyConstruct(s.Block) {
+		c.compileLoopStatementOnce(s)
+		return
+	}
+	saved := c.output
+	savedLabel := c.currentLabel
+	c.output = bytes.Buffer{}
+	before := c.snapshotSymbolTypes()
+	c.compileLoopStatementOnce(s)
+	c.output = saved
+	c.currentLabel = savedLabel
+	c.normalizeLoopFlips(before)
+	c.compileLoopStatementOnce(s)
+}
+
+func (c *LLVMCompiler) compileLoopStatementOnce(s *ast.LoopStatement) {
 	bodyLabel := c.nextLabel("loop.body")
 	c.emit("  br label %%%s", bodyLabel)
 	c.emit("%s:", bodyLabel)
@@ -2525,6 +2724,22 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 }
 
 func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
+	if c.loopHasHeavyConstruct(s.Block) {
+		c.compileForStatementOnce(s)
+		return
+	}
+	saved := c.output
+	savedLabel := c.currentLabel
+	c.output = bytes.Buffer{}
+	before := c.snapshotSymbolTypes()
+	c.compileForStatementOnce(s)
+	c.output = saved
+	c.currentLabel = savedLabel
+	c.normalizeLoopFlips(before)
+	c.compileForStatementOnce(s)
+}
+
+func (c *LLVMCompiler) compileForStatementOnce(s *ast.ForStatement) {
 	c.enterScope()
 	defer c.exitScope(false)
 	iterReg, iterType, _ := c.compileExpression(s.Iterable)
