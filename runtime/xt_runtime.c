@@ -62,6 +62,19 @@ static XTValue g_xt_args = XT_NULL;      ///< 命令行参数缓存
 static XTWeakSlot* g_weak_slots = NULL;   ///< 弱引用旁路链表头部
 static xt_chan_mutex_t g_weak_mutex;      ///< 保护 g_weak_slots 的锁
 
+// 主线程标识:xt_init 记录。主线程在通道上无限阻塞时需泵用户态调度器,
+// 否则主线程睡死会把 fiber 世界一起饿死(实测死锁)。
+#if defined(_WIN32)
+static DWORD g_main_thread_id = 0;
+#define XT_THREAD_SELF() GetCurrentThreadId()
+#define XT_THREAD_EQ(a,b) ((a)==(b))
+#else
+static pthread_t g_main_thread_id;
+static int g_main_thread_id_set = 0;
+#define XT_THREAD_SELF() pthread_self()
+#define XT_THREAD_EQ(a,b) pthread_equal((a),(b))
+#endif
+
 // 弱引用全局锁操作（用于 xt_weak_init / xt_dict_weak_init / xt_weak_clear）
 #define WEAK_LOCK()   XT_CHAN_MUTEX_LOCK(&g_weak_mutex)
 #define WEAK_UNLOCK() XT_CHAN_MUTEX_UNLOCK(&g_weak_mutex)
@@ -92,7 +105,14 @@ static int64_t _sched_now_us() {
     LARGE_INTEGER _now; QueryPerformanceCounter(&_now);
     return (int64_t)((_now.QuadPart * 1000000) / _freq.QuadPart);
 }
-#define _sched_sleep_us(us) do { if (us > 0) { HANDLE _t = CreateWaitableTimer(NULL, TRUE, NULL); \
+// 高分辨率等待:普通 CreateWaitableTimer 受系统时钟粒度(默认15.6ms)限制,
+// 实测调度器空闲等待被放大到 ~15ms/次。HIGH_RESOLUTION 将其压到亚毫秒(需 Win10 1803+,失败则回退)。
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002  // TDM-GCC 头文件过旧未定义此标志
+#endif
+#define _sched_sleep_us(us) do { if (us > 0) { \
+    HANDLE _t = CreateWaitableTimerEx(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS); \
+    if (!_t) { _t = CreateWaitableTimer(NULL, TRUE, NULL); } \
     LARGE_INTEGER _due; _due.QuadPart = -(LONGLONG)(us * 10); \
     SetWaitableTimer(_t, &_due, 0, NULL, NULL, FALSE); WaitForSingleObject(_t, INFINITE); CloseHandle(_t); } } while(0)
 #else
@@ -113,52 +133,139 @@ static void _sched_timer_down(XTFiber** heap, int count, int idx) {
         if (r<count && heap[r]->wakeup_at < heap[s]->wakeup_at) s=r;
         if (s==idx) break; XTFiber* t=heap[idx]; heap[idx]=heap[s]; heap[s]=t; idx=s; }
 }
-void xt_scheduler_timer_add(XTFiber* f, int64_t wakeup_at) {
-    if (g_scheduler->timer_count >= XT_TIMER_HEAP_SIZE) return;
-    f->wakeup_at = wakeup_at; f->status = XT_FIBER_SLEEPING;
-    int idx = g_scheduler->timer_count++;
-    g_scheduler->timer_heap[idx] = f;
-    _sched_timer_up(g_scheduler->timer_heap, idx);
+
+// 调度器全局锁：worker 线程(xt_async_notify_complete→wake_task)与调度器线程并发访问
+// fiber 状态数组/就绪队列/定时器堆，所有对外操作逐一加锁保证原子性。
+static xt_chan_mutex_t g_sched_mutex;
+static int g_sched_mutex_inited = 0;
+#define SCHED_LOCK()   do { if (g_sched_mutex_inited) XT_CHAN_MUTEX_LOCK(&g_sched_mutex); } while(0)
+#define SCHED_UNLOCK() do { if (g_sched_mutex_inited) XT_CHAN_MUTEX_UNLOCK(&g_sched_mutex); } while(0)
+
+// 唤醒事件:worker 完成任务时 SetEvent,调度器空闲等待从「固定睡 1ms」改为「事件驱动」,
+// 消除嵌套等待的 ~1ms 轮询延迟(实测 1080µs/跳,其中绝大部分是这个固定睡眠)
+#if defined(_WIN32)
+static HANDLE g_sched_wake_event = NULL;
+#endif
+
+// fiber 槽位回收:空闲栈(存 fiber 下标)。槽位在「完成且结果已消费」后入栈,spawn 优先复用,
+// 防止长线程序把池打满(原模型:槽位永不复用,累积超上限即显式报错退出)
+static int* g_fiber_free_ids = NULL;
+static int  g_fiber_free_top = 0;
+
+// 回收已完成且结果已消费的 fiber 槽位:释放状态结构体与结果引用
+static void _xt_fiber_recycle(int fid) {
+    if (!g_scheduler || fid < 0 || fid >= g_scheduler->fiber_count) return;
+    XTFiber* f = &g_scheduler->fibers[fid];
+    if (f->status != XT_FIBER_DONE || !f->result_consumed || f->in_free_list) return;
+    if (f->state) { free(f->state); f->state = NULL; }
+    if (f->result) { xt_release(f->result); f->result = 0; }
+    f->in_free_list = 1;
+    SCHED_LOCK();
+    g_fiber_free_ids[g_fiber_free_top++] = fid;
+    SCHED_UNLOCK();
 }
-void xt_scheduler_timer_tick(int64_t now) {
-    while (g_scheduler->timer_count > 0) {
-        XTFiber* f = g_scheduler->timer_heap[0];
-        if (f->wakeup_at > now) break;
-        g_scheduler->timer_heap[0] = g_scheduler->timer_heap[--g_scheduler->timer_count];
-        if (g_scheduler->timer_count > 0) _sched_timer_down(g_scheduler->timer_heap, g_scheduler->timer_count, 0);
-        f->status = XT_FIBER_READY; xt_scheduler_enqueue(f);
-    }
-}
-void xt_scheduler_enqueue(XTFiber* f) {
+
+// 无锁版入队：仅供已持有锁的内部路径使用
+static void _sched_enqueue_nolock(XTFiber* f) {
     f->next = NULL;
     if (g_scheduler->ready_tail) { g_scheduler->ready_tail->next = f; }
     else { g_scheduler->ready_head = f; }
     g_scheduler->ready_tail = f;
 }
+
+void xt_scheduler_timer_add(XTFiber* f, int64_t wakeup_at) {
+    SCHED_LOCK();
+    if (g_scheduler->timer_count >= XT_TIMER_HEAP_SIZE) {
+        SCHED_UNLOCK();
+        fprintf(stderr, "[玄铁运行时错误] 定时器堆溢出(超过 %d 个并发睡眠),fiber 无法注册睡眠\n", XT_TIMER_HEAP_SIZE);
+        exit(1);
+    }
+    f->wakeup_at = wakeup_at; f->status = XT_FIBER_SLEEPING;
+    int idx = g_scheduler->timer_count++;
+    g_scheduler->timer_heap[idx] = f;
+    _sched_timer_up(g_scheduler->timer_heap, idx);
+    SCHED_UNLOCK();
+}
+void xt_scheduler_timer_tick(int64_t now) {
+    SCHED_LOCK();
+    while (g_scheduler->timer_count > 0) {
+        XTFiber* f = g_scheduler->timer_heap[0];
+        if (f->wakeup_at > now) break;
+        g_scheduler->timer_heap[0] = g_scheduler->timer_heap[--g_scheduler->timer_count];
+        if (g_scheduler->timer_count > 0) _sched_timer_down(g_scheduler->timer_heap, g_scheduler->timer_count, 0);
+        f->status = XT_FIBER_READY; _sched_enqueue_nolock(f);
+    }
+    SCHED_UNLOCK();
+}
+void xt_scheduler_enqueue(XTFiber* f) {
+    SCHED_LOCK();
+    _sched_enqueue_nolock(f);
+    SCHED_UNLOCK();
+}
 XTFiber* xt_scheduler_dequeue() {
+    SCHED_LOCK();
     XTFiber* f = g_scheduler->ready_head;
     if (f) { g_scheduler->ready_head = f->next; if (!g_scheduler->ready_head) g_scheduler->ready_tail = NULL; f->next = NULL; }
+    SCHED_UNLOCK();
     return f;
 }
 void xt_scheduler_init() {
     g_scheduler = (XTScheduler*)calloc(1, sizeof(XTScheduler));
     g_scheduler->fibers = (XTFiber*)calloc(XT_MAX_FIBERS, sizeof(XTFiber));
+    g_fiber_free_ids = (int*)malloc(sizeof(int) * XT_MAX_FIBERS);
+    g_fiber_free_top = 0;
+    if (!g_sched_mutex_inited) { XT_CHAN_MUTEX_INIT(&g_sched_mutex); g_sched_mutex_inited = 1; }
+#if defined(_WIN32)
+    if (!g_sched_wake_event) { g_sched_wake_event = CreateEvent(NULL, FALSE, FALSE, NULL); } // 自动重置
+#endif
 }
 XTFiber* xt_scheduler_spawn(void* state, int (*poll)(void*)) {
-    if (!g_scheduler || g_scheduler->fiber_count >= XT_MAX_FIBERS) return NULL;
-    XTFiber* f = &g_scheduler->fibers[g_scheduler->fiber_count++];
+    if (!g_scheduler) return NULL;
+    SCHED_LOCK();
+    XTFiber* f = NULL;
+    if (g_fiber_free_top > 0) {
+        // 优先复用「已完成且结果已消费」的槽位,防止池被长线程序打满
+        int idx = g_fiber_free_ids[--g_fiber_free_top];
+        f = &g_scheduler->fibers[idx];
+    } else {
+        if (g_scheduler->fiber_count >= XT_MAX_FIBERS) { SCHED_UNLOCK(); return NULL; }
+        f = &g_scheduler->fibers[g_scheduler->fiber_count++];
+    }
     f->state = state; f->poll = poll; f->status = XT_FIBER_READY;
-    xt_scheduler_enqueue(f); return f;
+    f->wait_target = NULL; f->result = 0; f->next = NULL; f->wakeup_at = 0;
+    f->result_consumed = 0; f->in_free_list = 0;
+    _sched_enqueue_nolock(f);
+    SCHED_UNLOCK();
+    return f;
 }
+
+XTValue xt_fiber_spawn(void* state, int (*poll)(void*)) {
+    XTFiber* f = xt_scheduler_spawn(state, poll);
+    if (!f) {
+        // 宁可显式报错也不返回 -1 让 等待 侧解引用野指针(实测 Segfault)
+        fprintf(stderr, "[玄铁运行时错误] fiber 池耗尽(超过 %d 个),无法创建新 fiber\n", XT_MAX_FIBERS);
+        exit(1);
+    }
+    // 句柄 = 槽位下标 + 1:让 0(空)成为明确的非法句柄。
+    // 否则 fiber 0 的句柄与 空 同值,等待/try_wait/prologue 的空槽判定会把 fiber 0 误判为空(实测竞态)
+    return (XTValue)(uintptr_t)(f - g_scheduler->fibers) + 1;
+}
+
 void xt_scheduler_run() {
     if (!g_scheduler || g_scheduler->fiber_count == 0) return;
+    // 重入防护:worker 线程(线程池任务内 等待 fiber)可能与主线程同时到达,
+    // 双重驱动会破坏就绪队列。后到者直接返回,由 xt_async_wait 侧自旋等待目标完成。
+    SCHED_LOCK();
+    if (g_scheduler->running) { SCHED_UNLOCK(); return; }
     g_scheduler->running = 1;
+    SCHED_UNLOCK();
     while (g_scheduler->running) {
         g_scheduler->now_us = _sched_now_us();
         xt_scheduler_timer_tick(g_scheduler->now_us);
         XTFiber* f = xt_scheduler_dequeue();
         if (!f) {
             int64_t next_wake = 0;
+            SCHED_LOCK();
             if (g_scheduler->timer_count > 0) {
                 next_wake = g_scheduler->timer_heap[0]->wakeup_at - g_scheduler->now_us;
                 if (next_wake < 0) next_wake = 0;
@@ -167,34 +274,66 @@ void xt_scheduler_run() {
                 int has_waiting = 0;
                 for (int i = 0; i < g_scheduler->fiber_count; i++)
                     if (g_scheduler->fibers[i].status == XT_FIBER_WAITING) { has_waiting = 1; break; }
-                if (has_waiting) { _sched_sleep_us(1000); }
+                SCHED_UNLOCK();
+                if (has_waiting) {
+#if defined(_WIN32)
+                    // 事件驱动等待:worker 完成时 SetEvent 立即唤醒;1ms 超时仅作丢失信号的兜底
+                    if (g_sched_wake_event) { WaitForSingleObject(g_sched_wake_event, 1); }
+                    else { _sched_sleep_us(1000); }
+#else
+                    _sched_sleep_us(1000);
+#endif
+                }
                 else { g_scheduler->running = 0; }
-            } else { _sched_sleep_us(next_wake < 100 ? 100 : next_wake); }
+            } else { SCHED_UNLOCK(); _sched_sleep_us(next_wake < 100 ? 100 : next_wake); }
             continue;
         }
         g_scheduler->current = f;
         int result = f->poll(f->state);
         g_scheduler->current = NULL;
-        if (result != 0) { f->status = XT_FIBER_DONE; }
+        if (result != 0) {
+            f->status = XT_FIBER_DONE;
+            xt_scheduler_wake_task(f);
+            xt_scheduler_wake_task((void*)(uintptr_t)(f - g_scheduler->fibers + 1));
+        }
     }
 }
 void xt_scheduler_yield() {
-    if (g_scheduler->current) { g_scheduler->current->status = XT_FIBER_READY; xt_scheduler_enqueue(g_scheduler->current); }
+    SCHED_LOCK();
+    if (g_scheduler->current) { g_scheduler->current->status = XT_FIBER_READY; _sched_enqueue_nolock(g_scheduler->current); }
+    SCHED_UNLOCK();
 }
 void xt_scheduler_sleep_us(int64_t us) {
     if (g_scheduler->current) { xt_scheduler_timer_add(g_scheduler->current, g_scheduler->now_us + us); }
 }
 void xt_scheduler_wait_task(void* task) {
+    SCHED_LOCK();
     if (g_scheduler->current) { g_scheduler->current->status = XT_FIBER_WAITING; g_scheduler->current->wait_target = task; }
+    SCHED_UNLOCK();
 }
 void xt_scheduler_wake_task(void* task) {
-    if (!g_scheduler || !task) return;
+    if (!g_scheduler) return;
+    SCHED_LOCK();
     for (int i = 0; i < g_scheduler->fiber_count; i++) {
         XTFiber* f = &g_scheduler->fibers[i];
         if (f->status == XT_FIBER_WAITING && f->wait_target == task) {
-            f->status = XT_FIBER_READY; f->wait_target = NULL; xt_scheduler_enqueue(f);
+            f->status = XT_FIBER_READY; f->wait_target = NULL; _sched_enqueue_nolock(f);
         }
     }
+    SCHED_UNLOCK();
+#if defined(_WIN32)
+    if (g_sched_wake_event) SetEvent(g_sched_wake_event);  // 通知空闲等待中的调度器立即醒来
+#endif
+}
+void xt_fiber_set_result(uintptr_t v) {
+    if (!g_scheduler || !g_scheduler->current) return;
+    // 属主移交:poll 内 返 表达式的 +1 引用直接移交 fiber 结果槽,不再额外 retain(防双重引用泄漏);
+    // 覆盖时释放旧值(防御 fiber 槽位复用/多次 返)。
+    SCHED_LOCK();
+    XTValue old = g_scheduler->current->result;
+    g_scheduler->current->result = v;
+    SCHED_UNLOCK();
+    if (old) xt_release(old);
 }
 
 void xt_init() {
@@ -204,6 +343,7 @@ void xt_init() {
     fflush(stdout);              // 清空初始缓冲区
 #endif
     XT_CHAN_MUTEX_INIT(&g_weak_mutex);  // 初始化弱引用全局锁
+    g_main_thread_id = XT_THREAD_SELF(); // 记录主线程,供通道阻塞时的调度器泵送判定
     xt_threadpool_init(0);              // 初始化线程池（0=自动检测CPU核数）
     xt_net_init();                      // 初始化网络子系统
     xt_scheduler_init();                // 初始化用户态调度器
@@ -1906,7 +2046,7 @@ XTValue xt_task_new(XTValue result) {
 XTValue xt_wait(XTValue task_val) {
     if (!xt_is_real_ptr(task_val)) return XT_NULL;
     XTTask* t = (XTTask*)task_val;
-    return xt_async_wait(t);
+    return xt_async_wait((XTValue)(uintptr_t)t);
 }
 
 // 线程池任务包装：调用 func_ptr(arg) 并返回结果
@@ -1946,15 +2086,45 @@ XTTask* xt_async_spawn(void* func_ptr, XTValue arg) {
     return t;
 }
 
-XTValue xt_async_wait(XTTask* task) {
-    if (!task || task->pool_id < 0) return task ? task->result : XT_NULL;
-    void* raw = xt_threadpool_wait(task->pool_id);
-    task->result = (XTValue)raw;
-    task->status = 1;
-    return task->result;
+XTValue xt_async_wait(XTValue task) {
+    // fiber 句柄 = 槽位下标+1(1..0x10000);0(空)为非法句柄
+    if (task >= 1 && task <= 0x10000 && g_scheduler) {
+        int fid = (int)task - 1;
+        if (fid >= 0 && fid < g_scheduler->fiber_count) {
+            xt_scheduler_run();
+            // 若调度器正被其他线程驱动,run 会立即返回;自旋等待目标 fiber 完成。
+            // (主线程路径下 run 真实执行至全局静止,目标必为 DONE,此循环通常零迭代)
+            while (g_scheduler->fibers[fid].status != XT_FIBER_DONE
+                   && !g_scheduler->fibers[fid].result_consumed) {
+                _sched_sleep_us(1000);
+            }
+            // 结果属主移交调用方:取出后置空再回收槽位(回收会释放状态结构体,但不碰已移交的结果)
+            XTFiber* fb = &g_scheduler->fibers[fid];
+            XTValue r = fb->result;
+            fb->result = 0;
+            fb->result_consumed = 1;
+            _xt_fiber_recycle(fid);
+            return r;
+        }
+        return XT_NULL;
+    }
+    XTTask* t = (XTTask*)(uintptr_t)task;
+    if (!t || t->pool_id < 0) return t ? t->result : XT_NULL;
+    void* raw = xt_threadpool_wait(t->pool_id);
+    t->result = (XTValue)raw;
+    t->status = 1;
+    return t->result;
 }
 
 int xt_async_try_wait(XTValue task) {
+    // fiber 句柄 = 槽位下标+1;0(空) 视为「无可等待」直接完成
+    if (task == XT_NULL) return 1;
+    if (task >= 1 && task <= 0x10000 && g_scheduler) {
+        int fid = (int)task - 1;
+        if (fid >= 0 && fid < g_scheduler->fiber_count)
+            return (g_scheduler->fibers[fid].status == XT_FIBER_DONE) ? 1 : 0;
+        return 1;
+    }
     XTTask* t = (XTTask*)task;
     if (!t || t->pool_id < 0 || t->status == 1) return 1;
     void* raw = xt_threadpool_try_wait(t->pool_id);
@@ -1962,6 +2132,32 @@ int xt_async_try_wait(XTValue task) {
     t->result = (XTValue)raw;
     t->status = 1;
     return 1;
+}
+
+// 单调时钟(毫秒):fiber 内 选 切分点的超时截止计算用
+int64_t xt_now_ms() {
+    return _sched_now_us() / 1000;
+}
+
+// 读取已完成任务的结果值(fiber 内 等待 表达式的取值路径)。
+// 调用前提:任务已完成(prologue 的 try_wait 已确认)。返回 +1 引用,由调用方释放。
+XTValue xt_task_result(XTValue task) {
+    if (task == XT_NULL) return XT_NULL;
+    if (task >= 1 && task <= 0x10000 && g_scheduler) {
+        int fid = (int)task - 1;
+        if (fid >= 0 && fid < g_scheduler->fiber_count) {
+            XTValue r = g_scheduler->fibers[fid].result;
+            xt_retain(r);  // +1 给调用方,槽位自身引用由回收释放
+            g_scheduler->fibers[fid].result_consumed = 1;
+            _xt_fiber_recycle(fid);
+            return r;
+        }
+        return XT_NULL;
+    }
+    XTTask* t = (XTTask*)task;
+    if (!t) return XT_NULL;
+    xt_retain(t->result);
+    return t->result;
 }
 
 XTValue xt_channel_new(size_t capacity) {
@@ -1986,6 +2182,7 @@ void xt_channel_send(XTValue chan_val, XTValue val) {
     xt_retain(val);
     c->tail = (c->tail + 1) % c->capacity; c->size++;
     XT_CHAN_COND_SIGNAL(&c->recv_cv);  // 唤醒接收者
+    xt_scheduler_wake_task((void*)chan_val);  // 唤醒挂起在该通道上的 fiber 接收者
     XT_CHAN_MUTEX_UNLOCK(&c->mu);
 }
 
@@ -1998,6 +2195,7 @@ XTValue xt_channel_receive(XTValue chan_val) {
     c->buffer[c->head] = XT_NULL;
     c->head = (c->head + 1) % c->capacity; c->size--;
     XT_CHAN_COND_SIGNAL(&c->send_cv);  // 唤醒发送者
+    xt_scheduler_wake_task((void*)chan_val);  // 唤醒挂起在该通道上的 fiber 发送者
     XT_CHAN_MUTEX_UNLOCK(&c->mu);
     return val;
 }
@@ -2009,6 +2207,16 @@ XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms) {
     XT_CHAN_MUTEX_LOCK(&c->mu);
     while (c->size == 0) {
         if (timeout_ms == 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); return XT_NULL; }
+        // 主线程无限等待:先泵一轮用户态调度器,避免 fiber 被阻塞的主线程饿死。
+        // 重入保护:调度器运行中(fiber 内普通函数间接调用到此处)不泵,退化为条件变量等待。
+        if (timeout_ms < 0 && g_scheduler && !g_scheduler->running
+            && g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id)) {
+            XT_CHAN_MUTEX_UNLOCK(&c->mu);
+            xt_scheduler_run();
+            XT_CHAN_MUTEX_LOCK(&c->mu);
+            if (c->size > 0) break;
+            // 泵完仍无数据:后续数据只能来自线程池任务,落入普通条件变量阻塞
+        }
         DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
         if (!XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms)) {
             // timeout
@@ -2021,6 +2229,7 @@ XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms) {
     c->buffer[c->head] = XT_NULL;
     c->head = (c->head + 1) % c->capacity; c->size--;
     XT_CHAN_COND_SIGNAL(&c->send_cv);
+    xt_scheduler_wake_task((void*)chan_val);  // 唤醒挂起在该通道上的 fiber 发送者
     XT_CHAN_MUTEX_UNLOCK(&c->mu);
     return val;
 }
@@ -2032,6 +2241,14 @@ int xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms) {
     XT_CHAN_MUTEX_LOCK(&c->mu);
     while (c->size >= c->capacity) {
         if (timeout_ms == 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); return 0; }
+        // 主线程无限等待:先泵一轮用户态调度器,避免 fiber 消费者被饿死(与 收 对称)
+        if (timeout_ms < 0 && g_scheduler && !g_scheduler->running
+            && g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id)) {
+            XT_CHAN_MUTEX_UNLOCK(&c->mu);
+            xt_scheduler_run();
+            XT_CHAN_MUTEX_LOCK(&c->mu);
+            if (c->size < c->capacity) break;
+        }
         DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
         if (!XT_CHAN_COND_WAIT(&c->send_cv, &c->mu, wait_ms)) {
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
@@ -2044,6 +2261,7 @@ int xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms) {
     xt_retain(val);
     c->tail = (c->tail + 1) % c->capacity; c->size++;
     XT_CHAN_COND_SIGNAL(&c->recv_cv);
+    xt_scheduler_wake_task((void*)chan_val);  // 唤醒挂起在该通道上的 fiber 接收者
     XT_CHAN_MUTEX_UNLOCK(&c->mu);
     return 1;
 }

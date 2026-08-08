@@ -180,9 +180,18 @@ func (l *Lexer) NextToken() token.Token {
 	case ':':
 		tok = token.Token{Type: token.TOKEN_COLON, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
 	case '覆':
-		tok = token.Token{Type: token.TOKEN_OVERRIDE, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		// 仅当后续不是标识符延续字符时才视为 覆(重写) 关键字,否则按普通标识符(如 覆盖)
+		if !isLetter(l.peekChar()) && !isDigit(l.peekChar()) {
+			tok = token.Token{Type: token.TOKEN_OVERRIDE, Literal: string(l.ch), Line: line, Column: col, HasSpaceBefore: hasSpace}
+		} else {
+			literal := l.readIdentifier()
+			tok = token.Token{Type: lookupKeyword(literal), Literal: literal, Line: line, Column: col, HasSpaceBefore: hasSpace}
+			return tok
+		}
 	case '测':
-		if l.peekChar() == '试' {
+		// 仅当 '试' 之后不是标识符延续字符时才视为 测试 关键字,
+		// 否则按普通标识符处理(如 测试器、测试结果统计,此前会被切成 [测试][器] 两个 token)
+		if l.peekChar() == '试' && !isLetter(l.peekNextChar()) && !isDigit(l.peekNextChar()) {
 			l.readChar()
 			tok = token.Token{Type: token.TOKEN_TEST, Literal: "测试", Line: line, Column: col, HasSpaceBefore: hasSpace}
 		} else {

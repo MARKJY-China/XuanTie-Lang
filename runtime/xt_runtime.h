@@ -149,7 +149,7 @@ typedef struct {
 #include "xt_scheduler.h"
 
 XTTask* xt_async_spawn(void* func_ptr, XTValue arg);
-XTValue xt_async_wait(XTTask* task);
+XTValue xt_async_wait(XTValue task);
 void    xt_async_notify_complete(XTTask* task);
 
 /**

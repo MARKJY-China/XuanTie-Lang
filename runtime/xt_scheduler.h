@@ -12,8 +12,8 @@
 #define XT_FIBER_DONE     3  // 已完成
 
 // 调度器配置
-#define XT_MAX_FIBERS      256
-#define XT_TIMER_HEAP_SIZE 128
+#define XT_MAX_FIBERS      65535 // fiber 池;句柄=下标+1,须 ≤0x10000 以与指针对象区分
+#define XT_TIMER_HEAP_SIZE 8192 // 小顶堆容量(原128,压测200fiber睡眠会溢出静默丢fiber)
 #define XT_SCHED_TICK_US   1000  // 调度滴答 1ms
 
 typedef struct XTFiber {
@@ -22,6 +22,9 @@ typedef struct XTFiber {
     int   status;
     int64_t wakeup_at;        // 唤醒时间（微秒，仅 SLEEPING）
     void* wait_target;        // 等待目标（task ptr，仅 WAITING）
+    uintptr_t result;         // 完成返回值(XTValue)，由 xt_fiber_set_result 写入，默认 0(空)
+    int   result_consumed;    // 结果已被 等待/xt_task_result 消费(回收前置条件)
+    int   in_free_list;       // 已在回收空闲栈中(防重复入栈)
     struct XTFiber* next;     // 链表指针
 } XTFiber;
 
@@ -51,6 +54,7 @@ void      xt_scheduler_yield();     // 当前 fiber 让出，重新入队
 void      xt_scheduler_sleep_us(int64_t us); // 当前 fiber 睡眠
 void      xt_scheduler_wait_task(void* task); // 当前 fiber 等待任务
 void      xt_scheduler_wake_task(void* task); // 任务完成时唤醒等待 fiber
+void      xt_fiber_set_result(uintptr_t v);   // 当前 fiber 写入完成返回值
 
 // 内部
 void      xt_scheduler_enqueue(XTFiber* f);

@@ -3,15 +3,21 @@
 
 示("=== Test 71: 调度器正确性测试 ===")
 
-// 测试1: 5个并发 fiber
+// 测试1: 5个并发 fiber（通道计数，消除共享计数器竞态）
 示("[测试1] 5 fiber")
-设 t1done = 0
-设 t1f1 = 异步 { 设 t1i1 = 异步 { t1done = t1done + 1 }; 等待(t1i1) }
-设 t1f2 = 异步 { 设 t1i2 = 异步 { t1done = t1done + 1 }; 等待(t1i2) }
-设 t1f3 = 异步 { 设 t1i3 = 异步 { t1done = t1done + 1 }; 等待(t1i3) }
-设 t1f4 = 异步 { 设 t1i4 = 异步 { t1done = t1done + 1 }; 等待(t1i4) }
-设 t1f5 = 异步 { 设 t1i5 = 异步 { t1done = t1done + 1 }; 等待(t1i5) }
+设 t1ch = 道(5)
+设 t1f1 = 异步 { 设 t1i1 = 异步 { t1ch.发(1) }; 等待(t1i1) }
+设 t1f2 = 异步 { 设 t1i2 = 异步 { t1ch.发(1) }; 等待(t1i2) }
+设 t1f3 = 异步 { 设 t1i3 = 异步 { t1ch.发(1) }; 等待(t1i3) }
+设 t1f4 = 异步 { 设 t1i4 = 异步 { t1ch.发(1) }; 等待(t1i4) }
+设 t1f5 = 异步 { 设 t1i5 = 异步 { t1ch.发(1) }; 等待(t1i5) }
 等待(t1f1); 等待(t1f2); 等待(t1f3); 等待(t1f4); 等待(t1f5)
+设 t1done = 0
+设 t1k = 0
+当 t1k < 5 {
+    t1done = t1done + t1ch.收()
+    t1k = t1k + 1
+}
 若 t1done == 5 { 示("PASS: 测试1") } 否 { 示("FAIL: done=" & t1done.转字()) }
 
 // 测试2: 不同耗时交错
@@ -40,18 +46,24 @@
 等待(t4outer)
 若 t4val == 100 { 示("PASS: 测试4") } 否 { 示("FAIL: val=" & t4val.转字()) }
 
-// 测试5: 50 fiber 压力
+// 测试5: 50 fiber 压力（通道计数，消除共享计数器竞态）
 示("[测试5] 50 fiber")
-设 t5counter = 0
+设 t5ch = 道(50)
 设 t5tasks = []
 设 t5i = 0
 当 t5i < 50 {
-    设 t5inner = 异步 { t5counter = t5counter + 1 }
+    设 t5inner = 异步 { t5ch.发(1) }
     设 t5outer = 异步 { 等待(t5inner) }
     t5tasks.追加(t5outer)
     t5i = t5i + 1
 }
 遍历 t5t 于 t5tasks { 等待(t5t) }
+设 t5counter = 0
+设 t5k = 0
+当 t5k < 50 {
+    t5counter = t5counter + t5ch.收()
+    t5k = t5k + 1
+}
 若 t5counter == 50 { 示("PASS: 测试5") } 否 { 示("FAIL: counter=" & t5counter.转字()) }
 
 // 测试6: 混合 N=0 + N>0 调度

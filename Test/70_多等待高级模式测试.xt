@@ -22,13 +22,14 @@
 等待(t2triple)
 若 t2ok { 示("PASS: 测试2") } 否 { 示("FAIL") }
 
-// 测试3: 三个独立状态机
+// 测试3: 三个独立状态机（通道求和，消除共享计数器竞态）
 示("[测试3] 三状态机")
-设 t3count = 0
-设 t3s1 = 异步 { 设 t3inn1 = 异步 { t3count = t3count + 1 }; 等待(t3inn1) }
-设 t3s2 = 异步 { 设 t3inn2 = 异步 { t3count = t3count + 2 }; 等待(t3inn2) }
-设 t3s3 = 异步 { 设 t3inn3 = 异步 { t3count = t3count + 4 }; 等待(t3inn3) }
+设 t3ch = 道(3)
+设 t3s1 = 异步 { 设 t3inn1 = 异步 { t3ch.发(1) }; 等待(t3inn1) }
+设 t3s2 = 异步 { 设 t3inn2 = 异步 { t3ch.发(2) }; 等待(t3inn2) }
+设 t3s3 = 异步 { 设 t3inn3 = 异步 { t3ch.发(4) }; 等待(t3inn3) }
 等待(t3s1); 等待(t3s2); 等待(t3s3)
+设 t3count = t3ch.收() + t3ch.收() + t3ch.收()
 若 t3count == 7 { 示("PASS: 测试3") } 否 { 示("FAIL: count=" & t3count.转字()) }
 
 // 测试4: 连续创建+等待
@@ -54,18 +55,24 @@
 等待(t5l1)
 若 t5depth == 1 { 示("PASS: 测试5") } 否 { 示("FAIL: depth=" & t5depth.转字()) }
 
-// 测试6: 20个状态机
+// 测试6: 20个状态机（通道求和，消除共享计数器竞态）
 示("[测试6] 20状态机")
-设 t6count = 0
+设 t6ch = 道(20)
 设 t6tasks = []
 设 t6idx6 = 0
 当 t6idx6 < 20 {
-    设 t6inner = 异步 { t6count = t6count + 1 }
+    设 t6inner = 异步 { t6ch.发(1) }
     设 t6outer = 异步 { 等待(t6inner) }
     t6tasks.追加(t6outer)
     t6idx6 = t6idx6 + 1
 }
 遍历 t6t 于 t6tasks { 等待(t6t) }
+设 t6count = 0
+设 t6k6 = 0
+当 t6k6 < 20 {
+    t6count = t6count + t6ch.收()
+    t6k6 = t6k6 + 1
+}
 若 t6count == 20 { 示("PASS: 测试6") } 否 { 示("FAIL: count=" & t6count.转字()) }
 
 示("=== Test 70 完成 ===")

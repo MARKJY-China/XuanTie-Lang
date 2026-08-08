@@ -99,6 +99,7 @@ static struct {
     xt_mutex_t mu;
     xt_cond_t  cv;           // worker 等待任务时休眠
     xt_cond_t  done_cv;      // 用于 xt_threadpool_wait 等待特定任务
+    xt_cond_t  space_cv;     // 队列满时提交者等待空位（背压）
 
     pool_task tasks[MAX_TASKS];
     int task_head;           // 下一个待分配的任务索引
@@ -132,6 +133,7 @@ static void* worker_loop(void* arg) {
         int idx = g_pool.task_head;
         g_pool.task_head = (g_pool.task_head + 1) % MAX_TASKS;
         g_pool.task_count--;
+        xt_cond_signal(&g_pool.space_cv);  // 队列出现空位，唤醒阻塞的提交者
 
         pool_task t = g_pool.tasks[idx];
         g_pool.tasks[idx].func = NULL; // 清空槽位
@@ -177,6 +179,7 @@ void xt_threadpool_init(int worker_count) {
     xt_mutex_init(&g_pool.mu);
     xt_cond_init(&g_pool.cv);
     xt_cond_init(&g_pool.done_cv);
+    xt_cond_init(&g_pool.space_cv);
 
     for (int i = 0; i < worker_count; i++) {
         int* wid = (int*)malloc(sizeof(int));
@@ -191,6 +194,7 @@ void xt_threadpool_shutdown(void) {
     xt_mutex_lock(&g_pool.mu);
     g_pool.shutdown = 1;
     xt_cond_broadcast(&g_pool.cv);
+    xt_cond_broadcast(&g_pool.space_cv);  // 唤醒阻塞在队列满的提交者
     xt_mutex_unlock(&g_pool.mu);
 
     for (int i = 0; i < g_pool.worker_count; i++) {
@@ -200,14 +204,19 @@ void xt_threadpool_shutdown(void) {
     xt_mutex_destroy(&g_pool.mu);
     xt_cond_destroy(&g_pool.cv);
     xt_cond_destroy(&g_pool.done_cv);
+    xt_cond_destroy(&g_pool.space_cv);
 }
 
 int xt_threadpool_submit(xt_pool_task func, void* arg) {
     xt_mutex_lock(&g_pool.mu);
 
-    if (g_pool.task_count >= MAX_TASKS) {
+    // 队列满时阻塞等待空位（背压），不再静默丢任务；仅 shutdown 时返回 -1
+    while (g_pool.task_count >= MAX_TASKS && !g_pool.shutdown) {
+        xt_cond_wait(&g_pool.space_cv, &g_pool.mu);
+    }
+    if (g_pool.shutdown) {
         xt_mutex_unlock(&g_pool.mu);
-        return -1; // 队列满
+        return -1;
     }
 
     int slot = (g_pool.task_head + g_pool.task_count) % MAX_TASKS;
