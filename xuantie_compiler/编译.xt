@@ -716,6 +716,8 @@
         此.写出("declare void @\"xt_fiber_set_result\"(i64)")
         此.写出("declare i64 @\"xt_task_result\"(i64)")
         此.写出("declare i64 @\"xt_now_ms\"()")
+        此.写出("declare void @\"xt_method_missing\"(i64)")
+        此.写出("declare void @\"xt_member_missing\"(i64)")
         此.写出("declare void @\"xt_scheduler_sleep_us\"(i64)")
         此.写出("declare void @\"xt_scheduler_wait_task\"(i64)")
         此.写出("declare i8* @\"malloc\"(i64)")
@@ -2101,7 +2103,26 @@
                 设 翻译左 = 此.编译表达式(节点.左表达式)
                 设 对象寄存器 = 此.确保I64(翻译左[0], 翻译左[1])
                 设 左类型 = 翻译左[1]
-                
+
+                // 非对象守卫:对标记值(整数/布尔/空)访问成员会解引用野指针(Segfault),显式报错
+                设 _mrKeyXt = 此.获取字符串对象(节点.成员名称)
+                设 _mrTag = 此.符(此.取新寄存器())
+                此.写出("  " & _mrTag & " = and i64 " & 此.符(对象寄存器) & ", 1")
+                设 _mrOkC = 此.符(此.取新寄存器())
+                此.写出("  " & _mrOkC & " = icmp eq i64 " & _mrTag & ", 0")
+                设 _mrBig = 此.符(此.取新寄存器())
+                此.写出("  " & _mrBig & " = icmp ugt i64 " & 此.符(对象寄存器) & ", 4096")
+                设 _mrIsPtr = 此.符(此.取新寄存器())
+                此.写出("  " & _mrIsPtr & " = and i1 " & _mrOkC & ", " & _mrBig)
+                设 _mrBadL = 此.标(此.取新标签("member.bad"))
+                设 _mrOkL = 此.标(此.取新标签("member.ok"))
+                此.写出("  br i1 " & _mrIsPtr & ", label %" & _mrOkL & ", label %" & _mrBadL)
+                此.写出(_mrBadL & ":")
+                此.写出("  call void @xt_member_missing(i64 " & _mrKeyXt & ")")
+                此.写出("  unreachable")
+                此.写出(_mrOkL & ":")
+                此.写出("  call void @xt_release(i64 " & _mrKeyXt & ")")
+
                 // 访问控制检查
                 此.检查访问权限(左类型, 节点.成员名称, 节点)
                 
@@ -4654,6 +4675,16 @@
             设 函指Xt = 此.取新寄存器()
             此.写出("  " & 函指Xt & " = call i64 @xt_dict_get(i64 " & 对象Xt & ", i64 " & 键Xt & ")")
             此.写出("  call void @xt_retain(i64 " & 函指Xt & ")")
+            // 方法缺失守卫:查无此方法时显式报错退出,而非对空指针动态调用(Segfault)
+            设 _mmNull = 此.取新寄存器()
+            此.写出("  " & _mmNull & " = icmp eq i64 " & 函指Xt & ", 0")
+            设 _mmMissL = 此.标(此.取新标签("method.missing"))
+            设 _mmOkL = 此.标(此.取新标签("method.ok"))
+            此.写出("  br i1 " & _mmNull & ", label %" & _mmMissL & ", label %" & _mmOkL)
+            此.写出(_mmMissL & ":")
+            此.写出("  call void @xt_method_missing(i64 " & 键Xt & ")")
+            此.写出("  unreachable")
+            此.写出(_mmOkL & ":")
             此.写出("  call void @xt_release(i64 " & 键Xt & ")")
             设 my参数结果列表 = ["i64 " & 对象Xt]
             设 my释放寄存器列表 = [对象Xt, 函指Xt]

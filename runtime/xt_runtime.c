@@ -869,6 +869,32 @@ void* xt_malloc(size_t size, uint32_t type_id) {
     return (void*)obj;
 }
 
+// 成员缺失诊断:对非对象值(整数/布尔/空等标记值)访问成员时显式报错退出。
+// 原行为:直接 inttoptr 解引用标记整数 → Segfault。
+void xt_member_missing(XTValue name_val) {
+    const char* name = "?";
+    if (xt_is_real_ptr(name_val)) {
+        XTString* s = (XTString*)name_val;
+        if (s->data) name = s->data;
+    }
+    fprintf(stderr, "运行时错误: 对非对象值(整数/布尔/空)访问成员 '%s'\n", name);
+    fprintf(stderr, "  提示: 成员访问(如 .成功/.值/.长度)只对对象有效;请先用类型检查或 结果 判定保护。\n");
+    exit(1);
+}
+
+// 方法缺失诊断:动态分派查无此方法时显式报错退出(遵循「明确的编程错误宁可报错也不静默」)。
+// 原行为:对空指针解引用 → Segfault,无任何可诊断信息。
+void xt_method_missing(XTValue name_val) {
+    const char* name = "?";
+    if (xt_is_real_ptr(name_val)) {
+        XTString* s = (XTString*)name_val;
+        if (s->data) name = s->data;
+    }
+    fprintf(stderr, "运行时错误: 调用了对象不存在的方法: '%s'\n", name);
+    fprintf(stderr, "  提示: 请检查方法名拼写;字符串/数组/字典方法名以官方手册为准(注意部分方法带问号后缀,如 包含?/存在?)。\n");
+    exit(1);
+}
+
 static inline void xt_check_obj(void* val) {
     if (!xt_is_real_ptr((XTValue)val)) return;
     XTObject* obj = (XTObject*)val;
