@@ -995,14 +995,43 @@
             } 抑 模式.节点类别 == "前缀" 且 模式.操作符 == "是" {
                 // 类型匹配: 是 类型
                 设 目标类型 = 模式.右节点.标识符名称
-                
-                // 获取目标对象的 type_id
+
+                // 安全取 type_id:标记整数直接得 1(整);特殊常量(0=空,2=假,4=真)映射布尔;
+                // 只有真指针才允许解引用读头部——裸 inttoptr 曾在匹配整数时段错误(实测)
+                设 _mTag = 此.取新寄存器()
+                此.写出("  " & _mTag & " = and i64 " & 目标Xt & ", 1")
+                设 _mIsInt = 此.取新寄存器()
+                此.写出("  " & _mIsInt & " = icmp ne i64 " & _mTag & ", 0")
+                设 _mIntL = 此.标(此.取新标签("match.tint"))
+                设 _mNotIntL = 此.标(此.取新标签("match.tnotint"))
+                设 _mMergeL = 此.标(此.取新标签("match.tmerge"))
+                此.写出("  br i1 " & _mIsInt & ", label %" & _mIntL & ", label %" & _mNotIntL)
+                此.写出(_mIntL & ":")
+                此.写出("  br label %" & _mMergeL)
+                此.写出(_mNotIntL & ":")
+                设 _mIsReal = 此.取新寄存器()
+                此.写出("  " & _mIsReal & " = icmp ugt i64 " & 目标Xt & ", 4096")
+                设 _mPtrL = 此.标(此.取新标签("match.tptr"))
+                设 _mSpecL = 此.标(此.取新标签("match.tspec"))
+                此.写出("  br i1 " & _mIsReal & ", label %" & _mPtrL & ", label %" & _mSpecL)
+                此.写出(_mPtrL & ":")
                 设 objPtr = 此.取新寄存器()
                 此.写出("  " & objPtr & " = inttoptr i64 " & 目标Xt & " to %XTObject*")
                 设 typeIdPtr = 此.取新寄存器()
                 此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
                 设 typeId = 此.取新寄存器()
                 此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+                此.写出("  br label %" & _mMergeL)
+                此.写出(_mSpecL & ":")
+                // 特殊常量:0=空(无匹配类型),2/4=布尔(4)
+                设 _mIsBool = 此.取新寄存器()
+                此.写出("  " & _mIsBool & " = icmp ugt i64 " & 目标Xt & ", 0")
+                设 _mSpecId = 此.取新寄存器()
+                此.写出("  " & _mSpecId & " = select i1 " & _mIsBool & ", i32 4, i32 0")
+                此.写出("  br label %" & _mMergeL)
+                此.写出(_mMergeL & ":")
+                设 _mFinalId = 此.取新寄存器()
+                此.写出("  " & _mFinalId & " = phi i32 [ 1, %" & _mIntL & " ], [ " & typeId & ", %" & _mPtrL & " ], [ " & _mSpecId & ", %" & _mSpecL & " ]")
                 
                 // 映射类型名称到 ID
                 设 目标Id = "0"
@@ -1019,7 +1048,7 @@
                 }
                 
                 设 isMatch = 此.取新寄存器()
-                此.写出("  " & isMatch & " = icmp eq i32 " & typeId & ", " & 目标Id)
+                此.写出("  " & isMatch & " = icmp eq i32 " & _mFinalId & ", " & 目标Id)
                 此.写出("  br i1 " & isMatch & ", label %" & 命中标签 & ", label %" & 下一分支标签)
             } 否 {
                 设 翻译模式 = 此.编译表达式(模式)
@@ -1326,12 +1355,18 @@
     函 生成布尔条件(寄存器, 类型) {
         设 regStr = 此.符(寄存器)
         设 cond = regStr
-        若 类型 == "i64" 或 类型 == "整" {
-            cond = 此.符(此.取新寄存器())
-            此.写出("  " & cond & " = icmp eq i64 " & regStr & ", 4")
-        } 抑 类型 == "raw_i64" {
+        // 未知/标记类型一律按标记值与 真(4) 比较;原先未知类型(如无注解函数调用)直通返回 i64,
+        // 喂给 i1 语境(select/br)直接非法 IR(实测)
+        若 类型 == "raw_i64" {
             cond = 此.符(此.取新寄存器())
             此.写出("  " & cond & " = icmp ne i64 " & regStr & ", 0")
+        } 否 {
+            若 类型 == "i1" {
+                cond = regStr
+            } 否 {
+                cond = 此.符(此.取新寄存器())
+                此.写出("  " & cond & " = icmp eq i64 " & regStr & ", 4")
+            }
         }
         若 类型 != "raw_i64" 且 类型 != "i1" 且 类型 != "整" {
             设 xt = 此.符(此.确保I64(regStr, 类型))
@@ -1695,10 +1730,16 @@
     函 编译变量声明语句(语句) {
         设 翻译结果 = 此.编译表达式(语句.声明值)
         设 xt_val = 此.符(此.确保I64(翻译结果[0], 翻译结果[1]))
+        // xt_val 经 确保I64 已统一为标记 i64;槽位表征必须如实登记。
+        // 尤其 i1:若登记为 i1,读端会把内存中的标记 i64 当裸 i1 用(select i1 %i64 非法 IR,实测)
         若 翻译结果[1] == "raw_i64" {
             设 类型名 = "i64"
         } 否 {
-            设 类型名 = 翻译结果[1]
+            若 翻译结果[1] == "i1" {
+                设 类型名 = "i64"
+            } 否 {
+                设 类型名 = 翻译结果[1]
+            }
         }
 
         若 语句.是解构 {

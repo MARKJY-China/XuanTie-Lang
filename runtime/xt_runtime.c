@@ -1793,6 +1793,19 @@ static uint64_t xt_hash_value(XTValue val) {
 /**
  * @brief 通用全等比较
  */
+// 数值统一提取:标记整数/布尔/整数对象/浮点对象 → double;非数值返回 0
+static int _xt_as_double(XTValue v, double* out) {
+    if (XT_IS_INT(v)) { *out = (double)XT_TO_INT(v); return 1; }
+    if (v == XT_TRUE) { *out = 1.0; return 1; }
+    if (v == XT_FALSE) { *out = 0.0; return 1; }
+    if (XT_IS_REAL_PTR(v)) {
+        XTObject* o = (XTObject*)v;
+        if (o->type_id == XT_TYPE_FLOAT) { *out = ((struct { XTObject h; double v; }*)v)->v; return 1; }
+        if (o->type_id == XT_TYPE_INT) { *out = (double)((XTInt*)v)->value; return 1; }
+    }
+    return 0;
+}
+
 int xt_compare(XTValue a, XTValue b) {
     if (a == b) return 0;
     if (XT_IS_INT(a) && XT_IS_INT(b)) {
@@ -1803,6 +1816,14 @@ int xt_compare(XTValue a, XTValue b) {
         XTObject* oa = (XTObject*)a; XTObject* ob = (XTObject*)b;
         if (oa->type_id == XT_TYPE_STRING && ob->type_id == XT_TYPE_STRING) {
             return strcmp(((XTString*)a)->data, ((XTString*)b)->data);
+        }
+    }
+    // 数值比较(含混合 整/小数):原先落入指针地址比较,方向随分配顺序漂移(实测 < > == 全错)
+    {
+        double da, db;
+        if (_xt_as_double(a, &da) && _xt_as_double(b, &db)) {
+            if (da == db) return 0;
+            return (da < db) ? -1 : 1;
         }
     }
     return (a < b) ? -1 : 1;
