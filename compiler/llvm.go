@@ -3049,6 +3049,9 @@ func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string
 		c.emit("  %s = alloca i64", addrReg)
 		c.emit("  store i64 0, i64* %s", addrReg)
 		c.emit("  store i64 %%\"%s_arg\", i64* %s", p.Name.Value, addrReg)
+		// 入口必须 retain:参数在 exitScope 时会被 release,缺了 retain 就是净 -1——
+		// 闭包每被调一次实参引用计数减一,两次调用后实参被提前释放(XTC 侧已同步修复)
+		c.emit("  call void @xt_retain(i64 %%\"%s_arg\")", p.Name.Value)
 		c.trackObject(addrReg)
 		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
 	}

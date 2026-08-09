@@ -279,25 +279,45 @@ void XT_DrawFPS(uintptr_t x, uintptr_t y) {
 // 纹理与图像
 // ============================================================
 
-// 返回纹理指针（i64）
+// 纹理句柄池:返回 1-based 标记整数索引(与字体句柄同方案)。
+// 历史教训:此前直接返回裸 Texture2D* 指针,玄铁 ARC 会把该值当 XTObject 做
+// retain/release/析构,读取 Texture2D 字段当 magic → 报堆损坏甚至错误释放 C 内存。
+static Texture2D xt_tex_pool[16];
+static int xt_tex_used[16];
+
+static Texture2D* xt_get_tex(uintptr_t v) {
+    if (!IS_INT(v)) return NULL;
+    int64_t idx = XT_TO_INT(v);
+    if (idx < 1 || idx > 16) return NULL;
+    if (!xt_tex_used[idx - 1]) return NULL;
+    return &xt_tex_pool[idx - 1];
+}
+
+// 返回纹理句柄(1-16 的标记整数),失败或满池返回 0
 uintptr_t XT_LoadTexture(uintptr_t filename) {
+    int slot = -1;
+    for (int i = 0; i < 16; i++) {
+        if (!xt_tex_used[i]) { slot = i; break; }
+    }
+    if (slot < 0) return XT_FROM_INT(0);
     Texture2D tex = LoadTexture(xt_get_cstr(filename));
-    Texture2D* p = (Texture2D*)calloc(1, sizeof(Texture2D));
-    *p = tex;
-    return (uintptr_t)p;
+    xt_tex_pool[slot] = tex;
+    xt_tex_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
 }
 
 void XT_UnloadTexture(uintptr_t texPtr) {
-    if (IS_PTR(texPtr) && texPtr != 0) {
-        Texture2D* p = (Texture2D*)texPtr;
-        UnloadTexture(*p);
-        free((void*)p);
-    }
+    if (!IS_INT(texPtr)) return;
+    int64_t idx = XT_TO_INT(texPtr);
+    if (idx < 1 || idx > 16 || !xt_tex_used[idx - 1]) return;
+    Texture2D* p = &xt_tex_pool[idx - 1];
+    UnloadTexture(*p);
+    xt_tex_used[idx - 1] = 0;
 }
 
 void XT_DrawTexture(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
-    if (IS_PTR(texPtr) && texPtr != 0) {
-        Texture2D* p = (Texture2D*)texPtr;
+    Texture2D* p = xt_get_tex(texPtr);
+    if (p) {
         Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
                       (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
         DrawTexture(*p, (int)XT_TO_INT(x), (int)XT_TO_INT(y), tint);
@@ -306,8 +326,8 @@ void XT_DrawTexture(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t tint_r
 
 void XT_DrawTextureEx(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t rotation, uintptr_t scale,
                       uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
-    if (IS_PTR(texPtr) && texPtr != 0) {
-        Texture2D* p = (Texture2D*)texPtr;
+    Texture2D* p = xt_get_tex(texPtr);
+    if (p) {
         Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
                       (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
         Rectangle src = {0, 0, (float)p->width, (float)p->height};
@@ -537,4 +557,12 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
         DrawTextEx(*p, xt_get_cstr(text), pos, (float)XT_TO_INT(fontSize),
                    (float)XT_TO_INT(spacing), c);
     }
+}
+
+// 用指定字体测量文字宽度（UI 布局需要精确宽度做控件尺寸与居中）
+uintptr_t XT_MeasureTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t fontSize, uintptr_t spacing) {
+    Font* p = xt_get_font(fontHandle);
+    if (!p) return XT_FROM_INT(0);
+    Vector2 v = MeasureTextEx(*p, xt_get_cstr(text), (float)XT_TO_INT(fontSize), (float)XT_TO_INT(spacing));
+    return XT_FROM_INT((int64_t)(v.x + 0.5));
 }

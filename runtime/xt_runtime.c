@@ -882,6 +882,14 @@ void xt_member_missing(XTValue name_val) {
     exit(1);
 }
 
+// 索引非对象诊断:对标记值(整数/布尔/空)做索引([])会解引用野指针(Segfault),显式报错退出。
+// 原行为:直接读取垃圾地址的类型字段 → Segfault,无任何可诊断信息。
+void xt_index_bad(XTValue val) {
+    fprintf(stderr, "运行时错误: 对非对象值(整数/布尔/空)进行索引访问\n");
+    fprintf(stderr, "  提示: 索引([])只对字典/数组/字符串有效;请确认该值不是 空 或数字,必要时先用 结果 判定保护。\n");
+    exit(1);
+}
+
 // 方法缺失诊断:动态分派查无此方法时显式报错退出(遵循「明确的编程错误宁可报错也不静默」)。
 // 原行为:对空指针解引用 → Segfault,无任何可诊断信息。
 void xt_method_missing(XTValue name_val) {

@@ -59,6 +59,7 @@
 外 函 XT_LoadFontEx(filename: 字, fontSize: 整, refText: 字): 整
 外 函 XT_UnloadFont(fontPtr: 整): 空
 外 函 XT_DrawTextEx(fontPtr: 整, text: 字, x: 整, y: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_MeasureTextEx(fontPtr: 整, text: 字, fontSize: 整, spacing: 整): 整
 
 // ============================================================
 // 纹理与图像
@@ -204,6 +205,11 @@
 // 用指定字体绘制文字（支持中文）
 公 函 绘字体文字(字体句柄, 文本, x, y, 字号, 间距, r, g, b, a) {
     XT_DrawTextEx(字体句柄, 文本, x, y, 字号, 间距, r, g, b, a)
+}
+
+// 用指定字体测量文字宽度（布局精确尺寸用）
+公 函 量字体文字(字体句柄, 文本, 字号, 间距) {
+    返 XT_MeasureTextEx(字体句柄, 文本, 字号, 间距)
 }
 
 // 加载纹理
