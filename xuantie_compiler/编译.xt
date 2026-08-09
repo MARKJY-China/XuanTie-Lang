@@ -4934,6 +4934,110 @@
                     返 此.编译内建中缀(节点, 左寄存器, 左类型, 右寄存器, 右类型)
                 }
             }
+            // P-perf-1 算术早退(完整替代块,编译期接管返回):
+            // 两侧均为标记整数时内联完成运算,完全绕过重载键分配/字典查找/动态调用。
+            // 对象仍走完整重载机制(慢路径内联复制既有流程)。
+            设 _pf码 = ""
+            匹配 节点.中缀运算符 {
+                "+" -> { _pf码 = "add" }
+                "-" -> { _pf码 = "sub" }
+                "*" -> { _pf码 = "mul" }
+                "/" -> { _pf码 = "sdiv" }
+                "%" -> { _pf码 = "srem" }
+            }
+            设 _pf左可 = 假
+            若 左类型 == "i64" { _pf左可 = 真 }
+            若 左类型 == "raw_i64" { _pf左可 = 真 }
+            设 _pf右可 = 假
+            若 右类型 == "i64" { _pf右可 = 真 }
+            若 右类型 == "raw_i64" { _pf右可 = 真 }
+            设 _pf接管 = 假
+            若 _pf码 != "" {
+                若 _pf左可 { 若 _pf右可 { _pf接管 = 真 } }
+            }
+            若 _pf接管 {
+                设 _lXt2 = 此.符(此.确保I64(左寄存器, 左类型))
+                设 _rXt2 = 此.符(此.确保I64(右寄存器, 右类型))
+                设 _pfRes = 此.取新寄存器()
+                此.入口alloca列表.追加("  " & _pfRes & " = alloca i64\n")
+                此.入口alloca列表.追加("  store i64 0, i64* " & _pfRes & "\n")
+                设 _pfAnd = 此.取新寄存器()
+                此.写出("  " & _pfAnd & " = and i64 " & _lXt2 & ", " & _rXt2)
+                设 _pfBit = 此.取新寄存器()
+                此.写出("  " & _pfBit & " = and i64 " & _pfAnd & ", 1")
+                设 _pfIsInt = 此.取新寄存器()
+                此.写出("  " & _pfIsInt & " = icmp eq i64 " & _pfBit & ", 1")
+                设 _pfFastL = 此.标(此.取新标签("op.arithfast"))
+                设 _pfSlowL = 此.标(此.取新标签("op.arithslow"))
+                设 _pfMergeL = 此.标(此.取新标签("op.arithmerge"))
+                此.写出("  br i1 " & _pfIsInt & ", label %" & _pfFastL & ", label %" & _pfSlowL)
+                // 快路径:脱壳→原生运算→回标
+                此.写出(_pfFastL & ":")
+                设 _pfA = 此.取新寄存器()
+                此.写出("  " & _pfA & " = ashr i64 " & _lXt2 & ", 1")
+                设 _pfB = 此.取新寄存器()
+                此.写出("  " & _pfB & " = ashr i64 " & _rXt2 & ", 1")
+                设 _pfRaw = 此.取新寄存器()
+                此.写出("  " & _pfRaw & " = " & _pf码 & " i64 " & _pfA & ", " & _pfB)
+                设 _pfRaw2 = _pfRaw
+                若 _pf码 == "sdiv" {
+                    设 _pfZ = 此.取新寄存器()
+                    此.写出("  " & _pfZ & " = icmp eq i64 " & _pfB & ", 0")
+                    设 _pfSel = 此.取新寄存器()
+                    此.写出("  " & _pfSel & " = select i1 " & _pfZ & ", i64 0, i64 " & _pfRaw)
+                    _pfRaw2 = _pfSel
+                }
+                若 _pf码 == "srem" {
+                    设 _pfZ2 = 此.取新寄存器()
+                    此.写出("  " & _pfZ2 & " = icmp eq i64 " & _pfB & ", 0")
+                    设 _pfSel2 = 此.取新寄存器()
+                    此.写出("  " & _pfSel2 & " = select i1 " & _pfZ2 & ", i64 0, i64 " & _pfRaw)
+                    _pfRaw2 = _pfSel2
+                }
+                设 _pfT = 此.取新寄存器()
+                此.写出("  " & _pfT & " = shl i64 " & _pfRaw2 & ", 1")
+                设 _pfO = 此.取新寄存器()
+                此.写出("  " & _pfO & " = or i64 " & _pfT & ", 1")
+                此.写出("  store i64 " & _pfO & ", i64* " & _pfRes)
+                此.写出("  br label %" & _pfMergeL)
+                // 慢路径:完整重载机制(内联复制既有流程)
+                此.写出(_pfSlowL & ":")
+                设 _pfKey = 此.获取字符串对象(魔术方法)
+                设 _pfPtrBit = 此.取新寄存器()
+                此.写出("  " & _pfPtrBit & " = and i64 " & _lXt2 & ", 1")
+                设 _pfIsPtr = 此.取新寄存器()
+                此.写出("  " & _pfIsPtr & " = icmp eq i64 " & _pfPtrBit & ", 0")
+                设 _pfCheckL = 此.标(此.取新标签("op.pfcheck"))
+                设 _pfFbL = 此.标(此.取新标签("op.pffallback"))
+                设 _pfOvL = 此.标(此.取新标签("op.pfoverload"))
+                此.写出("  br i1 " & _pfIsPtr & ", label %" & _pfCheckL & ", label %" & _pfFbL)
+                此.写出(_pfCheckL & ":")
+                设 _pfFn = 此.取新寄存器()
+                此.写出("  " & _pfFn & " = call i64 @xt_dict_get(i64 " & _lXt2 & ", i64 " & _pfKey & ")")
+                设 _pfIsFn = 此.取新寄存器()
+                此.写出("  " & _pfIsFn & " = icmp ne i64 " & _pfFn & ", 0")
+                // 键对象在此释放:它只在慢路径创建,若拖到合并块释放将不被快路径支配(实测非法 IR)
+                此.写出("  call void @xt_release(i64 " & _pfKey & ")")
+                此.写出("  br i1 " & _pfIsFn & ", label %" & _pfOvL & ", label %" & _pfFbL)
+                此.写出(_pfOvL & ":")
+                此.写出("  call void @xt_retain(i64 " & _pfFn & ")")
+                设 _pfOvRes = 此.执行动态调用(_pfFn, ["i64 " & _lXt2, "i64 " & _rXt2])
+                此.写_存储_xt(_pfOvRes, "i64", _pfRes)
+                此.写出("  call void @xt_release(i64 " & _pfFn & ")")
+                此.写出("  br label %" & _pfMergeL)
+                此.写出(_pfFbL & ":")
+                设 _pfFbRes = 此.编译内建中缀(节点, 左寄存器, 左类型, 右寄存器, 右类型)
+                此.写_存储_xt(_pfFbRes[0], _pfFbRes[1], _pfRes)
+                此.写出("  br label %" & _pfMergeL)
+                此.写出(_pfMergeL & ":")
+                设 _pfFinal = 此.取新寄存器()
+                此.写出("  " & _pfFinal & " = load i64, i64* " & _pfRes)
+                此.写出("  call void @xt_release(i64 " & _lXt2 & ")")
+                此.写出("  call void @xt_release(i64 " & _rXt2 & ")")
+                设 _r = [_pfFinal, "i64"]
+                返 _r
+            }
+
             设 键Xt = 此.获取字符串对象(魔术方法)
             设 左Xt = 此.确保I64(左寄存器, 左类型)
             
@@ -4952,7 +5056,7 @@
             // 将 alloca 提升到函数入口块，避免在条件分支中产生 dominance 错误
             此.入口alloca列表.追加("  " & resAddr & " = alloca i64\n")
             此.入口alloca列表.追加("  store i64 0, i64* " & resAddr & "\n")
-            
+
             此.写出("  br i1 " & isRealPtr & ", label %" & checkLabel & ", label %" & fallbackLabel)
             
             此.写出(checkLabel & ":")
@@ -5029,6 +5133,78 @@
                 若 指令.包含?("icmp") { 返 [res, "i1"] }
                 设 _r = [res, "raw_i64"]
                 返 _r
+            }
+        }
+
+        // --- P-perf-1: 标记整数比较内联快路径 ---
+        // 两侧 LSB 均为 1(都是标记整数)时内联 icmp,免除每轮 xt_compare/xt_eq 调用。
+        // 非整数落回慢路径(原运行时调用),语义完全一致。
+        设 _快左可 = 假
+        若 左类型 == "i64" { _快左可 = 真 }
+        若 左类型 == "raw_i64" { _快左可 = 真 }
+        设 _快右可 = 假
+        若 右类型 == "i64" { _快右可 = 真 }
+        若 右类型 == "raw_i64" { _快右可 = 真 }
+        若 _快左可 {
+            若 _快右可 {
+                设 _快码 = ""
+                设 _快是等 = 假
+                匹配 节点.中缀运算符 {
+                    "<" -> { _快码 = "slt" }
+                    ">" -> { _快码 = "sgt" }
+                    "<=" -> { _快码 = "sle" }
+                    ">=" -> { _快码 = "sge" }
+                    "==" -> { _快码 = "eq" ; _快是等 = 真 }
+                    "!=" -> { _快码 = "ne" ; _快是等 = 真 }
+                }
+                若 _快码 != "" {
+                    设 _lX = 此.符(此.确保I64(左寄存器, 左类型))
+                    设 _rX = 此.符(此.确保I64(右寄存器, 右类型))
+                    设 _mand = 此.取新寄存器()
+                    此.写出("  " & _mand & " = and i64 " & _lX & ", " & _rX)
+                    设 _mbit = 此.取新寄存器()
+                    此.写出("  " & _mbit & " = and i64 " & _mand & ", 1")
+                    设 _misint = 此.取新寄存器()
+                    此.写出("  " & _misint & " = icmp eq i64 " & _mbit & ", 1")
+                    设 _fastL = 此.标(此.取新标签("op.fastint"))
+                    设 _slowL = 此.标(此.取新标签("op.slow"))
+                    设 _mergeL = 此.标(此.取新标签("op.fmerge"))
+                    此.写出("  br i1 " & _misint & ", label %" & _fastL & ", label %" & _slowL)
+                    // 快路径:标记保序,直接 icmp
+                    此.写出(_fastL & ":")
+                    设 _fc = 此.取新寄存器()
+                    此.写出("  " & _fc & " = icmp " & _快码 & " i64 " & _lX & ", " & _rX)
+                    此.写出("  br label %" & _mergeL)
+                    // 慢路径:原运行时调用
+                    此.写出(_slowL & ":")
+                    设 _s1p = 此.取新寄存器()
+                    此.写出("  " & _s1p & " = inttoptr i64 " & _lX & " to i8*")
+                    设 _s2p = 此.取新寄存器()
+                    此.写出("  " & _s2p & " = inttoptr i64 " & _rX & " to i8*")
+                    设 _慢值 = 此.取新寄存器()
+                    若 _快是等 {
+                        设 _s1e = 此.取新寄存器()
+                        此.写出("  " & _s1e & " = call i32 @\"xt_eq\"(i8* " & _s1p & ", i8* " & _s2p & ")")
+                        若 _快码 == "eq" {
+                            此.写出("  " & _慢值 & " = icmp ne i32 " & _s1e & ", 0")
+                        } 否 {
+                            此.写出("  " & _慢值 & " = icmp eq i32 " & _s1e & ", 0")
+                        }
+                    }
+                    若 非 _快是等 {
+                        设 _s1c = 此.取新寄存器()
+                        此.写出("  " & _s1c & " = call i32 @\"xt_compare\"(i8* " & _s1p & ", i8* " & _s2p & ")")
+                        此.写出("  " & _慢值 & " = icmp " & _快码 & " i32 " & _s1c & ", 0")
+                    }
+                    此.写出("  br label %" & _mergeL)
+                    此.写出(_mergeL & ":")
+                    设 _合成 = 此.取新寄存器()
+                    此.写出("  " & _合成 & " = phi i1 [ " & _fc & ", %" & _fastL & " ], [ " & _慢值 & ", %" & _slowL & " ]")
+                    此.写出("  call void @xt_release(i64 " & _lX & ")")
+                    此.写出("  call void @xt_release(i64 " & _rX & ")")
+                    设 _rb = [_合成, "i1"]
+                    返 _rb
+                }
             }
         }
 
