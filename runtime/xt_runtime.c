@@ -1214,6 +1214,71 @@ XTValue xt_convert_to_int(XTValue val) {
     return XT_FROM_INT(xt_to_int(val));
 }
 
+// 严格整数解析:允许首尾空白,其余必须全为可选符号+数字
+static int _xt_parse_int_strict(const char* s, int64_t* out) {
+    if (!s || !*s) return 0;
+    char* end = NULL;
+    long long v = strtoll(s, &end, 10);
+    if (end == s) return 0;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != '\0') return 0;
+    *out = (int64_t)v;
+    return 1;
+}
+static int _xt_parse_float_strict(const char* s, double* out) {
+    if (!s || !*s) return 0;
+    char* end = NULL;
+    double v = strtod(s, &end);
+    if (end == s) return 0;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n') end++;
+    if (*end != '\0') return 0;
+    *out = v;
+    return 1;
+}
+
+// 结果 版类型转换(语义决策 2026-08-09:与解释器一致,失败返回 失败(...))
+XTValue xt_convert_to_int_result(XTValue val) {
+    if (XT_IS_INT(val)) return (XTValue)xt_result_new(1, (void*)val, NULL);
+    if (val == XT_TRUE)  return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(1), NULL);
+    if (val == XT_FALSE) return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(0), NULL);
+    if (val == XT_NULL)  return (XTValue)xt_result_new(0, NULL, xt_string_new("无法将 空 转换为整数"));
+    if (XT_IS_REAL_PTR(val)) {
+        XTObject* obj = (XTObject*)val;
+        if (obj->type_id == XT_TYPE_INT)   return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(((XTInt*)val)->value), NULL);
+        if (obj->type_id == XT_TYPE_FLOAT) return (XTValue)xt_result_new(1, (void*)XT_FROM_INT((int64_t)((struct { XTObject h; double v; }*)val)->v), NULL);
+        if (obj->type_id == XT_TYPE_STRING) {
+            const char* s = ((XTString*)val)->data;
+            int64_t v = 0;
+            if (_xt_parse_int_strict(s, &v)) return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(v), NULL);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "无法将 '%s' 转换为整数", s ? s : "");
+            return (XTValue)xt_result_new(0, NULL, xt_string_new(buf));
+        }
+    }
+    return (XTValue)xt_result_new(0, NULL, xt_string_new("该类型无法转换为整数"));
+}
+
+XTValue xt_convert_to_float_result(XTValue val) {
+    if (XT_IS_INT(val)) return (XTValue)xt_result_new(1, xt_float_new((double)XT_TO_INT(val)), NULL);
+    if (val == XT_TRUE)  return (XTValue)xt_result_new(1, xt_float_new(1.0), NULL);
+    if (val == XT_FALSE) return (XTValue)xt_result_new(1, xt_float_new(0.0), NULL);
+    if (val == XT_NULL)  return (XTValue)xt_result_new(0, NULL, xt_string_new("无法将 空 转换为小数"));
+    if (XT_IS_REAL_PTR(val)) {
+        XTObject* obj = (XTObject*)val;
+        if (obj->type_id == XT_TYPE_INT)   return (XTValue)xt_result_new(1, xt_float_new((double)((XTInt*)val)->value), NULL);
+        if (obj->type_id == XT_TYPE_FLOAT) return (XTValue)xt_result_new(1, (void*)val, NULL);
+        if (obj->type_id == XT_TYPE_STRING) {
+            const char* s = ((XTString*)val)->data;
+            double v = 0.0;
+            if (_xt_parse_float_strict(s, &v)) return (XTValue)xt_result_new(1, xt_float_new(v), NULL);
+            char buf[256];
+            snprintf(buf, sizeof(buf), "无法将 '%s' 转换为小数", s ? s : "");
+            return (XTValue)xt_result_new(0, NULL, xt_string_new(buf));
+        }
+    }
+    return (XTValue)xt_result_new(0, NULL, xt_string_new("该类型无法转换为小数"));
+}
+
 /**
  * @brief 转换为 C 风格 double
  */

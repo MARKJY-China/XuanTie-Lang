@@ -662,6 +662,8 @@
         此.写出("declare void @\"xt_retain\"(i64)")
         此.写出("declare void @\"xt_release\"(i64)")
         此.写出("declare i64 @\"xt_convert_to_int\"(i64)")
+        此.写出("declare i64 @\"xt_convert_to_int_result\"(i64)")
+        此.写出("declare i64 @\"xt_convert_to_float_result\"(i64)")
         此.写出("declare i64 @\"xt_convert_to_float\"(i64)")
         此.写出("declare i64 @\"xt_convert_to_string\"(i64)")
         此.写出("declare i64 @\"xt_func_new\"(i8*)")
@@ -3996,7 +3998,8 @@
                 设 翻译参数 = 此.编译表达式(节点.调用参数[0])
                 设 xtVal = 此.确保I64(翻译参数[0], 翻译参数[1])
                 设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i64 @xt_convert_to_int(i64 " & xtVal & ")")
+                // 语义决策(2026-08-09):整() 返回 结果 容器,失败为 失败(原因),与解释器一致
+                此.写出("  " & res & " = call i64 @xt_convert_to_int_result(i64 " & xtVal & ")")
                 此.写出("  call void @xt_release(i64 " & xtVal & ")")
                 设 _r = [res, "i64"]
                 返 _r
@@ -4005,7 +4008,8 @@
                 设 翻译参数 = 此.编译表达式(节点.调用参数[0])
                 设 xtVal = 此.确保I64(翻译参数[0], 翻译参数[1])
                 设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i64 @xt_convert_to_float(i64 " & xtVal & ")")
+                // 同上:小数() 返回 结果 容器
+                此.写出("  " & res & " = call i64 @xt_convert_to_float_result(i64 " & xtVal & ")")
                 此.写出("  call void @xt_release(i64 " & xtVal & ")")
                 设 _r = [res, "i64"]
                 返 _r

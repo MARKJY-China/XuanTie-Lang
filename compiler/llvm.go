@@ -176,6 +176,8 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare void @xt_print_float(double)\n")
 	res.WriteString("declare void @xt_print_value(i64)\n")
 	res.WriteString("declare i64 @xt_convert_to_int(i64)\n")
+	res.WriteString("declare i64 @xt_convert_to_int_result(i64)\n")
+	res.WriteString("declare i64 @xt_convert_to_float_result(i64)\n")
 	res.WriteString("declare i64 @xt_convert_to_float(i64)\n")
 	res.WriteString("declare i64 @xt_convert_to_string(i64)\n")
 	res.WriteString("declare i64 @xt_int_new(i64)\n")
@@ -1321,13 +1323,22 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 
 		if rawFuncName == "整" && len(e.Arguments) == 1 {
 			valReg, valType, _ := c.compileExpression(e.Arguments[0])
-			if valType == "raw_i64" {
-				return valReg, "raw_i64", ""
-			}
-			// 如果是 tagged i64，脱壳
-			res := c.ensureRawI64(valReg, valType)
-			c.emit("  call void @xt_release(i64 %s)", c.ensureI64(valReg, valType))
-			return res, "raw_i64", ""
+			xt := c.ensureI64(valReg, valType)
+			res := c.nextReg()
+			// 语义决策(2026-08-09):整() 返回 结果 容器,与解释器一致
+			c.emit("  %s = call i64 @xt_convert_to_int_result(i64 %s)", res, xt)
+			c.emit("  call void @xt_release(i64 %s)", xt)
+			return res, "i64", ""
+		}
+
+		if rawFuncName == "小数" && len(e.Arguments) == 1 {
+			valReg, valType, _ := c.compileExpression(e.Arguments[0])
+			xt := c.ensureI64(valReg, valType)
+			res := c.nextReg()
+			// 同上:小数() 返回 结果 容器
+			c.emit("  %s = call i64 @xt_convert_to_float_result(i64 %s)", res, xt)
+			c.emit("  call void @xt_release(i64 %s)", xt)
+			return res, "i64", ""
 		}
 
 		if rawFuncName == "成功" || rawFuncName == "失败" {
