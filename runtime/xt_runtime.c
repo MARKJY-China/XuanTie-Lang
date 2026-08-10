@@ -431,6 +431,34 @@ XTValue xt_get_args() {
     return g_xt_args;
 }
 
+/**
+ * @brief 获取当前可执行文件的绝对路径 (供玄铁代码调用)
+ *
+ * 用于编译器/驱动按自身所在目录定位运行时等随包文件,
+ * 而不是依赖调用方的当前工作目录(CWD 相对路径在任意目录调用时必炸)。
+ * 返回玄铁字符串对象(UTF-8)。
+ */
+XTValue xt_self_path() {
+#ifdef _WIN32
+    wchar_t wpath[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, wpath, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return (XTValue)xt_string_new("");
+    int u8len = WideCharToMultiByte(CP_UTF8, 0, wpath, -1, NULL, 0, NULL, NULL);
+    if (u8len <= 0) return (XTValue)xt_string_new("");
+    char* u8 = (char*)malloc(u8len);
+    WideCharToMultiByte(CP_UTF8, 0, wpath, -1, u8, u8len, NULL, NULL);
+    XTValue r = (XTValue)xt_string_new(u8);
+    free(u8);
+    return r;
+#else
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return (XTValue)xt_string_new("");
+    buf[n] = '\0';
+    return (XTValue)xt_string_new(buf);
+#endif
+}
+
 // 调试模式开关
 #define XT_DEBUG_MODE 0
 #if XT_DEBUG_MODE

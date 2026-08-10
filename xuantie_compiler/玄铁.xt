@@ -13,6 +13,7 @@
 外 函 xt_arena_destroy(池: 整): 整
 外 函 xt_get_args(): 数组
 外 函 xt_get_temp_path(): 字
+外 函 xt_self_path(): 字
 
 函 解析配置(内容) {
     设 配置结果 = {}
@@ -264,19 +265,41 @@
     }
 
     // 寻找运行时 (优先寻找编译好的 .o 文件，以支持轻量化打包)
-    设 runtimeDir = "runtime"
-    设 rtFile = runtimeDir & "\\xt_runtime.o"
-    若 非 文件.存在?(rtFile) {
-        rtFile = runtimeDir & "\\xt_runtime.c"
-    }
-    
-    // 再次尝试上级目录（用于开发环境）
-    若 非 文件.存在?(rtFile) {
-        rtFile = "..\\runtime\\xt_runtime.o"
-        若 非 文件.存在?(rtFile) {
-            rtFile = "..\\runtime\\xt_runtime.c"
+    // 查找顺序:① 编译器自身所在目录(exe 同级/上一级)——任意目录调用都能找到随包运行时;
+    //           ② 调用方 CWD 的 runtime\ 与 ..\runtime\——仓库开发环境兼容
+    设 _自身路径 = xt_self_path()
+    设 _自身目录 = ""
+    若 _自身路径 != "" {
+        设 _pi = _自身路径.字节数 - 1
+        当 _pi >= 0 {
+            设 _c = _自身路径.截取(_pi, _pi + 1)
+            若 _c == "\\" 或 _c == "/" {
+                _自身目录 = _自身路径.截取(0, _pi + 1)
+                断
+            }
+            _pi = _pi - 1
         }
     }
+    设 _运行时候选 = []
+    若 _自身目录 != "" {
+        _运行时候选.追加(_自身目录 & "runtime\\xt_runtime.o")
+        _运行时候选.追加(_自身目录 & "runtime\\xt_runtime.c")
+        _运行时候选.追加(_自身目录 & "..\\runtime\\xt_runtime.c")
+    }
+    _运行时候选.追加("runtime\\xt_runtime.o")
+    _运行时候选.追加("runtime\\xt_runtime.c")
+    _运行时候选.追加("..\\runtime\\xt_runtime.o")
+    _运行时候选.追加("..\\runtime\\xt_runtime.c")
+
+    设 rtFile = ""
+    遍历 _cand 于 _运行时候选 {
+        若 文件.存在?(_cand) { rtFile = _cand ; 断 }
+    }
+    若 rtFile == "" {
+        示("错误: 未找到运行时文件(xt_runtime.o/.c),已尝试编译器自身目录与当前目录")
+        终 1
+    }
+    设 runtimeDir = "runtime"
 
     // 寻找线程池文件（与运行时文件同目录）
     设 tpFile = runtimeDir & "\\xt_threadpool.c"
