@@ -1,6 +1,6 @@
 [包]
 名称 = "渲染"
-版本 = "1.0.0"
+版本 = "1.0.1"
 仓库 = "https://github.com/MARKJY-China/XuanTieRendering"
 作者 = "问号盒"
 
@@ -9,5 +9,5 @@
 许可 = "MIT"
 
 [依赖]
-# 需要 C:\raylib 下的 raylib 源码和 libraylib.a
-# 需要编译器在链接时自动加入 -lraylib 和相关系统库
+# v1.0.1 起包内已内置 libraylib.a(raylib 为 zlib 许可,可随包分发),
+# 安装本包后即可在任意目录编译渲染程序,不再需要 C:\raylib
