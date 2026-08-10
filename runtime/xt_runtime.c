@@ -147,6 +147,15 @@ static int g_sched_mutex_inited = 0;
 static HANDLE g_sched_wake_event = NULL;
 #endif
 
+// drain 线程池只在主线程的顶层 scheduler_run 生效:worker 线程内(xt_async_wait 驱动 fiber 时)
+// 若也 drain,会因「在途任务含 worker 自己」自死锁(实测 67/73/74 单元挂死 250s 超时)。
+// 复用 xt_init 已记录的主线程标识(g_main_thread_id,通道泵送同款,记录先于 xt_scheduler_init)。
+#if defined(_WIN32)
+#define SCHED_IS_MAIN_THREAD() (g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id))
+#else
+#define SCHED_IS_MAIN_THREAD() (g_main_thread_id_set && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id))
+#endif
+
 // fiber 槽位回收:空闲栈(存 fiber 下标)。槽位在「完成且结果已消费」后入栈,spawn 优先复用,
 // 防止长线程序把池打满(原模型:槽位永不复用,累积超上限即显式报错退出)
 static int* g_fiber_free_ids = NULL;
@@ -252,7 +261,19 @@ XTValue xt_fiber_spawn(void* state, int (*poll)(void*)) {
 }
 
 void xt_scheduler_run() {
-    if (!g_scheduler || g_scheduler->fiber_count == 0) return;
+    if (!g_scheduler) return;
+    // 纯线程池任务场景(fiber_count==0,如裸 spawn 异步块后直接走到 main 末尾):
+    // 主线程须 drain 排队+执行中的任务,否则 return 后 main 退出会把 worker 上的任务杀掉(失语竞态)。
+    // 仅主线程 drain:worker 内(xt_async_wait 驱动)若也等 busy,在途任务含 worker 自己→自死锁。
+    // 自旋期间若有 fiber 被任务内嵌套 spawn,则转出主循环驱动之。
+    if (g_scheduler->fiber_count == 0) {
+        if (!SCHED_IS_MAIN_THREAD()) return;
+        while (xt_threadpool_busy_count() > 0) {
+            if (g_scheduler->fiber_count > 0) break;
+            _sched_sleep_us(1000);
+        }
+        if (g_scheduler->fiber_count == 0) return;
+    }
     // 重入防护:worker 线程(线程池任务内 等待 fiber)可能与主线程同时到达,
     // 双重驱动会破坏就绪队列。后到者直接返回,由 xt_async_wait 侧自旋等待目标完成。
     SCHED_LOCK();
@@ -300,7 +321,14 @@ void xt_scheduler_run() {
                     }
                     SCHED_UNLOCK();
                 }
-                else { SCHED_LOCK(); if (g_scheduler->ready_head == NULL) { g_scheduler->running = 0; } SCHED_UNLOCK(); }
+                else {
+                    // drain(仅主线程):fiber 全静止还不能退——线程池可能还有排队/执行中的异步任务
+                    // (xt_async_spawn;它们可能反过来经 xt_async_wait 自旋等 fiber DONE),
+                    // 故不是阻塞等待,而是不置退出标志、继续主循环保持驱动 fiber。
+                    // worker 内驱动不 drain:在途任务含 worker 自己,等 busy 即自死锁。
+                    if (SCHED_IS_MAIN_THREAD() && xt_threadpool_busy_count() > 0) { _sched_sleep_us(1000); }
+                    else { SCHED_LOCK(); if (g_scheduler->ready_head == NULL) { g_scheduler->running = 0; } SCHED_UNLOCK(); }
+                }
             } else { SCHED_UNLOCK(); _sched_sleep_us(next_wake < 100 ? 100 : next_wake); }
             continue;
         }

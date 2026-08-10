@@ -104,6 +104,7 @@ static struct {
     pool_task tasks[MAX_TASKS];
     int task_head;           // 下一个待分配的任务索引
     int task_count;          // 当前队列中的任务数
+    int active_count;        // 执行中的任务数(worker 取走后、标记完成前)
     int task_id_counter;     // 递增的任务 ID 分配器
     int shutdown;
 
@@ -133,6 +134,7 @@ static void* worker_loop(void* arg) {
         int idx = g_pool.task_head;
         g_pool.task_head = (g_pool.task_head + 1) % MAX_TASKS;
         g_pool.task_count--;
+        g_pool.active_count++;   // 执行中计数:供 busy_count/drain 看到在途任务
         xt_cond_signal(&g_pool.space_cv);  // 队列出现空位，唤醒阻塞的提交者
 
         pool_task t = g_pool.tasks[idx];
@@ -144,6 +146,7 @@ static void* worker_loop(void* arg) {
 
         // 标记完成并通知等待者
         xt_mutex_lock(&g_pool.mu);
+        g_pool.active_count--;
         for (int i = 0; i < MAX_TASKS; i++) {
             if (g_pool.tasks[i].id == t.id) {
                 g_pool.tasks[i].result = t.result;
@@ -173,6 +176,7 @@ void xt_threadpool_init(int worker_count) {
     g_pool.worker_count = worker_count;
     g_pool.task_head = 0;
     g_pool.task_count = 0;
+    g_pool.active_count = 0;
     g_pool.task_id_counter = 0;
     g_pool.shutdown = 0;
 
@@ -276,3 +280,11 @@ void* xt_threadpool_try_wait(int task_id) {
 
 int xt_threadpool_worker_count(void) { return g_pool.worker_count; }
 int xt_threadpool_pending_count(void) { return g_pool.task_count; }
+
+// 排队 + 执行中的任务总数(加锁读,供调度器退出前 drain 判静止)
+int xt_threadpool_busy_count(void) {
+    xt_mutex_lock(&g_pool.mu);
+    int n = g_pool.task_count + g_pool.active_count;
+    xt_mutex_unlock(&g_pool.mu);
+    return n;
+}

@@ -76,6 +76,10 @@ int xt_threadpool_worker_count(void);
 // 获取待处理任务数量（近似值）
 int xt_threadpool_pending_count(void);
 
+// 获取忙碌任务总数(排队中 + 执行中),供调度器退出前 drain:
+// 判空即「线程池完全静止」,否则 main 退出会把在途任务(如裸spawn的异步块)杀掉
+int xt_threadpool_busy_count(void);
+
 #ifdef __cplusplus
 }
 #endif
