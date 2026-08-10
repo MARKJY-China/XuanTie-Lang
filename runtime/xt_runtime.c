@@ -2593,7 +2593,9 @@ XTValue xt_execute(XTValue cmd_val) {
     if (!fbat) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("创建临时批处理失败"));
     
     // 写入指令并确保获取正确的退出码，同时将 stderr 重定向到 stdout 以便捕获错误信息
-    fprintf(fbat, "@echo off\n%s 2>&1\nexit /b %%ERRORLEVEL%%\n", cmd->data);
+    // chcp 65001: bat 文件内容是 UTF-8,而 cmd 默认按系统代码页(中文 Windows 为 GBK)解析 bat,
+    // 含中文路径/参数的指令会被读乱导致静默失败;先切 UTF-8 代码页再执行(标准解法)
+    fprintf(fbat, "@echo off\nchcp 65001 >nul\n%s 2>&1\nexit /b %%ERRORLEVEL%%\n", cmd->data);
     fclose(fbat);
 
     // P0: 扩充缓冲区并增加长度校验报错

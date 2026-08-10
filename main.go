@@ -252,7 +252,8 @@ func main() {
 		}
 		threadpoolC := filepath.Join(runtimeDir, "xt_threadpool.c")
 		netC := filepath.Join(runtimeDir, "xt_net.c")
-		gccArgs := []string{objFile, rtC, threadpoolC, netC, "-o", outputName, "-lshell32", "-lws2_32"}
+		tlsC := filepath.Join(runtimeDir, "xt_tls.c")
+		gccArgs := []string{objFile, rtC, threadpoolC, netC, tlsC, "-o", outputName, "-lshell32", "-lws2_32", "-lsecur32"}
 		if useRender {
 			gccArgs = append(gccArgs, bridgeObj, raylibA, "-lopengl32", "-lgdi32", "-lwinmm")
 		}

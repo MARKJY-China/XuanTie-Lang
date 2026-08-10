@@ -112,14 +112,21 @@ static void buf_add(http_buf* b, const char* d, int n) {
 }
 
 void* xt_net_http_get(const char* url) {
-    if (!url || strncmp(url, "http://", 7) != 0) {
+    int use_tls = 0;
+    const char* p = NULL;
+    if (url && strncmp(url, "http://", 7) == 0) {
+        p = url + 7;
+    } else if (url && strncmp(url, "https://", 8) == 0) {
+        use_tls = 1;
+        p = url + 8;
+    }
+    if (!p) {
         char* e = (char*)malloc(256);
         snprintf(e, 256, "不支持的协议: %s", url ? url : "(null)");
         return e;
     }
 
-    const char* p = url + 7;
-    char host[256] = {0}; int port = 80; const char* path = "/";
+    char host[256] = {0}; int port = use_tls ? 443 : 80; const char* path = "/";
     const char* slash = strchr(p, '/');
     const char* colon = strchr(p, ':');
     if (colon && (!slash || colon < slash)) {
@@ -136,14 +143,36 @@ void* xt_net_http_get(const char* url) {
         char* e = (char*)malloc(256); snprintf(e, 256, "无法连接到 %s:%d", host, port); return e;
     }
 
+    // HTTPS:先建立 TLS 会话(Schannel,系统原生,零外部依赖)
+    void* tls = NULL;
+    if (use_tls) {
+        if (xt_tls_handshake(sock, host, &tls) != 0) {
+            xt_sock_close(sock);
+            char* e = (char*)malloc(256); snprintf(e, 256, "TLS 握手失败: %s:%d", host, port); return e;
+        }
+    }
+
     char req[1024];
     snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
-    if (send(sock, req, (int)strlen(req), 0) <= 0) {
-        xt_sock_close(sock); char* e = (char*)malloc(256); snprintf(e, 256, "发送请求失败"); return e;
+
+    if (use_tls) {
+        if (xt_tls_send(tls, req, (int)strlen(req)) != 0) {
+            xt_tls_close(tls); xt_sock_close(sock);
+            char* e = (char*)malloc(256); snprintf(e, 256, "发送请求失败"); return e;
+        }
+    } else {
+        if (send(sock, req, (int)strlen(req), 0) <= 0) {
+            xt_sock_close(sock); char* e = (char*)malloc(256); snprintf(e, 256, "发送请求失败"); return e;
+        }
     }
 
     http_buf buf = {NULL, 0, 0}; char chunk[4096]; int n;
-    while ((n = recv(sock, chunk, sizeof(chunk)-1, 0)) > 0) buf_add(&buf, chunk, n);
+    if (use_tls) {
+        while ((n = xt_tls_recv(tls, chunk, sizeof(chunk)-1)) > 0) buf_add(&buf, chunk, n);
+        xt_tls_close(tls);
+    } else {
+        while ((n = recv(sock, chunk, sizeof(chunk)-1, 0)) > 0) buf_add(&buf, chunk, n);
+    }
     xt_sock_close(sock);
     if (buf.len == 0) { free(buf.data); char* e = (char*)malloc(256); snprintf(e, 256, "响应为空"); return e; }
 

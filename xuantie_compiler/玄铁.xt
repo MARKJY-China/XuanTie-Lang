@@ -299,6 +299,13 @@
     若 非 文件.存在?(netFile) { netFile = "" }
     若 输出详细 且 netFile != "" { 示("网络栈文件: " & netFile) }
 
+    // 寻找 TLS 栈文件(Schannel 系统原生 TLS,与网络栈同目录)
+    设 tlsFile = runtimeDir & "\\xt_tls.c"
+    若 非 文件.存在?(tlsFile) { tlsFile = "..\\runtime\\xt_tls.c" }
+    若 非 文件.存在?(tlsFile) { tlsFile = rtFile.替换("xt_runtime.c", "xt_tls.c").替换("xt_runtime.o", "xt_tls.c") }
+    若 非 文件.存在?(tlsFile) { tlsFile = "" }
+    若 输出详细 且 tlsFile != "" { 示("TLS栈文件: " & tlsFile) }
+
     // 检测渲染库导入
     设 使用渲染 = 假
     设 渲染桥C = ""
@@ -352,14 +359,16 @@
         链接指令 = "gcc -g -static -Wl,--stack,16777216 \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
+        若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
         若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm" }
-        链接指令 = 链接指令 & " -lws2_32 -o \"" & 输出路径 & "\""
+        链接指令 = 链接指令 & " -lws2_32 -lsecur32 -o \"" & 输出路径 & "\""
     } 否 {
         链接指令 = "gcc -g -Wl,--stack,16777216 \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
+        若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
         若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm" }
-        链接指令 = 链接指令 & " -lws2_32 -o \"" & 输出路径 & "\""
+        链接指令 = 链接指令 & " -lws2_32 -lsecur32 -o \"" & 输出路径 & "\""
     }
     
     设 gcc结果 = 执(链接指令)
