@@ -56,6 +56,7 @@ type LLVMCompiler struct {
 	errors         []string       // 编译错误列表，进入 LLVM/clang 前必须检查
 	funcReturnTypes map[string]string // 函数名 → 内部返回类型
 	asyncCounter    int               // 异步/并行函数的唯一编号
+	probing         bool              // 干跑探测中(禁止嵌套探测,防嵌套若 2^n 爆炸)
 }
 
 func (c *LLVMCompiler) Errors() []string { return c.errors }
@@ -574,6 +575,11 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 				if isScalar {
 					newType = valType
 				}
+				// 表征钉死:既存标记槽位不接受标量降级(同 AssignStatement 修复)
+				if isScalar && sym.Type == "i64" {
+					actualVal = c.ensureI64(valReg, valType)
+					newType = "i64"
+				}
 				c.emit("  store i64 %s, i64* %s", actualVal, sym.AddrReg)
 				sym.Type = newType
 				sym.ClassName = valClass
@@ -609,6 +615,13 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 		if sym, ok := c.symbolTable[s.Name]; ok {
 			// 只有局部变量且新值为标量时，才尝试优化
 			isScalar := c.isScalarType(valType) && (c.currentFunc != "" || c.currentClass != "") && !sym.IsGlobal
+
+			// 表征钉死:槽位既存为标记 i64 时,标量赋值也必须保持标记表征——
+			// 单若分支只在一条路径上写槽,另一路径仍是旧标记比特;若把 sym.Type 翻成 raw,
+			// 读端就会把标记比特当裸值解读(GSC 表征翻转,实测 设y=x;若c{y=0} 时 y 读出垃圾值)
+			if isScalar && sym.Type == "i64" {
+				isScalar = false
+			}
 
 			if !isScalar {
 				c.emit("  call void @xt_retain(i64 %s)", xtVal)
@@ -741,6 +754,40 @@ func (c *LLVMCompiler) compileTerminateStatement(s *ast.TerminateStatement) {
 }
 
 func (c *LLVMCompiler) compileIfStatement(s *ast.IfStatement) {
+	// 干跑探测(与循环同一策略):若/抑/否 分支合并处的变量表征翻转,
+	// 先在 if 前置位置统一为最终表征再正式编译。
+	// 实测:设 y=x; 若 c { y=0 } ——单遍时 y 的槽位表征按最后赋值翻转,
+	// 假路径读到旧标记比特被当裸值(GSC 表征翻转,玄铁手册称"表征翻转"家族)。
+	// 探测期间禁止嵌套探测,避免嵌套若的 2^n 爆炸。
+	if c.probing || c.loopHasHeavyConstruct(s.ThenBlock) || c.loopHasHeavyConstruct(s.ElseBlock) {
+		c.compileIfStatementOnce(s)
+		return
+	}
+	heavy := false
+	for _, eif := range s.ElseIfs {
+		if c.loopHasHeavyConstruct(eif.Block) {
+			heavy = true
+			break
+		}
+	}
+	if heavy {
+		c.compileIfStatementOnce(s)
+		return
+	}
+	saved := c.output
+	savedLabel := c.currentLabel
+	c.output = bytes.Buffer{}
+	before := c.snapshotSymbolTypes()
+	c.probing = true
+	c.compileIfStatementOnce(s)
+	c.probing = false
+	c.output = saved
+	c.currentLabel = savedLabel
+	c.normalizeLoopFlips(before)
+	c.compileIfStatementOnce(s)
+}
+
+func (c *LLVMCompiler) compileIfStatementOnce(s *ast.IfStatement) {
 	condReg, condType, _ := c.compileExpression(s.Condition)
 	condI1 := condReg
 	if condType == "i64" {
@@ -988,7 +1035,7 @@ func (c *LLVMCompiler) normalizeLoopFlips(before map[string]string) {
 }
 
 func (c *LLVMCompiler) compileWhileStatement(s *ast.WhileStatement) {
-	if c.loopHasHeavyConstruct(s.Block) {
+	if c.probing || c.loopHasHeavyConstruct(s.Block) {
 		c.compileWhileStatementOnce(s)
 		return
 	}
@@ -2735,7 +2782,7 @@ func (c *LLVMCompiler) compileMatchStatement(s *ast.MatchStatement) {
 }
 
 func (c *LLVMCompiler) compileForStatement(s *ast.ForStatement) {
-	if c.loopHasHeavyConstruct(s.Block) {
+	if c.probing || c.loopHasHeavyConstruct(s.Block) {
 		c.compileForStatementOnce(s)
 		return
 	}
@@ -2965,8 +3012,11 @@ func (c *LLVMCompiler) compileComplexAssignStatement(s *ast.ComplexAssignStateme
 		c.emit("%s:", dictLabel)
 		idxXt := c.ensureI64(idxReg, idxType)
 		c.emit("  call void @xt_dict_set(i64 %s, i64 %s, i64 %s)", leftReg, idxXt, xtVal)
-		c.emit("  call void @xt_release(i64 %s)", leftReg)
 		c.emit("  call void @xt_release(i64 %s)", idxXt)
+		// dict_set 已 retain 值,表达式侧引用在此释放(与 XTC 侧同款修复)
+		c.emit("  call void @xt_release(i64 %s)", xtVal)
+		// 注意:leftReg 不在此释放——merge 处统一释放;
+		// 曾在此提前释放导致 merge 二次释放,连续索引写入必堆损坏
 		c.emit("  br label %%%s", mergeLabel)
 		c.emit("%s:", arrayLabel)
 		aPtr := c.nextReg()
