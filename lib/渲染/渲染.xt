@@ -41,6 +41,8 @@
 外 函 XT_DrawRectangle(x: 整, y: 整, w: 整, h: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_DrawRectangleRec(x: 整, y: 整, w: 整, h: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_DrawRectangleLines(x: 整, y: 整, w: 整, h: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawRectangleRounded(x: 整, y: 整, w: 整, h: 整, roundPct: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawRectangleRoundedLines(x: 整, y: 整, w: 整, h: 整, roundPct: 整, lineThick: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_DrawCircle(cx: 整, cy: 整, radius: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_DrawCircleLines(cx: 整, cy: 整, radius: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_DrawEllipse(cx: 整, cy: 整, rh: 整, rv: 整, r: 整, g: 整, b: 整, a: 整): 空
@@ -75,6 +77,7 @@
 外 函 XT_IsKeyDown(key: 整): 布尔
 外 函 XT_IsKeyPressed(key: 整): 布尔
 外 函 XT_GetKeyPressed(): 整
+外 函 XT_GetCharPressed(): 整
 外 函 XT_IsMouseButtonDown(button: 整): 布尔
 外 函 XT_IsMouseButtonPressed(button: 整): 布尔
 外 函 XT_GetMouseX(): 整
@@ -155,6 +158,16 @@
 // 绘制空心矩形
 公 函 绘矩形线(x, y, 宽, 高, r, g, b, a) {
     XT_DrawRectangleLines(x, y, 宽, 高, r, g, b, a)
+}
+
+// 绘制圆角矩形(圆角百分=0-100,对应圆角程度0.0-1.0)
+公 函 绘圆角矩形(x, y, 宽, 高, 圆角百分, r, g, b, a) {
+    XT_DrawRectangleRounded(x, y, 宽, 高, 圆角百分, r, g, b, a)
+}
+
+// 绘制圆角矩形描边(线宽单位:像素)
+公 函 绘圆角矩形线(x, y, 宽, 高, 圆角百分, 线宽, r, g, b, a) {
+    XT_DrawRectangleRoundedLines(x, y, 宽, 高, 圆角百分, 线宽, r, g, b, a)
 }
 
 // 绘制实心圆
@@ -240,6 +253,12 @@
 // 获取刚按下的键
 公 函 获按键() {
     返 XT_GetKeyPressed()
+}
+
+// 获取刚输入的字符(Unicode码点,文本输入框用;中文IME上屏字符可收到,无候选框跟随)
+// 返回0表示队列空——调用方每帧循环取到0为止
+公 函 获字符() {
+    返 XT_GetCharPressed()
 }
 
 // 鼠标按钮是否按下

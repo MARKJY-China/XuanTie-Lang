@@ -215,6 +215,36 @@ void XT_DrawRectangleLines(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                        (int)XT_TO_INT(w), (int)XT_TO_INT(h), c);
 }
 
+// 圆角矩形:roundPct 为圆角百分比(0-100,对应 raylib roundness 0.0-1.0),segments 固定 12
+void XT_DrawRectangleRounded(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
+                             uintptr_t roundPct,
+                             uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Rectangle rec = {(float)XT_TO_INT(x), (float)XT_TO_INT(y),
+                     (float)XT_TO_INT(w), (float)XT_TO_INT(h)};
+    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    if (roundness < 0.0f) roundness = 0.0f;
+    if (roundness > 1.0f) roundness = 1.0f;
+    DrawRectangleRounded(rec, roundness, 12, c);
+}
+
+// 圆角矩形描边:lineThick 线宽(像素)
+void XT_DrawRectangleRoundedLines(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
+                                  uintptr_t roundPct, uintptr_t lineThick,
+                                  uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Rectangle rec = {(float)XT_TO_INT(x), (float)XT_TO_INT(y),
+                     (float)XT_TO_INT(w), (float)XT_TO_INT(h)};
+    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    if (roundness < 0.0f) roundness = 0.0f;
+    if (roundness > 1.0f) roundness = 1.0f;
+    float thick = (float)XT_TO_INT(lineThick);
+    if (thick < 1.0f) thick = 1.0f;
+    DrawRectangleRoundedLinesEx(rec, roundness, 12, thick, c);
+}
+
 void XT_DrawCircle(uintptr_t cx, uintptr_t cy, uintptr_t radius,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
@@ -354,6 +384,12 @@ uintptr_t XT_GetKeyPressed(void) {
     return XT_FROM_INT(GetKeyPressed());
 }
 
+// Unicode 码点输入(文本输入框地基):中文 IME 上屏字符经 WM_CHAR 可收到,
+// 无候选框跟随;返回 0 表示队列空(调用方循环取到 0 为止)
+uintptr_t XT_GetCharPressed(void) {
+    return XT_FROM_INT(GetCharPressed());
+}
+
 uintptr_t XT_IsMouseButtonDown(uintptr_t button) {
     return IsMouseButtonDown((int)XT_TO_INT(button)) ? 1 : 0;
 }
@@ -480,14 +516,22 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     if (xt_font_count >= 8) return XT_FROM_INT(0);
 
     // ASCII (32-126) + CJK 统一汉字基本区 (U+4E00–U+9FFF, ~21K)
+    // + 拉丁补充(U+00A0–U+00FF,含间隔号「·」) + 通用标点(U+2018–U+2026,引号/破折号/省略号)
+    // + CJK 标点(U+3000–U+303F,全角标点)。否则常用符号显示为「?」(实测 U+00B7 缺失)
     int asciiCount = 95;
     int cjkCount = 0x9FFF - 0x4E00 + 1;  // 20992 个汉字
-    int cpCount = asciiCount + cjkCount;
+    int latinCount = 0x00FF - 0x00A0 + 1;
+    int punctCount = 0x2026 - 0x2018 + 1;
+    int cjkPunctCount = 0x303F - 0x3000 + 1;
+    int cpCount = asciiCount + cjkCount + latinCount + punctCount + cjkPunctCount;
     int* codepoints = (int*)malloc((size_t)cpCount * sizeof(int));
     if (!codepoints) return XT_FROM_INT(0);
     int idx = 0;
     for (int c = 32; c <= 126; c++) codepoints[idx++] = c;
     for (int c = 0x4E00; c <= 0x9FFF; c++) codepoints[idx++] = c;
+    for (int c = 0x00A0; c <= 0x00FF; c++) codepoints[idx++] = c;
+    for (int c = 0x2018; c <= 0x2026; c++) codepoints[idx++] = c;
+    for (int c = 0x3000; c <= 0x303F; c++) codepoints[idx++] = c;
 
     Font f = LoadFontEx(xt_get_cstr(filename), (int)XT_TO_INT(fontSize), codepoints, cpCount);
     free(codepoints);
