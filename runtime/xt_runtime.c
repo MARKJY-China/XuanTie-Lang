@@ -487,6 +487,33 @@ XTValue xt_self_path() {
 #endif
 }
 
+// 环境变量读取(宽字符版,免 cmd 子进程:UI 默认字体探测等用;
+// 未设置/异常返回空字符串。cmd echo 方案会闪黑色终端窗口且慢,实测污染 GUI 程序启动)
+XTValue xt_env_get(XTValue name_val) {
+    if (!XT_IS_REAL_PTR(name_val)) return (XTValue)xt_string_new("");
+    if (((XTObject*)name_val)->type_id != XT_TYPE_STRING) return (XTValue)xt_string_new("");
+    XTString* ns = (XTString*)name_val;
+#ifdef _WIN32
+    wchar_t wname[256];
+    int wn = MultiByteToWideChar(CP_UTF8, 0, ns->data, -1, wname, 256);
+    if (wn <= 0) return (XTValue)xt_string_new("");
+    wchar_t wbuf[32767];
+    DWORD vn = GetEnvironmentVariableW(wname, wbuf, 32767);
+    if (vn == 0 || vn >= 32767) return (XTValue)xt_string_new("");
+    int u8len = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, NULL, 0, NULL, NULL);
+    if (u8len <= 0) return (XTValue)xt_string_new("");
+    char* u8 = (char*)malloc(u8len);
+    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, u8, u8len, NULL, NULL);
+    XTValue r = (XTValue)xt_string_new(u8);
+    free(u8);
+    return r;
+#else
+    const char* v = getenv(ns->data);
+    if (!v) return (XTValue)xt_string_new("");
+    return (XTValue)xt_string_new(v);
+#endif
+}
+
 // 调试模式开关
 #define XT_DEBUG_MODE 0
 #if XT_DEBUG_MODE

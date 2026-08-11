@@ -82,6 +82,8 @@ static uintptr_t xt_make_float(double v) {
 
 // === raylib 头 ===
 #include "raylib.h"
+#include <stdio.h>   // FILE/fread(宽字符读文件用)
+#include <wchar.h>   // _wfopen(Windows)
 
 // Win32 Unicode API 前向声明（避免包含 <windows.h> 与 raylib 冲突）
 #ifndef WINAPI
@@ -94,6 +96,31 @@ extern __declspec(dllimport) int WINAPI MultiByteToWideChar(
     unsigned int CodePage, unsigned long dwFlags, const char* lpMultiByteStr,
     int cbMultiByte, wchar_t* lpWideCharStr, int cchWideChar);
 extern __declspec(dllimport) int WINAPI SetWindowTextW(HWND hWnd, const wchar_t* lpString);
+
+// 读取文件全部字节(宽字符路径,支持中文路径——raylib 的 LoadFontEx/LoadTexture
+// 内部走 ANSI fopen,中文路径必失败,实测 已安装 目录下字体加载 Failed to open)
+static unsigned char* xt_read_file_bytes(const char* u8path, int* outSize) {
+    FILE* f = NULL;
+#ifdef _WIN32
+    wchar_t wpath[1024];
+    int wn = MultiByteToWideChar(65001 /*CP_UTF8*/, 0, u8path, -1, wpath, 1024);
+    if (wn <= 0) return NULL;
+    f = _wfopen(wpath, L"rb");
+#else
+    f = fopen(u8path, "rb");
+#endif
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return NULL; }
+    unsigned char* buf = (unsigned char*)malloc((size_t)sz);
+    if (!buf) { fclose(f); return NULL; }
+    if (fread(buf, 1, (size_t)sz, f) != (size_t)sz) { free(buf); fclose(f); return NULL; }
+    fclose(f);
+    *outSize = (int)sz;
+    return buf;
+}
 
 // ============================================================
 // 窗口管理
@@ -330,7 +357,22 @@ uintptr_t XT_LoadTexture(uintptr_t filename) {
         if (!xt_tex_used[i]) { slot = i; break; }
     }
     if (slot < 0) return XT_FROM_INT(0);
-    Texture2D tex = LoadTexture(xt_get_cstr(filename));
+    // 宽字符读文件+内存加载(支持中文路径),扩展名决定解码格式
+    const char* path = xt_get_cstr(filename);
+    const char* ext = strrchr(path, '.');
+    if (!ext) ext = ".png";
+    int dataSize = 0;
+    unsigned char* data = xt_read_file_bytes(path, &dataSize);
+    Texture2D tex;
+    memset(&tex, 0, sizeof(tex));
+    if (data) {
+        Image img = LoadImageFromMemory(ext, data, dataSize);
+        free(data);
+        if (img.data) {
+            tex = LoadTextureFromImage(img);
+            UnloadImage(img);
+        }
+    }
     xt_tex_pool[slot] = tex;
     xt_tex_used[slot] = 1;
     return XT_FROM_INT(slot + 1);
@@ -533,7 +575,12 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     for (int c = 0x2018; c <= 0x2026; c++) codepoints[idx++] = c;
     for (int c = 0x3000; c <= 0x303F; c++) codepoints[idx++] = c;
 
-    Font f = LoadFontEx(xt_get_cstr(filename), (int)XT_TO_INT(fontSize), codepoints, cpCount);
+    // 宽字符读文件+内存加载(支持中文路径)
+    int dataSize = 0;
+    unsigned char* data = xt_read_file_bytes(xt_get_cstr(filename), &dataSize);
+    if (!data) { free(codepoints); return XT_FROM_INT(0); }
+    Font f = LoadFontFromMemory(".ttf", data, dataSize, (int)XT_TO_INT(fontSize), codepoints, cpCount);
+    free(data);
     free(codepoints);
     if (f.glyphCount == 0) f = GetFontDefault();
 
@@ -571,7 +618,12 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
         }
     }
 
-    Font f = LoadFontEx(xt_get_cstr(filename), (int)XT_TO_INT(fontSize), codepoints, idx);
+    // 宽字符读文件+内存加载(支持中文路径)
+    int dataSizeEx = 0;
+    unsigned char* dataEx = xt_read_file_bytes(xt_get_cstr(filename), &dataSizeEx);
+    if (!dataEx) { free(codepoints); return XT_FROM_INT(0); }
+    Font f = LoadFontFromMemory(".ttf", dataEx, dataSizeEx, (int)XT_TO_INT(fontSize), codepoints, idx);
+    free(dataEx);
     free(codepoints);
     if (f.glyphCount == 0) f = GetFontDefault();
 
