@@ -2262,7 +2262,9 @@ static void* async_runner(void* p) {
     ctx->task->result = result;
     ctx->task->status = 1;
     xt_async_notify_complete(ctx->task);
+    XTValue taskv = (XTValue)ctx->task;
     free(ctx);
+    xt_release(taskv);  // 平衡 spawn 时 worker 侧的 retain
     return (void*)result;
 }
 
@@ -2280,6 +2282,9 @@ XTTask* xt_async_spawn(void* func_ptr, XTValue arg) {
     ctx->func_ptr = func_ptr;
     ctx->arg = arg;
     ctx->task = t;
+    // worker 侧持有独立引用:裸 spawn(不赋值给变量)时调用方会立即 release 返回值,
+    // 若无此引用 task 被提前 free,worker 里 ctx->task->result 写入即悬垂(实测堆损坏段错误)
+    xt_retain((XTValue)t);
     t->pool_id = xt_threadpool_submit(async_runner, ctx);
     return t;
 }
@@ -2479,6 +2484,32 @@ int xt_channel_select(XTValue* channels, int count, int timeout_ms) {
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
         }
         if (timeout_ms == 0) return -1;
+        // 主线程泵送(D1方案A):等待期间驱动用户态调度器,否则 fiber 发送者永不被驱动(实测丢数据:
+        // 选([道],3000) 等到超时也收不到 fiber 发的数据)。与 收/发 的无限等待泵送同款设计。
+        // 代价:scheduler_run 全静止才返回——fiber 含长睡眠/线程池有在途任务时,返回可能晚于
+        // 用户给的 timeout(超时变粗);泵送耗时计入扣减,到期仍未就绪返回 -1。
+        // 后续可升级为带 deadline 的单步驱动(C方案),兼顾驱动与超时精度。
+        if (g_scheduler && !g_scheduler->running
+            && g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id)) {
+            int64_t pump_t0 = _sched_now_us();
+            xt_scheduler_run();
+            int64_t pump_cost_ms = (_sched_now_us() - pump_t0) / 1000;
+            // 泵完先扫一次:数据可能已在泵送期间到达
+            int ready_idx = -1;
+            for (int i = 0; i < count; i++) {
+                if (XT_IS_INT(channels[i])) continue;
+                XTChannel* c = (XTChannel*)channels[i];
+                XT_CHAN_MUTEX_LOCK(&c->mu);
+                int ready = (c->size > 0);
+                XT_CHAN_MUTEX_UNLOCK(&c->mu);
+                if (ready) { ready_idx = i; break; }
+            }
+            if (ready_idx >= 0) return ready_idx;
+            if (timeout_ms > 0) {
+                timeout_ms -= (int)pump_cost_ms;
+                if (timeout_ms <= 0) return -1;
+            }
+        }
         for (int i = 0; i < count; i++) {
             if (XT_IS_INT(channels[i])) continue;
             XTChannel* c = (XTChannel*)channels[i];
