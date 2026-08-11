@@ -576,6 +576,16 @@ XTValue xt_bool_new(int val) {
  * 2. 如果开启了 Arena，则从 Arena 分配数据区，并设置 data_in_arena 标志。
  * 3. 否则使用标准 malloc。
  */
+// 字符串方法类型守卫(3号加固):内建字符串方法被误调到非字符串对象
+// (结果/字典/数组/整数等)时,旧行为是按 XTString 结构乱读内存→段错误;
+// 现明确报错退出(宁可报错不静默)。
+static void xt_string_guard(XTValue v, const char* method) {
+    if (XT_IS_REAL_PTR(v) && ((XTObject*)v)->type_id == XT_TYPE_STRING) return;
+    fprintf(stderr, "运行时错误: 对非字符串值调用字符串方法 '%s'\n", method);
+    fprintf(stderr, "  提示: 请确认该值是字符串;若是 结果 对象,先判 .成功 再取 .值\n");
+    exit(1);
+}
+
 XTString* xt_string_new_len(const char* data, size_t len) {
     XTString* s = (XTString*)xt_malloc(sizeof(XTString), XT_TYPE_STRING);
     s->length = len;
@@ -620,8 +630,7 @@ XTString* xt_string_from_char(char c) {
  */
 XTValue xt_string_get_char(XTValue str_val, int64_t index) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
-    XTObject* obj = (XTObject*)str_val;
-    if (obj->type_id != XT_TYPE_STRING) return XT_NULL;
+    xt_string_guard(str_val, "字符");  // 3号加固:指针但非字符串(结果/字典等)明确报错,不再静默/段错误
     
     XTString* s = (XTString*)str_val;
     if (index < 0) return XT_NULL;
@@ -661,8 +670,7 @@ XTValue xt_string_get_char(XTValue str_val, int64_t index) {
  */
 XTValue xt_string_get_byte(XTValue str_val, int64_t byte_index) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_FROM_INT(0);
-    XTObject* obj = (XTObject*)str_val;
-    if (obj->type_id != XT_TYPE_STRING) return XT_FROM_INT(0);
+    xt_string_guard(str_val, "字节");
     
     XTString* s = (XTString*)str_val;
     if (byte_index < 0 || (size_t)byte_index >= s->length) return XT_FROM_INT(0);
@@ -676,8 +684,7 @@ XTValue xt_string_get_byte(XTValue str_val, int64_t byte_index) {
  */
 XTValue xt_string_byte_length(XTValue str_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_FROM_INT(0);
-    XTObject* obj = (XTObject*)str_val;
-    if (obj->type_id != XT_TYPE_STRING) return XT_FROM_INT(0);
+    xt_string_guard(str_val, "字节数");
     
     XTString* s = (XTString*)str_val;
     return XT_FROM_INT((int64_t)s->length);
@@ -688,8 +695,7 @@ XTValue xt_string_byte_length(XTValue str_val) {
  */
 XTValue xt_string_char_count(XTValue str_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_FROM_INT(0);
-    XTObject* obj = (XTObject*)str_val;
-    if (obj->type_id != XT_TYPE_STRING) return XT_FROM_INT(0);
+    xt_string_guard(str_val, "长度");
     
     XTString* s = (XTString*)str_val;
     const char* p = s->data;
@@ -713,6 +719,7 @@ XTValue xt_string_char_count(XTValue str_val) {
  */
 XTValue xt_string_to_hex_string(XTValue str_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    xt_string_guard(str_val, "转十六进制");
     XTString* s = (XTString*)str_val;
 
     size_t new_len = s->length * 3;
@@ -1670,6 +1677,7 @@ static void dict_set_method(XTValue obj, const char* name, void* func_ptr) {
  */
 XTString* xt_string_substring(XTString* s, int64_t start, int64_t end) {
     if (!s) return xt_string_new("");
+    xt_string_guard((XTValue)s, "截取");
     
     const char* p = s->data;
     int64_t current = 0;
@@ -1742,6 +1750,8 @@ XTString* xt_array_join(XTValue arr_val, XTString* sep) {
 
 int xt_string_contains(XTString* s, XTString* sub) {
     if (!s || !sub) return 0;
+    xt_string_guard((XTValue)s, "包含?");
+    xt_string_guard((XTValue)sub, "包含? 参数");
     return strstr(s->data, sub->data) != NULL;
 }
 
@@ -1749,6 +1759,8 @@ int xt_string_contains(XTString* s, XTString* sub) {
  * @brief 字符串拼接核心逻辑
  */
 XTString* xt_string_concat(XTString* s1, XTString* s2) {
+    if (s1) xt_string_guard((XTValue)s1, "连接");
+    if (s2) xt_string_guard((XTValue)s2, "连接");
     size_t len1 = s1 ? s1->length : 0;
     size_t len2 = s2 ? s2->length : 0;
     size_t total_len = len1 + len2;
@@ -2948,6 +2960,8 @@ XTValue xt_time_sleep(XTValue ms_val) {
  */
 XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    xt_string_guard(str_val, "分割");
+    xt_string_guard(sep_val, "分割 分隔符");
     XTString* s = (XTString*)str_val; 
     XTString* sep = (XTString*)sep_val;
     XTValue arr = xt_array_new(4);
@@ -2978,6 +2992,9 @@ XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
  */
 XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    xt_string_guard(str_val, "替换");
+    xt_string_guard(old_val, "替换 旧串");
+    xt_string_guard(new_val, "替换 新串");
     XTString* s = (XTString*)str_val;
     XTString* old_s = (XTString*)old_val;
     XTString* new_s = (XTString*)new_val;
