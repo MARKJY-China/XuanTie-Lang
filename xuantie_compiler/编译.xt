@@ -4861,7 +4861,7 @@
                 设 res = 此.取新寄存器()
                 此.写出("  " & res & " = call i64 @xt_string_get_char(i64 " & 对象Xt & ", i64 " & 索引Raw & ")")
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
-                此.写出("  call void @xt_release(i64 " & 索引Raw & ")")
+                此.写_释放_xt(翻译索引[0], 翻译索引[1])
                 设 _r = [res, "i64"]
                 返 _r
             }
@@ -4873,7 +4873,8 @@
                 设 res = 此.取新寄存器()
                 此.写出("  " & res & " = call i64 @xt_string_get_byte(i64 " & 对象Xt & ", i64 " & 索引Raw & ")")
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
-                此.写出("  call void @xt_release(i64 " & 索引Raw & ")")
+                // 索引是裸整数,不能 xt_release(曾误释放,索引值越过 4096 即被当野指针段错误;自举实测)
+                此.写_释放_xt(翻译索引[0], 翻译索引[1])
                 设 _r = [res, "i64"]
                 返 _r
             }
