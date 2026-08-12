@@ -409,14 +409,14 @@
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
         若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
-        若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm" }
+        若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm -mwindows" }
         链接指令 = 链接指令 & " -lws2_32 -lsecur32 -o \"" & 输出路径 & "\""
     } 否 {
         链接指令 = "gcc -g -Wl,--stack,16777216 \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
         若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
-        若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm" }
+        若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm -mwindows" }
         链接指令 = 链接指令 & " -lws2_32 -lsecur32 -o \"" & 输出路径 & "\""
     }
     
