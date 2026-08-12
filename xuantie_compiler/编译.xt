@@ -759,6 +759,7 @@
         此.写出("declare i64 @\"xt_string_get_byte\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_byte_length\"(i64)")
         此.写出("declare i64 @\"xt_string_char_count\"(i64)")
+        此.写出("declare i64 @\"xt_string_to_hex_string\"(i64)")
         此.写出("declare i64 @\"xt_array_new\"(i64)")
         此.写出("declare void @\"xt_array_append\"(i64, i64)")
         此.写出("declare i64 @\"xt_array_slice\"(i64, i64)")
@@ -769,6 +770,7 @@
         此.写出("declare i64 @\"xt_array_contains\"(i64, i64)")
         此.写出("declare i64 @\"xt_array_find\"(i64, i64)")
         此.写出("declare i64 @\"xt_array_get\"(i64, i64)")
+        此.写出("declare i64 @\"xt_array_pop\"(%XTArray*)")
         此.写出("declare %XTString* @\"xt_array_join\"(i64, %XTString*)")
         此.写出("declare i64 @\"xt_dict_new\"(i64)")
         此.写出("declare void @\"xt_dict_set\"(i64, i64, i64)")
@@ -1331,8 +1333,12 @@
         此.写出(stringLabel & ":")
         设 sPtr = 此.取新寄存器()
         设 sLen = 此.取新寄存器()
-        此.写出("  " & sLen & " = call i64 @xt_string_byte_length(i64 " & 目标Xt & ")")
-        此.生成循环逻辑(节点, 目标Xt, sLen, 假, "字符串")
+        // 上界必须是逻辑字符数(xt_string_get_char 按逻辑字符索引)且须 ashr 去标记——
+        // 误用 xt_string_byte_length 的带标记字节数会翻成 2n+1 越界迭代(自举实测 8 字节串迭代 17 次)
+        此.写出("  " & sLen & " = call i64 @xt_string_char_count(i64 " & 目标Xt & ")")
+        设 sLenRaw = 此.取新寄存器()
+        此.写出("  " & sLenRaw & " = ashr i64 " & sLen & ", 1")
+        此.生成循环逻辑(节点, 目标Xt, sLenRaw, 假, "字符串")
         此.写出("  br label %" & endLabel)
 
         // 字典遍历实现 (获取所有键并遍历)
@@ -1945,15 +1951,8 @@
         设 xt_val = 此.符(此.确保I64(翻译结果[0], 翻译结果[1]))
         // xt_val 经 确保I64 已统一为标记 i64;槽位表征必须如实登记。
         // 尤其 i1:若登记为 i1,读端会把内存中的标记 i64 当裸 i1 用(select i1 %i64 非法 IR,实测)
-        若 翻译结果[1] == "raw_i64" {
-            设 类型名 = "i64"
-        } 否 {
-            若 翻译结果[1] == "i1" {
-                设 类型名 = "i64"
-            } 否 {
-                设 类型名 = 翻译结果[1]
-            }
-        }
+        设 类型名 = 翻译结果[1]
+        若 类型名 == "raw_i64" 或 类型名 == "i1" { 类型名 = "i64" }
 
         若 语句.是解构 {
             // 解构赋值处理
@@ -2574,6 +2573,15 @@
                     设 _r = [finalVal, "i64"]
                     返 _r
                 }
+
+                若 节点.成员名称 == "转为十六进制" {
+                    // 无括号成员形态(GSC 同形分派见 llvm.go);带括号调用形态的分派在方法链另有一份
+                    设 res = 此.符(此.取新寄存器())
+                    此.写出("  " & res & " = call i64 @xt_string_to_hex_string(i64 " & 此.符(对象寄存器) & ")")
+                    此.写出("  call void @xt_release(i64 " & 此.符(对象寄存器) & ")")
+                    设 _r = [res, "i64"]
+                    返 _r
+                }
                 
                 若 节点.成员名称 == "成功" {
                     // 类型分派:仅 XT_TYPE_RESULT(8) 走结构体字段直读;带"成功"键的普通字典走字典查询。
@@ -3032,7 +3040,7 @@
         
         此.写出(panicLabel & ":")
         设 msg1 = 此.获取字符串对象("运行时错误: '?' 操作符仅能作用于 '结果' 类型")
-        此.写_out("  call void @xt_print_value(i64 " & msg1 & ")")
+        此.写出("  call void @xt_print_value(i64 " & msg1 & ")")
         此.写出("  call void @xt_release(i64 " & msg1 & ")")
         此.写出("  call void @exit(i32 1)")
         此.写出("  unreachable")
@@ -4835,6 +4843,16 @@
                 设 _r = [res, "i64"]
                 返 _r
             }
+            若 成员名 == "转为十六进制" {
+                // 自举发现#6补链:GSC 侧有此分派,XTC 侧漏写——漏写时落到静默返 空(原则违例,另查)
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_string_to_hex_string(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
             若 成员名 == "字符" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
@@ -5259,6 +5277,19 @@
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 元Xt & ")")
                 返 ["0", "i64"]
+            }
+            若 成员名 == "弹出" {
+                // 自举发现#7补链:GSC 有分派(llvm.go:2057),XTC 漏写;漏写落到动态查无此方法报错
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 objPtr = 此.取新寄存器()
+                此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTArray*")
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @xt_array_pop(%XTArray* " & objPtr & ")")
+                // 弹出元素的所有权随返回值移交(runtime 侧槽位置空不 release)
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
             }
             设 翻译左 = 此.编译表达式(左节点)
             设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
@@ -5807,7 +5838,8 @@
         设 cond1 = 此.生成布尔条件(翻译左[0], 翻译左[1])
         设 resAddr = 此.取新寄存器()
         此.入口alloca列表.追加("  " & resAddr & " = alloca i1\n")
-        此.入口alloca列表.追加("  store i1 0, i1* " & resAddr & "\n")
+        // 复位必须在求值点就地发射,不能放入口块——否则循环内再求值且 cond1 为假跳过分支时残留上次真值
+        此.写出("  store i1 0, i1* " & resAddr)
         设 trueLabel = 此.取新标签("and.true")
         设 endLabel = 此.取新标签("and.end")
         此.写出("  br i1 " & cond1 & ", label %" & trueLabel & ", label %" & endLabel)
@@ -5828,7 +5860,9 @@
         设 cond1 = 此.生成布尔条件(翻译左[0], 翻译左[1])
         设 resAddr = 此.取新寄存器()
         此.入口alloca列表.追加("  " & resAddr & " = alloca i1\n")
-        此.入口alloca列表.追加("  store i1 1, i1* " & resAddr & "\n")
+        // 置真必须在求值点就地发射,不能放入口块——否则循环内再求值且 cond1 为真跳过分支时残留上次假值
+        // (自举实测:4路或循环条件第二趟误判退出,词法器跳过空白因此产出幻影非法标记)
+        此.写出("  store i1 1, i1* " & resAddr)
         设 falseLabel = 此.取新标签("or.false")
         设 endLabel = 此.取新标签("or.end")
         此.写出("  br i1 " & cond1 & ", label %" & endLabel & ", label %" & falseLabel)

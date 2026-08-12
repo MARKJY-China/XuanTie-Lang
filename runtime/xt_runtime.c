@@ -27,6 +27,8 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 
 #ifdef _WIN32
 #include <shellapi.h>
+#include <io.h>
+#include <fcntl.h>
 #endif
 
 // --- 前置内部函数声明 ---
@@ -2668,6 +2670,65 @@ XTValue xt_get_temp_path() {
 /**
  * @brief 系统指令执行 (利用 .bat 脚本解决 Windows 引号剥离问题)
  */
+#ifdef _WIN32
+// 无窗口管道:_wpopen 内部走 cmd /c,宿主无控制台(后台任务/服务/计划任务)时
+// Windows 会为每次调用新配一个可见控制台窗口(回归测试期间表现为 CMD 频闪)。
+// 自建 CreateProcessW 管道并加 CREATE_NO_WINDOW——输出照常进管道,行为不变。
+static FILE* xt_popen_nowindow(const wchar_t* wcmd, HANDLE* phProc) {
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = NULL; sa.bInheritHandle = TRUE;
+    HANDLE hRead = NULL, hWrite = NULL;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return NULL;
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+    // stdin 也给合法的空管道(STARTF_USESTDHANDLES 下手柄必须有效)
+    HANDLE hInRead = NULL, hInWrite = NULL;
+    if (!CreatePipe(&hInRead, &hInWrite, &sa, 0)) { CloseHandle(hRead); CloseHandle(hWrite); return NULL; }
+    SetHandleInformation(hInWrite, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = hInRead;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+
+    wchar_t cmdline[1100];
+    _snwprintf(cmdline, 1100, L"cmd.exe /c %ls", wcmd);
+    cmdline[1099] = 0;
+
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&pi, sizeof(pi));
+    BOOL created = CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    CloseHandle(hWrite);   // 父进程必须立刻放掉写端,否则读端永远等不到 EOF
+    CloseHandle(hInRead);
+    if (!created) { CloseHandle(hRead); CloseHandle(hInWrite); return NULL; }
+    CloseHandle(pi.hThread);
+    CloseHandle(hInWrite); // 子进程 stdin 立即见 EOF
+    *phProc = pi.hProcess;
+
+    int fd = _open_osfhandle((intptr_t)hRead, _O_RDONLY | _O_TEXT);
+    if (fd < 0) {
+        CloseHandle(hRead);
+        TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+        CloseHandle(pi.hProcess);
+        return NULL;
+    }
+    return _fdopen(fd, "r");
+}
+
+static int xt_pclose_nowindow(FILE* f, HANDLE hProc) {
+    fclose(f);   // 顺带关闭底层读端句柄
+    WaitForSingleObject(hProc, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(hProc, &code);
+    CloseHandle(hProc);
+    return (int)code;
+}
+#endif
+
 XTValue xt_execute(XTValue cmd_val) {
     if (!XT_IS_REAL_PTR(cmd_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("指令无效"));
     XTObject* obj = (XTObject*)cmd_val;
@@ -2740,7 +2801,8 @@ XTValue xt_execute(XTValue cmd_val) {
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("执行指令路径过长，超出了运行时缓冲区限制"));
     }
 
-    FILE* pipe = _wpopen(wcmd, L"r");
+    HANDLE hProc = NULL;
+    FILE* pipe = xt_popen_nowindow(wcmd, &hProc);
     if (!pipe) {
         remove(bat_path);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("执行管道打开失败"));
@@ -2756,7 +2818,7 @@ XTValue xt_execute(XTValue cmd_val) {
         xt_release((XTValue)buf_str);
     }
 
-    int status = _pclose(pipe);
+    int status = xt_pclose_nowindow(pipe, hProc);
     
     // 如果执行失败，尝试通过 remove 清理临时文件，若 remove 也失败则可能是文件锁导致挂起
     if (remove(bat_path) != 0) {
