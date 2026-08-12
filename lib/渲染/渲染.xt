@@ -25,6 +25,12 @@
 外 函 XT_GetScreenWidth(): 整
 外 函 XT_GetScreenHeight(): 整
 外 函 XT_SetWindowTitle(title: 字): 空
+外 函 XT_SetWindowResizable(on: 整): 空
+外 函 XT_SetWindowUndecorated(on: 整): 空
+外 函 XT_SetWindowFullscreen(on: 整): 空
+外 函 XT_IsWindowFullscreen(): 布尔
+外 函 XT_SetWindowSize(w: 整, h: 整): 空
+外 函 XT_SetEscExit(on: 整): 空
 
 // ============================================================
 // 绘图帧控制
@@ -125,6 +131,61 @@
     返 XT_WindowShouldClose()
 }
 
+// 窗口初始化完成返回真
+公 函 窗口就绪?() {
+    返 XT_IsWindowReady()
+}
+
+// 调整帧率上限(如 30、60、120)
+公 函 设置目标帧率(fps) {
+    XT_SetTargetFPS(fps)
+}
+
+// 返回当前实际 FPS
+公 函 取帧率() {
+    返 XT_GetFPS()
+}
+
+// 返回上帧耗时(秒,小数)
+公 函 取帧时间() {
+    返 XT_GetFrameTime()
+}
+
+// 运行时修改窗口标题(支持 Unicode 中文)
+公 函 设置窗口标题(标题) {
+    XT_SetWindowTitle(标题)
+}
+
+// 窗口可调整大小开关(运行时可随时切)
+公 函 设窗口可调整(开) {
+    若 开 { XT_SetWindowResizable(1) } 否 { XT_SetWindowResizable(0) }
+}
+
+// 无边框开关:去掉标题栏与边框(运行时可随时切;无边框后需自行实现拖动/关闭)
+公 函 设窗口无边框(开) {
+    若 开 { XT_SetWindowUndecorated(1) } 否 { XT_SetWindowUndecorated(0) }
+}
+
+// 全屏开关(运行时可随时切;退出全屏后窗口回到原尺寸位置)
+公 函 设窗口全屏(开) {
+    若 开 { XT_SetWindowFullscreen(1) } 否 { XT_SetWindowFullscreen(0) }
+}
+
+// 当前是否全屏
+公 函 窗口全屏?() {
+    返 XT_IsWindowFullscreen()
+}
+
+// 运行时设置窗口尺寸
+公 函 设窗口尺寸(宽, 高) {
+    XT_SetWindowSize(宽, 高)
+}
+
+// ESC 关闭开关:开(默认)=按 ESC 请求关窗;关=ESC 不再退程序(游戏全屏等场景用)
+公 函 设ESC关闭(开) {
+    若 开 { XT_SetEscExit(1) } 否 { XT_SetEscExit(0) }
+}
+
 // 开始一帧绘图
 公 函 开始绘图() {
     XT_BeginDrawing()
@@ -185,6 +246,16 @@
     XT_DrawEllipse(cx, cy, 水平半径, 垂直半径, r, g, b, a)
 }
 
+// 实心三角形
+公 函 绘三角(x1, y1, x2, y2, x3, y3, r, g, b, a) {
+    XT_DrawTriangle(x1, y1, x2, y2, x3, y3, r, g, b, a)
+}
+
+// 正多边形(旋转角单位:度)
+公 函 绘多边形(cx, cy, 边数, 半径, 旋转角, r, g, b, a) {
+    XT_DrawPoly(cx, cy, 边数, 半径, 旋转角, r, g, b, a)
+}
+
 // 绘制文字
 公 函 绘文字(文本, x, y, 字号, r, g, b, a) {
     XT_DrawText(文本, x, y, 字号, r, g, b, a)
@@ -240,18 +311,23 @@
     XT_DrawTexture(纹理句柄, x, y, tr, tg, tb, ta)
 }
 
+// 带旋转(度)和缩放倍率的纹理绘制
+公 函 绘纹理Ex(纹理句柄, x, y, 旋转角, 缩放, tr, tg, tb, ta) {
+    XT_DrawTextureEx(纹理句柄, x, y, 旋转角, 缩放, tr, tg, tb, ta)
+}
+
 // 按键是否按下
 公 函 键按下?(键码) {
     返 XT_IsKeyDown(键码)
 }
 
 // 按键是否刚按下（单次触发）
-公 函 键刚按?(键码) {
+公 函 键刚按下?(键码) {
     返 XT_IsKeyPressed(键码)
 }
 
 // 获取刚按下的键
-公 函 获按键() {
+公 函 取按键() {
     返 XT_GetKeyPressed()
 }
 
@@ -262,12 +338,12 @@
 }
 
 // 鼠标按钮是否按下
-公 函 鼠按下?(按钮) {
+公 函 鼠标按下?(按钮) {
     返 XT_IsMouseButtonDown(按钮)
 }
 
 // 鼠标按钮是否刚按下
-公 函 鼠刚按?(按钮) {
+公 函 鼠标刚按下?(按钮) {
     返 XT_IsMouseButtonPressed(按钮)
 }
 
@@ -281,19 +357,88 @@
     返 XT_GetMouseY()
 }
 
+// 滚轮增量(整,正=向上,负=向下)
+公 函 取鼠标滚轮() {
+    返 XT_GetMouseWheelMove()
+}
+
 // 获取随机整数（包含 min 和 max）
-公 函 随机(min, max) {
+公 函 取随机数(min, max) {
     返 XT_GetRandomValue(min, max)
 }
 
+// 程序启动至今的秒数(小数)
+公 函 取运行时间() {
+    返 XT_GetTime()
+}
+
+// 暂停指定秒数(小数)(临时名:手册作「等待」,但 等待 是语言关键字,待拍板)
+公 函 暂停(秒数) {
+    XT_WaitTime(秒数)
+}
+
 // 获取屏幕宽度
-公 函 屏宽() {
+公 函 取屏幕宽() {
     返 XT_GetScreenWidth()
 }
 
 // 获取屏幕高度
-公 函 屏高() {
+公 函 取屏幕高() {
     返 XT_GetScreenHeight()
+}
+
+// ============================================================
+// 音频
+// ============================================================
+
+// 初始化音频设备(使用任何音频 API 前调用)
+公 函 初始化音频() {
+    XT_InitAudioDevice()
+}
+
+// 关闭音频设备
+公 函 关闭音频() {
+    XT_CloseAudioDevice()
+}
+
+// 短音效:整段加载到内存(适合 <5 秒)
+公 函 加载音效(文件) {
+    返 XT_LoadSound(文件)
+}
+
+// 播放一次音效
+公 函 播音效(音效句柄) {
+    XT_PlaySound(音效句柄)
+}
+
+// 释放音效内存
+公 函 释音效(音效句柄) {
+    XT_UnloadSound(音效句柄)
+}
+
+// 打开音乐流(流式解码,背景音乐用)
+公 函 加载音乐流(文件) {
+    返 XT_LoadMusicStream(文件)
+}
+
+// 开始播放音乐流
+公 函 播音乐流(音乐句柄) {
+    XT_PlayMusicStream(音乐句柄)
+}
+
+// 每帧调用一次,解码下一段数据
+公 函 更新音乐流(音乐句柄) {
+    XT_UpdateMusicStream(音乐句柄)
+}
+
+// 停止播放
+公 函 停音乐流(音乐句柄) {
+    XT_StopMusicStream(音乐句柄)
+}
+
+// 关闭流并释放
+公 函 释音乐流(音乐句柄) {
+    XT_UnloadMusicStream(音乐句柄)
 }
 
 // ============================================================
@@ -327,13 +472,16 @@
 公 常 键回车 = 257
 公 常 键退格 = 259
 公 常 键A = 65
+公 常 键B = 66
+公 常 键C = 67
+公 常 键E = 69
 公 常 键W = 87
 公 常 键S = 83
 公 常 键D = 68
 公 常 键R = 82
 公 常 键F = 70
-公 常 键左移 = 340
-公 常 键右移 = 344
+公 常 键左Shift = 340
+公 常 键右Shift = 344
 公 常 键Ctrl = 341
 
 // 鼠标按钮

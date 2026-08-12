@@ -96,6 +96,26 @@ extern __declspec(dllimport) int WINAPI MultiByteToWideChar(
     unsigned int CodePage, unsigned long dwFlags, const char* lpMultiByteStr,
     int cbMultiByte, wchar_t* lpWideCharStr, int cchWideChar);
 extern __declspec(dllimport) int WINAPI SetWindowTextW(HWND hWnd, const wchar_t* lpString);
+// 窗口样式运行时改写(raylib SetWindowState 对本后端运行时不生效,故直走 Win32)
+extern __declspec(dllimport) intptr_t WINAPI GetWindowLongPtrW(HWND hWnd, int nIndex);
+extern __declspec(dllimport) intptr_t WINAPI SetWindowLongPtrW(HWND hWnd, int nIndex, intptr_t dwNewLong);
+extern __declspec(dllimport) int WINAPI SetWindowPos(HWND hWnd, HWND hWndInsertAfter,
+    int X, int Y, int cx, int cy, unsigned int uFlags);
+#define XT_GWL_STYLE        (-16)
+#define XT_WS_THICKFRAME    0x00040000L
+#define XT_WS_MAXIMIZEBOX   0x00010000L
+#define XT_WS_CAPTION       0x00C00000L
+#define XT_WS_SYSMENU       0x00080000L
+#define XT_SWP_NOSIZE       0x0001
+#define XT_SWP_NOMOVE       0x0002
+#define XT_SWP_NOZORDER     0x0004
+#define XT_SWP_FRAMECHANGED 0x0020
+// 自管可调整状态(无边框还原时按它决定是否恢复厚边框)
+static int g_xt_resizable = 0;
+static void xt_apply_style(HWND hwnd) {
+    SetWindowPos(hwnd, 0, 0, 0, 0, 0,
+        XT_SWP_NOMOVE | XT_SWP_NOSIZE | XT_SWP_NOZORDER | XT_SWP_FRAMECHANGED);
+}
 
 // 读取文件全部字节(宽字符路径,支持中文路径——raylib 的 LoadFontEx/LoadTexture
 // 内部走 ANSI fopen,中文路径必失败,实测 已安装 目录下字体加载 Failed to open)
@@ -178,8 +198,52 @@ void XT_SetWindowTitle(uintptr_t title) {
 }
 
 // ============================================================
-// 绘图帧控制
+// 窗口模式(运行时动态切换:可调整大小/无边框/全屏/尺寸)
 // ============================================================
+
+void XT_SetWindowResizable(uintptr_t on) {
+    HWND hwnd = (HWND)GetWindowHandle();
+    if (!hwnd) return;
+    g_xt_resizable = XT_TO_INT(on) ? 1 : 0;
+    intptr_t style = GetWindowLongPtrW(hwnd, XT_GWL_STYLE);
+    if (g_xt_resizable) style |= (XT_WS_THICKFRAME | XT_WS_MAXIMIZEBOX);
+    else style &= ~(XT_WS_THICKFRAME | XT_WS_MAXIMIZEBOX);
+    SetWindowLongPtrW(hwnd, XT_GWL_STYLE, style);
+    xt_apply_style(hwnd);
+}
+
+void XT_SetWindowUndecorated(uintptr_t on) {
+    HWND hwnd = (HWND)GetWindowHandle();
+    if (!hwnd) return;
+    intptr_t style = GetWindowLongPtrW(hwnd, XT_GWL_STYLE);
+    if (XT_TO_INT(on)) {
+        style &= ~(XT_WS_CAPTION | XT_WS_SYSMENU | XT_WS_THICKFRAME | XT_WS_MAXIMIZEBOX);
+    } else {
+        style |= (XT_WS_CAPTION | XT_WS_SYSMENU);
+        if (g_xt_resizable) style |= (XT_WS_THICKFRAME | XT_WS_MAXIMIZEBOX);
+    }
+    SetWindowLongPtrW(hwnd, XT_GWL_STYLE, style);
+    xt_apply_style(hwnd);
+}
+
+void XT_SetWindowFullscreen(uintptr_t on) {
+    // 显式语义:目标状态与当前一致时不动作(ToggleFullscreen 只有翻转语义)
+    int want = (int)XT_TO_INT(on);
+    if ((IsWindowFullscreen() ? 1 : 0) != want) ToggleFullscreen();
+}
+
+uintptr_t XT_IsWindowFullscreen(void) {
+    return IsWindowFullscreen() ? 1 : 0;
+}
+
+void XT_SetWindowSize(uintptr_t w, uintptr_t h) {
+    SetWindowSize((int)XT_TO_INT(w), (int)XT_TO_INT(h));
+}
+
+// ESC 关闭开关:开=按 ESC 请求关窗(raylib 默认),关=ESC 不再退程序
+void XT_SetEscExit(uintptr_t on) {
+    SetExitKey(XT_TO_INT(on) ? 256 /*KEY_ESCAPE*/ : 0);
+}
 
 void XT_BeginDrawing(void) {
     BeginDrawing();
@@ -544,6 +608,166 @@ void XT_UnloadMusicStream(uintptr_t musicPtr) {
 
 static Font xt_font_pool[8];
 static int  xt_font_count = 0;
+static int  xt_font_sdf[8];   // 每槽位 SDF 标记
+
+// SDF 着色器(全体 SDF 字体共用;GLSL 取自 raylib 官方 text_font_sdf 示例)
+static Shader xt_sdf_shader = { 0 };
+static int    xt_sdf_shader_tried = 0;
+static const char* XT_SDF_FS =
+    "#version 330\n"
+    "in vec2 fragTexCoord;\n"
+    "in vec4 fragColor;\n"
+    "uniform sampler2D texture0;\n"
+    "uniform vec4 colDiffuse;\n"
+    "out vec4 finalColor;\n"
+    "void main() {\n"
+    "    float d = texture(texture0, fragTexCoord).a - 0.5;\n"
+    "    float w = length(vec2(dFdx(d), dFdy(d)));\n"
+    "    float alpha = smoothstep(-w, w, d);\n"
+    "    finalColor = vec4(fragColor.rgb, fragColor.a*alpha);\n"
+    "}\n";
+
+// 由内存 TTF 生成 SDF 字体(官方 text_font_sdf 流程:FONT_SDF → 0 padding skyline 图集 → 双线性)
+// baseSize 固定 32:复杂汉字(叠/藏类)在 16px 距离场下细节不足发虚,32 才够;一次性生成慢(~15s)
+// 但走磁盘缓存,之后启动亚秒。显示尺寸由 DrawTextEx/MeasureTextEx 按 fontSize/baseSize 缩放,量测绘制同源自洽
+static void xt_ensure_sdf_shader(void) {
+    if (!xt_sdf_shader_tried) {
+        xt_sdf_shader = LoadShaderFromMemory(NULL, XT_SDF_FS);
+        xt_sdf_shader_tried = 1;
+    }
+}
+
+// ---- SDF 字体磁盘缓存 ----
+// 实测全 CJK(21K 字形) SDF 生成 14.5s(temp/sdf_bench),每次启动生成不可承受;
+// 缓存到 <ttf路径>.xtfc:命中直接装载(数百毫秒)。校验 ttf 全量 FNV 哈希 + 码点集哈希,失配自动重建。
+// 布局: "XTF1" | u32 ttfHash | u32 cpHash | i32 baseSize | i32 glyphCount | i32 glyphPadding
+//       | i32 atlasW | i32 atlasH | i32 atlasFormat | u64 atlasBytes
+//       | 逐字形 {i32 value, i32 offsetX, i32 offsetY, i32 advanceX, f32 recX, f32 recY, f32 recW, f32 recH}
+//       | 图集像素(atlasBytes)
+static uint32_t xt_fnv1a(const unsigned char* p, size_t n) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 16777619u; }
+    return h;
+}
+
+static FILE* xt_fopen_wb(const char* u8path) {
+#ifdef _WIN32
+    wchar_t wpath[1024];
+    int wn = MultiByteToWideChar(65001 /*CP_UTF8*/, 0, u8path, -1, wpath, 1024);
+    if (wn <= 0) return NULL;
+    return _wfopen(wpath, L"wb");
+#else
+    return fopen(u8path, "wb");
+#endif
+}
+
+static void xt_cache_path(const char* ttfPath, char* out, size_t cap) {
+    size_t n = strlen(ttfPath);
+    if (n > cap - 6) n = cap - 6;
+    memcpy(out, ttfPath, n);
+    memcpy(out + n, ".xtfc", 6);
+}
+
+static void xt_font_cache_save(const char* ttfPath, uint32_t ttfHash, uint32_t cpHash,
+                               const Font* f, const Image* atlas) {
+    if (atlas->format != 2 /*GRAY_ALPHA*/) return;   // 仅支持 SDF 图集格式
+    uint64_t atlasBytes = (uint64_t)atlas->width * (uint64_t)atlas->height * 2;
+    char cp[1100]; xt_cache_path(ttfPath, cp, sizeof(cp));
+    FILE* o = xt_fopen_wb(cp);
+    if (!o) return;
+    fwrite("XTF1", 1, 4, o);
+    fwrite(&ttfHash, 4, 1, o);
+    fwrite(&cpHash, 4, 1, o);
+    fwrite(&f->baseSize, 4, 1, o);
+    fwrite(&f->glyphCount, 4, 1, o);
+    fwrite(&f->glyphPadding, 4, 1, o);
+    fwrite(&atlas->width, 4, 1, o);
+    fwrite(&atlas->height, 4, 1, o);
+    fwrite(&atlas->format, 4, 1, o);
+    fwrite(&atlasBytes, 8, 1, o);
+    for (int i = 0; i < f->glyphCount; i++) {
+        fwrite(&f->glyphs[i].value, 4, 1, o);
+        fwrite(&f->glyphs[i].offsetX, 4, 1, o);
+        fwrite(&f->glyphs[i].offsetY, 4, 1, o);
+        fwrite(&f->glyphs[i].advanceX, 4, 1, o);
+        fwrite(&f->recs[i].x, 4, 1, o);
+        fwrite(&f->recs[i].y, 4, 1, o);
+        fwrite(&f->recs[i].width, 4, 1, o);
+        fwrite(&f->recs[i].height, 4, 1, o);
+    }
+    fwrite(atlas->data, 1, (size_t)atlasBytes, o);
+    fclose(o);
+}
+
+static int xt_font_cache_load(const char* ttfPath, uint32_t ttfHash, uint32_t cpHash, Font* out) {
+    char cp[1100]; xt_cache_path(ttfPath, cp, sizeof(cp));
+    int size = 0;
+    unsigned char* buf = xt_read_file_bytes(cp, &size);
+    if (!buf) return 0;
+    int ok = 0;
+    do {
+        if (size < 44 || memcmp(buf, "XTF1", 4) != 0) break;
+        unsigned char* p = buf + 4;
+        uint32_t th, ch; int32_t base, gc, gp, aw, ah, afmt; uint64_t abytes;
+        memcpy(&th, p, 4); p += 4; memcpy(&ch, p, 4); p += 4;
+        if (th != ttfHash || ch != cpHash) break;
+        memcpy(&base, p, 4); p += 4; memcpy(&gc, p, 4); p += 4; memcpy(&gp, p, 4); p += 4;
+        memcpy(&aw, p, 4); p += 4; memcpy(&ah, p, 4); p += 4; memcpy(&afmt, p, 4); p += 4;
+        memcpy(&abytes, p, 8); p += 8;
+        if (gc <= 0 || gc > 100000 || afmt != 2) break;
+        if ((uint64_t)size != 44ull + (uint64_t)gc * 32ull + abytes) break;
+        GlyphInfo* glyphs = (GlyphInfo*)calloc((size_t)gc, sizeof(GlyphInfo));
+        Rectangle* recs = (Rectangle*)malloc((size_t)gc * sizeof(Rectangle));
+        unsigned char* pixels = (unsigned char*)malloc((size_t)abytes);
+        if (!glyphs || !recs || !pixels) { free(glyphs); free(recs); free(pixels); break; }
+        for (int i = 0; i < gc; i++) {
+            memcpy(&glyphs[i].value, p, 4); p += 4;
+            memcpy(&glyphs[i].offsetX, p, 4); p += 4;
+            memcpy(&glyphs[i].offsetY, p, 4); p += 4;
+            memcpy(&glyphs[i].advanceX, p, 4); p += 4;
+            memcpy(&recs[i].x, p, 4); p += 4;
+            memcpy(&recs[i].y, p, 4); p += 4;
+            memcpy(&recs[i].width, p, 4); p += 4;
+            memcpy(&recs[i].height, p, 4); p += 4;
+        }
+        memcpy(pixels, p, (size_t)abytes);
+        Image img;
+        img.data = pixels; img.width = aw; img.height = ah; img.mipmaps = 1; img.format = afmt;
+        Texture2D tex = LoadTextureFromImage(img);
+        free(pixels);
+        free(buf);
+        if (tex.id == 0) { free(glyphs); free(recs); return 0; }
+        out->baseSize = base; out->glyphCount = gc; out->glyphPadding = gp;
+        out->texture = tex; out->recs = recs; out->glyphs = glyphs;
+        SetTextureFilter(out->texture, TEXTURE_FILTER_BILINEAR);
+        ok = 1;
+    } while (0);
+    if (!ok) free(buf);
+    return ok;
+}
+
+static Font xt_load_font_sdf(const unsigned char* data, int dataSize, const int* codepoints, int cpCount,
+                             const char* ttfPath) {
+    Font f = { 0 };
+    uint32_t ttfHash = xt_fnv1a(data, (size_t)dataSize);
+    uint32_t cpHash = xt_fnv1a((const unsigned char*)codepoints, (size_t)cpCount * sizeof(int)) ^ 32u;
+    if (xt_font_cache_load(ttfPath, ttfHash, cpHash, &f)) {
+        xt_ensure_sdf_shader();
+        return f;
+    }
+    f.baseSize = 32;
+    f.glyphCount = cpCount;
+    f.glyphPadding = 0;
+    f.glyphs = LoadFontData(data, dataSize, 32, codepoints, cpCount, FONT_SDF, &f.glyphCount);
+    if (!f.glyphs || f.glyphCount <= 0) { Font e = { 0 }; return e; }
+    Image atlas = GenImageFontAtlas(f.glyphs, &f.recs, f.glyphCount, 32, 0, 1);
+    f.texture = LoadTextureFromImage(atlas);
+    if (f.texture.id != 0) xt_font_cache_save(ttfPath, ttfHash, cpHash, &f, &atlas);
+    UnloadImage(atlas);
+    SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);   // SDF 必须双线性
+    xt_ensure_sdf_shader();
+    return f;
+}
 
 // 辅助：从 XT 值提取 Font 指针
 static Font* xt_get_font(uintptr_t fontVal) {
@@ -579,12 +803,14 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     int dataSize = 0;
     unsigned char* data = xt_read_file_bytes(xt_get_cstr(filename), &dataSize);
     if (!data) { free(codepoints); return XT_FROM_INT(0); }
-    Font f = LoadFontFromMemory(".ttf", data, dataSize, (int)XT_TO_INT(fontSize), codepoints, cpCount);
+    Font f = xt_load_font_sdf(data, dataSize, codepoints, cpCount, xt_get_cstr(filename));
     free(data);
     free(codepoints);
-    if (f.glyphCount == 0) f = GetFontDefault();
+    int isSdf = 1;
+    if (f.glyphCount == 0 || f.texture.id == 0) { f = GetFontDefault(); isSdf = 0; }
 
     xt_font_pool[xt_font_count] = f;
+    xt_font_sdf[xt_font_count] = isSdf;
     xt_font_count++;
     return XT_FROM_INT(xt_font_count);  // 返回 1-based 整数索引
 }
@@ -622,12 +848,14 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     int dataSizeEx = 0;
     unsigned char* dataEx = xt_read_file_bytes(xt_get_cstr(filename), &dataSizeEx);
     if (!dataEx) { free(codepoints); return XT_FROM_INT(0); }
-    Font f = LoadFontFromMemory(".ttf", dataEx, dataSizeEx, (int)XT_TO_INT(fontSize), codepoints, idx);
+    Font f = xt_load_font_sdf(dataEx, dataSizeEx, codepoints, idx, xt_get_cstr(filename));
     free(dataEx);
     free(codepoints);
-    if (f.glyphCount == 0) f = GetFontDefault();
+    int isSdf = 1;
+    if (f.glyphCount == 0 || f.texture.id == 0) { f = GetFontDefault(); isSdf = 0; }
 
     xt_font_pool[xt_font_count] = f;
+    xt_font_sdf[xt_font_count] = isSdf;
     xt_font_count++;
     return XT_FROM_INT(xt_font_count);
 }
@@ -650,8 +878,17 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
         Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
                    (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
         Vector2 pos = {(float)XT_TO_INT(x), (float)XT_TO_INT(y)};
-        DrawTextEx(*p, xt_get_cstr(text), pos, (float)XT_TO_INT(fontSize),
-                   (float)XT_TO_INT(spacing), c);
+        int64_t _idx = XT_TO_INT(fontHandle);
+        int _sdf = (_idx >= 1 && _idx <= xt_font_count) ? xt_font_sdf[_idx - 1] : 0;
+        if (_sdf && xt_sdf_shader.id > 0) {
+            BeginShaderMode(xt_sdf_shader);
+            DrawTextEx(*p, xt_get_cstr(text), pos, (float)XT_TO_INT(fontSize),
+                       (float)XT_TO_INT(spacing), c);
+            EndShaderMode();
+        } else {
+            DrawTextEx(*p, xt_get_cstr(text), pos, (float)XT_TO_INT(fontSize),
+                       (float)XT_TO_INT(spacing), c);
+        }
     }
 }
 
