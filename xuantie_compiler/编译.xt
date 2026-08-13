@@ -835,6 +835,7 @@
         此.写出("declare i64 @\"xt_file_write\"(i64, i64)")
         此.写出("declare i64 @\"xt_file_exists\"(i64)")
         此.写出("declare i64 @\"xt_http_request\"(i64)")
+        此.写出("declare i64 @\"xt_http_request_ex\"(i64, i64)")
         此.写出("declare i64 @\"xt_math_random\"(i64)")
         此.写出("declare i64 @\"xt_math_abs\"(i64)")
         此.写出("declare i64 @\"xt_math_sin\"(i64)")
@@ -2993,7 +2994,10 @@
                 设 函数名 = ""
                 设 返回类型 = "i64"
                 匹配 类型 {
-                    "求" -> { 函数名 = "xt_http_request" }
+                    "求" -> {
+                        // 双参形态(带选项字典)走增强客户端:方法/头/体/超时,回 状态码/体/头
+                        若 节点.参数列表.长度 >= 2 { 函数名 = "xt_http_request_ex" } 否 { 函数名 = "xt_http_request" }
+                    }
                     "听" -> { 函数名 = "xt_listen" }
                     "连" -> { 函数名 = "xt_connect" }
                     "执" -> { 函数名 = "xt_execute" }

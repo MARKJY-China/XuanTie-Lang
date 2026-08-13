@@ -37,6 +37,11 @@ typedef struct {
     // 接收侧解密余量缓冲(DecryptMessage 可能一次吐出部分应用数据)
     char* leftover;
     int leftover_len;
+    // 接收侧密文输入缓冲(持久化):DecryptMessage 的 SECBUFFER_EXTRA(下一条记录的密文头)
+    // 必须跨调用存活——原实现放在栈上,交付数据即丢弃,导致流错位(间歇性乱码/截断,实测实锤)
+    char* inbuf;
+    int inlen;
+    int incap;
 } xt_tls_conn;
 
 // 发送全部数据(循环直到发完)
@@ -237,66 +242,79 @@ int xt_tls_recv(void* ctx, char* out, int cap) {
         return n;
     }
 
-    char inbuf[16384];
-    int inlen = 0;
+    if (!c->inbuf) {
+        c->incap = 32768;
+        c->inbuf = (char*)malloc(c->incap);
+        c->inlen = 0;
+    }
+
     for (;;) {
-        int n = recv(c->sockfd, inbuf + inlen, sizeof(inbuf) - inlen, 0);
-        if (n <= 0) return 0; // 连接关闭
-        inlen += n;
+        if (c->inlen > 0) {
+            SecBuffer bufs[4];
+            SecBufferDesc desc;
+            bufs[0].BufferType = SECBUFFER_DATA;
+            bufs[0].cbBuffer = c->inlen;
+            bufs[0].pvBuffer = c->inbuf;
+            bufs[1].BufferType = SECBUFFER_EMPTY;
+            bufs[2].BufferType = SECBUFFER_EMPTY;
+            bufs[3].BufferType = SECBUFFER_EMPTY;
+            desc.ulVersion = SECBUFFER_VERSION;
+            desc.cBuffers = 4;
+            desc.pBuffers = bufs;
 
-        SecBuffer bufs[4];
-        SecBufferDesc desc;
-        bufs[0].BufferType = SECBUFFER_DATA;
-        bufs[0].cbBuffer = inlen;
-        bufs[0].pvBuffer = inbuf;
-        bufs[1].BufferType = SECBUFFER_EMPTY;
-        bufs[2].BufferType = SECBUFFER_EMPTY;
-        bufs[3].BufferType = SECBUFFER_EMPTY;
-        desc.ulVersion = SECBUFFER_VERSION;
-        desc.cBuffers = 4;
-        desc.pBuffers = bufs;
-
-        SECURITY_STATUS ss = DecryptMessage(&c->ctx, &desc, 0, NULL);
-        if (ss == SEC_E_OK || ss == SEC_I_RENEGOTIATE || ss == SEC_I_CONTEXT_EXPIRED) {
-            // 收集 DATA 缓冲
-            int data_len = 0;
-            char* data_ptr = NULL;
-            int extra_len = 0;
-            char* extra_ptr = NULL;
-            for (int i = 0; i < 4; i++) {
-                if (bufs[i].BufferType == SECBUFFER_DATA && bufs[i].cbBuffer > 0) {
-                    data_ptr = (char*)bufs[i].pvBuffer;
-                    data_len = bufs[i].cbBuffer;
+            SECURITY_STATUS ss = DecryptMessage(&c->ctx, &desc, 0, NULL);
+            if (ss == SEC_E_OK || ss == SEC_I_RENEGOTIATE || ss == SEC_I_CONTEXT_EXPIRED) {
+                // 收集 DATA 与 EXTRA 缓冲
+                int data_len = 0;
+                char* data_ptr = NULL;
+                int extra_len = 0;
+                char* extra_ptr = NULL;
+                for (int i = 0; i < 4; i++) {
+                    if (bufs[i].BufferType == SECBUFFER_DATA && bufs[i].cbBuffer > 0) {
+                        data_ptr = (char*)bufs[i].pvBuffer;
+                        data_len = bufs[i].cbBuffer;
+                    }
+                    if (bufs[i].BufferType == SECBUFFER_EXTRA && bufs[i].cbBuffer > 0) {
+                        extra_ptr = (char*)bufs[i].pvBuffer;
+                        extra_len = bufs[i].cbBuffer;
+                    }
                 }
-                if (bufs[i].BufferType == SECBUFFER_EXTRA && bufs[i].cbBuffer > 0) {
-                    extra_ptr = (char*)bufs[i].pvBuffer;
-                    extra_len = bufs[i].cbBuffer;
+                // 先取应用数据,再挪动 EXTRA(防止 memmove 覆盖未拷贝的数据区)
+                int deliver = 0;
+                if (data_len > 0) {
+                    deliver = data_len < cap ? data_len : cap;
+                    memcpy(out, data_ptr, deliver);
+                    if (deliver < data_len) {
+                        c->leftover = (char*)malloc(data_len - deliver);
+                        memcpy(c->leftover, data_ptr + deliver, data_len - deliver);
+                        c->leftover_len = data_len - deliver;
+                    }
                 }
-            }
-            if (extra_len > 0 && extra_ptr) {
-                memmove(inbuf, extra_ptr, extra_len);
-                inlen = extra_len;
+                // EXTRA(下一条 TLS 记录的密文头)保留在持久缓冲头部,跨调用存活
+                if (extra_len > 0 && extra_ptr) {
+                    memmove(c->inbuf, extra_ptr, extra_len);
+                    c->inlen = extra_len;
+                } else {
+                    c->inlen = 0;
+                }
+                if (ss == SEC_I_CONTEXT_EXPIRED) return 0;
+                if (deliver > 0) return deliver;
+                continue; // 无应用数据(控制消息),继续
+            } else if (ss == SEC_E_INCOMPLETE_MESSAGE) {
+                // 数据不足:落到下方接收更多
             } else {
-                inlen = 0;
+                return -1;
             }
-            if (ss == SEC_I_CONTEXT_EXPIRED) return 0;
-            if (data_len > 0) {
-                int deliver = data_len < cap ? data_len : cap;
-                memcpy(out, data_ptr, deliver);
-                if (deliver < data_len) {
-                    c->leftover = (char*)malloc(data_len - deliver);
-                    memcpy(c->leftover, data_ptr + deliver, data_len - deliver);
-                    c->leftover_len = data_len - deliver;
-                }
-                return deliver;
-            }
-            // 无应用数据(控制消息),继续
-            continue;
-        } else if (ss == SEC_E_INCOMPLETE_MESSAGE) {
-            continue; // 继续接收
-        } else {
-            return -1;
         }
+
+        // 缓冲余量不足则扩容(TLS 记录最大 16KB+头部)
+        if (c->incap - c->inlen < 16384 + 64) {
+            c->incap *= 2;
+            c->inbuf = (char*)realloc(c->inbuf, c->incap);
+        }
+        int n = recv(c->sockfd, c->inbuf + c->inlen, c->incap - c->inlen, 0);
+        if (n <= 0) return 0; // 连接关闭
+        c->inlen += n;
     }
 }
 
@@ -306,6 +324,7 @@ void xt_tls_close(void* ctx) {
     if (c->ctx_valid) DeleteSecurityContext(&c->ctx);
     FreeCredentialsHandle(&c->cred);
     if (c->leftover) free(c->leftover);
+    if (c->inbuf) free(c->inbuf);
     free(c);
 }
 

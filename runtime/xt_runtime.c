@@ -2638,16 +2638,29 @@ XTValue xt_http_request(XTValue url_val) {
     return (XTValue)xt_result_new(1, (void*)body, NULL);
 }
 
+// 以 env 感知约定调用一元闭包(供 C 侧回调使用:听/定时器等)
+// 捕获环境的闭包首参为 env;无捕获则直接一元调用
+XTValue xt_closure_call1(XTValue fn_val, XTValue arg) {
+    if (!XT_IS_REAL_PTR(fn_val)) return XT_NULL;
+    XTObject* o = (XTObject*)fn_val;
+    if (o->type_id != XT_TYPE_FUNCTION) return XT_NULL;
+    XTFunction* f = (XTFunction*)fn_val;
+    typedef XTValue (*cb_plain)(XTValue);
+    typedef XTValue (*cb_env)(XTValue, XTValue);
+    if (f->env) return ((cb_env)f->func_ptr)((XTValue)f->env, arg);
+    return ((cb_plain)f->func_ptr)(arg);
+}
+
 XTValue xt_listen(XTValue port_val, XTValue callback_val) {
     int64_t port = xt_to_int(port_val);
-    // 从 XTFunction 中提取函数指针
     if (!xt_is_real_ptr(callback_val)) {
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("回调函数无效"));
     }
-    typedef XTValue (*xt_cb)(XTValue);
-    xt_cb cb = (xt_cb)((XTFunction*)callback_val)->func_ptr;
-    int rc = xt_net_listen((int)port, (void (*)(void*))cb);
+    // 闭包整对象传递(支持捕获环境):C 侧经 xt_closure_call1 按 env 调用
+    xt_retain(callback_val);  // 监听常驻,函数对象由监听持有
+    int rc = xt_net_listen_fn((int)port, callback_val);
     if (rc < 0) {
+        xt_release(callback_val);
         char err[64];
         snprintf(err, sizeof(err), "监听端口 %d 失败", (int)port);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err));
@@ -3086,17 +3099,17 @@ XTValue xt_time_sleep(XTValue ms_val) {
 }
 
 /**
- * @brief 字符串分割 (利用 strtok_s 实现)
+ * @brief 字符串分割 (字面子串切分,同 Python split:保留空段,分隔符按整体字面匹配)
  */
 XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
     if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
     xt_string_guard(str_val, "分割");
     xt_string_guard(sep_val, "分割 分隔符");
-    XTString* s = (XTString*)str_val; 
+    XTString* s = (XTString*)str_val;
     XTString* sep = (XTString*)sep_val;
     XTValue arr = xt_array_new(4);
-    
-    if (sep && sep->length == 0) {
+
+    if (!sep || sep->length == 0) {
         // 如果分隔符为空字符串，则按逻辑字符拆分
         int64_t char_count = XT_TO_INT(xt_string_char_count(str_val));
         for (int64_t i = 0; i < char_count; i++) {
@@ -3107,14 +3120,26 @@ XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
         return arr;
     }
 
-    char* data = xt_strdup(s->data);
-    char* token; char* rest = data;
-    while ((token = strtok_s(rest, sep ? sep->data : "", &rest))) {
-        XTValue s_new = (XTValue)xt_string_new(token);
-        xt_array_append(arr, s_new);
-        xt_release(s_new);
+    const char* data = s->data;
+    size_t dlen = (size_t)s->length;
+    size_t slen = (size_t)sep->length;
+    size_t start = 0, i = 0;
+    while (i + slen <= dlen) {
+        if (memcmp(data + i, sep->data, slen) == 0) {
+            XTValue part = (XTValue)xt_string_new_len(data + start, i - start);
+            xt_array_append(arr, part);
+            xt_release(part);
+            i += slen;
+            start = i;
+        } else {
+            i++;
+        }
     }
-    free(data); return arr;
+    // 尾段(可为空)也入列
+    XTValue tail = (XTValue)xt_string_new_len(data + start, dlen - start);
+    xt_array_append(arr, tail);
+    xt_release(tail);
+    return arr;
 }
 
 /**

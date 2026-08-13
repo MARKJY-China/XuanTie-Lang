@@ -4,6 +4,7 @@
 #define XT_NET_H
 
 #include <stdint.h>
+#include "xt_runtime.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -32,6 +33,13 @@ void* xt_net_connect(const char* host, int port);
 // TCP 监听，对每个连接调用 callback(stream_obj)
 // 在独立线程中运行，立即返回
 int xt_net_listen(int port, void (*callback)(void* stream));
+
+// 闭包版监听:直接收 XTFunction(XTValue),经 xt_closure_call1 按 env 正确调用——
+// 原版只传 func_ptr,捕获环境的闭包被调用时 env 槽位是 socket 指针,必崩(自举/服务端库实测)
+int xt_net_listen_fn(int port, XTValue fn_val);
+
+// 以 env 感知约定调用一元闭包(供 C 侧回调 trampoline 使用)
+XTValue xt_closure_call1(XTValue fn_val, XTValue arg);
 
 // 从 socket 读取数据，返回 XTString
 void* xt_net_read(void* sock_obj, int max_bytes);

@@ -183,6 +183,284 @@ void* xt_net_http_get(const char* url) {
 }
 
 // ============================================================
+// 增强 HTTP 客户端:求(url, 选项) 双参形态
+// 选项: {"方法": "POST", "头": {键: 值}, "体": "...", "超时": 毫秒}
+// 返回 结果;成功时 值 = {"状态码": 整, "体": 字, "头": 字典}
+// ============================================================
+
+static const char* xt_opt_str(XTValue opts, const char* key, const char* dflt) {
+    if (!XT_IS_REAL_PTR(opts)) return dflt;
+    XTObject* o = (XTObject*)opts;
+    if (o->type_id != XT_TYPE_DICT) return dflt;
+    XTString* k = xt_string_new(key);
+    XTValue v = xt_dict_get(opts, (XTValue)k);
+    xt_release((XTValue)k);
+    if (!XT_IS_REAL_PTR(v)) return dflt;
+    XTObject* vo = (XTObject*)v;
+    if (vo->type_id != XT_TYPE_STRING) return dflt;
+    return ((XTString*)v)->data;
+}
+
+static int64_t xt_opt_int(XTValue opts, const char* key, int64_t dflt) {
+    if (!XT_IS_REAL_PTR(opts)) return dflt;
+    XTObject* o = (XTObject*)opts;
+    if (o->type_id != XT_TYPE_DICT) return dflt;
+    XTString* k = xt_string_new(key);
+    XTValue v = xt_dict_get(opts, (XTValue)k);
+    xt_release((XTValue)k);
+    if (XT_IS_INT(v)) return XT_TO_INT(v);
+    return dflt;
+}
+
+// 在限定区域内大小写不敏感地找子串
+static int xt_region_icontains(const char* hay, size_t haylen, const char* needle) {
+    size_t nl = strlen(needle);
+    if (nl == 0 || haylen < nl) return 0;
+    for (size_t i = 0; i + nl <= haylen; i++) {
+        size_t j = 0;
+        while (j < nl) {
+            char a = hay[i + j], b = needle[j];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+            j++;
+        }
+        if (j == nl) return 1;
+    }
+    return 0;
+}
+
+// chunked 解码(Transfer-Encoding: chunked)
+static char* xt_http_decode_chunked(const char* src, size_t len, size_t* outlen) {
+    char* out = (char*)malloc(len + 1);
+    size_t o = 0, i = 0;
+    while (i < len) {
+        size_t chunk = 0; int got = 0;
+        while (i < len && src[i] != '\r') {
+            char ch = src[i]; unsigned d;
+            if (ch >= '0' && ch <= '9') d = (unsigned)(ch - '0');
+            else if (ch >= 'a' && ch <= 'f') d = (unsigned)(ch - 'a' + 10);
+            else if (ch >= 'A' && ch <= 'F') d = (unsigned)(ch - 'A' + 10);
+            else break;
+            chunk = chunk * 16 + d; got = 1; i++;
+        }
+        if (!got) break;
+        if (i < len && src[i] == '\r') i++;
+        if (i < len && src[i] == '\n') i++;
+        if (chunk == 0) break;
+        if (i + chunk > len) chunk = len - i;
+        memcpy(out + o, src + i, chunk);
+        o += chunk; i += chunk;
+        if (i < len && src[i] == '\r') i++;
+        if (i < len && src[i] == '\n') i++;
+    }
+    out[o] = '\0';
+    *outlen = o;
+    return out;
+}
+
+XTValue xt_http_request_ex(XTValue url_val, XTValue opts_val) {
+    if (!XT_IS_REAL_PTR(url_val) || ((XTObject*)url_val)->type_id != XT_TYPE_STRING)
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("URL无效"));
+    const char* url = ((XTString*)url_val)->data;
+
+    const char* method = xt_opt_str(opts_val, "方法", "GET");
+    int64_t timeout_ms = xt_opt_int(opts_val, "超时", 0);
+
+    const char* body = NULL; size_t body_len = 0;
+    if (XT_IS_REAL_PTR(opts_val) && ((XTObject*)opts_val)->type_id == XT_TYPE_DICT) {
+        XTString* bk = xt_string_new("体");
+        XTValue bv = xt_dict_get(opts_val, (XTValue)bk);
+        xt_release((XTValue)bk);
+        if (XT_IS_REAL_PTR(bv) && ((XTObject*)bv)->type_id == XT_TYPE_STRING) {
+            body = ((XTString*)bv)->data;
+            body_len = ((XTString*)bv)->length;
+        }
+    }
+
+    // URL 解析(与 GET 同款)
+    int use_tls = 0;
+    const char* p = NULL;
+    if (strncmp(url, "http://", 7) == 0) { p = url + 7; }
+    else if (strncmp(url, "https://", 8) == 0) { use_tls = 1; p = url + 8; }
+    if (!p) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("不支持的协议(仅 http/https)"));
+
+    char host[256] = {0}; int port = use_tls ? 443 : 80; const char* path = "/";
+    const char* slash = strchr(p, '/');
+    const char* colon = strchr(p, ':');
+    if (colon && (!slash || colon < slash)) {
+        size_t hl = (size_t)(colon - p); if (hl >= 256) hl = 255;
+        memcpy(host, p, hl); port = atoi(colon + 1);
+    } else if (slash) {
+        size_t hl = (size_t)(slash - p); if (hl >= 256) hl = 255;
+        memcpy(host, p, hl);
+    } else { size_t l = strlen(p); if (l >= 256) l = 255; memcpy(host, p, l); }
+    if (slash) path = slash;
+
+    xt_sock_t sock = create_connection(host, port);
+    if (sock == XT_INVALID_SOCK) {
+        char e[256]; snprintf(e, sizeof(e), "无法连接到 %s:%d", host, port);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(e));
+    }
+
+    // 收发超时(连接超时暂不支持)
+    if (timeout_ms > 0) {
+#if defined(_WIN32)
+        DWORD tv = (DWORD)timeout_ms;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#else
+        struct timeval tv;
+        tv.tv_sec = timeout_ms / 1000; tv.tv_usec = (timeout_ms % 1000) * 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+    }
+
+    void* tls = NULL;
+    if (use_tls) {
+        if (xt_tls_handshake(sock, host, &tls) != 0) {
+            xt_sock_close(sock);
+            return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("TLS 握手失败"));
+        }
+    }
+
+    // 组装请求
+    http_buf req = {NULL, 0, 0};
+    char line[1100];
+    snprintf(line, sizeof(line), "%s %s HTTP/1.1\r\nHost: %s\r\n", method, path, host);
+    buf_add(&req, line, (int)strlen(line));
+
+    // 自定义请求头(字典逐键)
+    XTValue hdrs = XT_NULL;
+    if (XT_IS_REAL_PTR(opts_val) && ((XTObject*)opts_val)->type_id == XT_TYPE_DICT) {
+        XTString* hk = xt_string_new("头");
+        hdrs = xt_dict_get(opts_val, (XTValue)hk);
+        xt_release((XTValue)hk);
+    }
+    if (XT_IS_REAL_PTR(hdrs) && ((XTObject*)hdrs)->type_id == XT_TYPE_DICT) {
+        XTValue keys = xt_dict_keys(hdrs);
+        if (XT_IS_REAL_PTR(keys)) {
+            XTArray* ka = (XTArray*)keys;
+            for (size_t ki = 0; ki < ka->length; ki++) {
+                XTValue k = (XTValue)ka->elements[ki];
+                if (!XT_IS_REAL_PTR(k) || ((XTObject*)k)->type_id != XT_TYPE_STRING) continue;
+                XTValue v = xt_dict_get(hdrs, k);
+                if (!XT_IS_REAL_PTR(v) || ((XTObject*)v)->type_id != XT_TYPE_STRING) continue;
+                snprintf(line, sizeof(line), "%s: %s\r\n", ((XTString*)k)->data, ((XTString*)v)->data);
+                buf_add(&req, line, (int)strlen(line));
+            }
+            xt_release(keys);
+        }
+    }
+
+    if (body_len > 0) {
+        snprintf(line, sizeof(line), "Content-Length: %zu\r\n", body_len);
+        buf_add(&req, line, (int)strlen(line));
+    }
+    buf_add(&req, "Connection: close\r\n\r\n", 21);
+    if (body_len > 0) buf_add(&req, body, (int)body_len);
+
+    // 发送(处理部分发送)
+    int send_fail = 0;
+    size_t off = 0;
+    while (off < (size_t)req.len) {
+        int n;
+        if (use_tls) {
+            n = (xt_tls_send(tls, req.data + off, req.len - (int)off) == 0) ? (req.len - (int)off) : -1;
+        } else {
+            n = send(sock, req.data + off, req.len - (int)off, 0);
+        }
+        if (n <= 0) { send_fail = 1; break; }
+        off += (size_t)n;
+    }
+    free(req.data);
+    if (send_fail) {
+        if (tls) xt_tls_close(tls);
+        xt_sock_close(sock);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("发送请求失败"));
+    }
+
+    // 读取全部响应
+    http_buf buf = {NULL, 0, 0};
+    char chunk[4096]; int n;
+    if (use_tls) {
+        while ((n = xt_tls_recv(tls, chunk, sizeof(chunk))) > 0) buf_add(&buf, chunk, n);
+        xt_tls_close(tls);
+    } else {
+        while ((n = recv(sock, chunk, sizeof(chunk), 0)) > 0) buf_add(&buf, chunk, n);
+    }
+    xt_sock_close(sock);
+    if (buf.len == 0) {
+        free(buf.data);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("响应为空或读取超时"));
+    }
+    buf_add(&buf, "", 1);
+
+    // 状态行: HTTP/1.1 200 OK
+    int status = 0;
+    const char* sp = strchr(buf.data, ' ');
+    if (sp) status = atoi(sp + 1);
+
+    // 响应头
+    XTValue hdrDict = xt_dict_new(8);
+    char* hdrEnd = strstr(buf.data, "\r\n\r\n");
+    if (hdrEnd) {
+        char* firstNl = strchr(buf.data, '\n');
+        char* cur = firstNl ? firstNl + 1 : NULL;
+        while (cur && cur < hdrEnd) {
+            char* eol = strstr(cur, "\r\n");
+            if (!eol || eol > hdrEnd) break;
+            char* col = memchr(cur, ':', (size_t)(eol - cur));
+            if (col) {
+                *col = '\0';
+                char* val = col + 1;
+                while (*val == ' ') val++;
+                *eol = '\0';
+                XTString* ks = xt_string_new(cur);
+                XTString* vs = xt_string_new(val);
+                xt_dict_set(hdrDict, (XTValue)ks, (XTValue)vs);
+                xt_release((XTValue)ks);
+                xt_release((XTValue)vs);
+                *col = ':';
+            }
+            cur = eol + 2;
+        }
+    }
+
+    // 响应体(chunked 自动解码)
+    char* bodyStart = hdrEnd ? hdrEnd + 4 : buf.data + buf.len;
+    size_t rawBodyLen = (size_t)(buf.data + buf.len - bodyStart);
+    char* finalBody = bodyStart;
+    size_t finalLen = rawBodyLen;
+    char* decoded = NULL;
+    if (hdrEnd && xt_region_icontains(buf.data, (size_t)(hdrEnd - buf.data), "chunked") &&
+        xt_region_icontains(buf.data, (size_t)(hdrEnd - buf.data), "transfer-encoding")) {
+        decoded = xt_http_decode_chunked(bodyStart, rawBodyLen, &finalLen);
+        finalBody = decoded;
+    }
+
+    XTValue bodyStr = (XTValue)xt_string_new_len(finalBody, finalLen);
+    free(decoded);
+
+    XTValue out = xt_dict_new(8);
+    XTString* k1 = xt_string_new("状态码");
+    xt_dict_set(out, (XTValue)k1, (XTValue)XT_FROM_INT(status));
+    xt_release((XTValue)k1);
+    XTString* k2 = xt_string_new("体");
+    xt_dict_set(out, (XTValue)k2, bodyStr);
+    xt_release((XTValue)k2);
+    xt_release(bodyStr);
+    XTString* k3 = xt_string_new("头");
+    xt_dict_set(out, (XTValue)k3, hdrDict);
+    xt_release((XTValue)k3);
+    xt_release(hdrDict);
+
+    free(buf.data);
+    return (XTValue)xt_result_new(1, (void*)out, NULL);
+}
+
+// ============================================================
 // TCP Connect
 // ============================================================
 
@@ -201,9 +479,14 @@ void* xt_net_connect(const char* host, int port) {
 // TCP Listen + Accept Loop
 // ============================================================
 
+// ============================================================
+// TCP Listen + Accept Loop
+// ============================================================
+
 typedef struct {
     xt_sock_t listen_sock;
     void (*callback)(void* stream);
+    XTValue fn_val;   // 闭包版:非空时优先用 xt_closure_call1 调它
     int running;
 } listener_ctx;
 
@@ -212,12 +495,16 @@ struct XTArena;
 extern struct XTArena* g_current_arena;
 
 // 每个连接独立线程处理：禁用 arena，调用回调，释放 socket
-struct conn_ctx { void (*cb)(void*); XTSocket* sock; };
+struct conn_ctx { void (*cb)(void*); XTSocket* sock; XTValue fn; };
 static unsigned __stdcall conn_handler(void* arg) {
     struct conn_ctx* cc = (struct conn_ctx*)arg;
     struct XTArena* saved = g_current_arena;
     g_current_arena = NULL;
-    cc->cb(cc->sock);
+    if (cc->fn) {
+        xt_closure_call1(cc->fn, (XTValue)cc->sock);
+    } else {
+        cc->cb(cc->sock);
+    }
     g_current_arena = saved;
     xt_release((XTValue)cc->sock);
     free(cc);
@@ -238,12 +525,9 @@ static void* accept_thread(void* arg) {
         XTSocket* client_sock = xt_net_new_socket(client, 0);
 
         // 每个连接在独立线程中处理——不阻塞 accept 循环
-        struct conn_ctx {
-            void (*cb)(void*);
-            XTSocket* sock;
-        };
         struct conn_ctx* cc = malloc(sizeof(struct conn_ctx));
         cc->cb = ctx->callback;
+        cc->fn = ctx->fn_val;
         cc->sock = client_sock;
 
 #if defined(_WIN32)
@@ -259,7 +543,18 @@ static void* accept_thread(void* arg) {
     return NULL;
 }
 
+static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val);
+
 int xt_net_listen(int port, void (*callback)(void* stream)) {
+    return xt_net_listen_impl(port, callback, 0);
+}
+
+// 闭包版:直接收 XTFunction,由 conn_handler 走 xt_closure_call1(带 env)
+int xt_net_listen_fn(int port, XTValue fn_val) {
+    return xt_net_listen_impl(port, NULL, fn_val);
+}
+
+static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val) {
     xt_sock_t listen_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_sock == XT_INVALID_SOCK) return -1;
 
@@ -278,6 +573,7 @@ int xt_net_listen(int port, void (*callback)(void* stream)) {
     listener_ctx* ctx = (listener_ctx*)malloc(sizeof(listener_ctx));
     ctx->listen_sock = listen_sock;
     ctx->callback = callback;
+    ctx->fn_val = fn_val;
     ctx->running = 1;
 
     // 创建独立线程运行 accept 循环
