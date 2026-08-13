@@ -4,9 +4,11 @@
 
 #include "xt_net.h"
 #include "xt_runtime.h"
+#include "xt_scheduler.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 #if defined(_WIN32)
 #include <winsock2.h>
@@ -23,6 +25,8 @@ typedef SOCKET xt_sock_t;
 #include <netdb.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <fcntl.h>
+#include <poll.h>
 typedef int xt_sock_t;
 #define XT_INVALID_SOCK (-1)
 #define xt_sock_close close
@@ -87,6 +91,7 @@ XTSocket* xt_net_new_socket(xt_sock_t raw_sock, int is_listener) {
     s->sock = (void*)(uintptr_t)raw_sock;
     s->is_closed = 0;
     s->is_listener = is_listener;
+    s->nb_set = 0;
     return s;
 }
 
@@ -593,25 +598,317 @@ static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val)
 // Socket I/O
 // ============================================================
 
+// EWOULDBLOCK 判定(socket 被 fiber 懒置非阻塞后,阻塞上下文读到会拿到此错误)
+static int xt_sock_would_block(void) {
+#if defined(_WIN32)
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+#else
+    return errno == EWOULDBLOCK || errno == EAGAIN;
+#endif
+}
+
 void* xt_net_read(void* sock_obj, int max_bytes) {
     if (!sock_obj) return NULL;
     XTSocket* s = (XTSocket*)sock_obj;
     if (s->is_closed) return NULL;
     xt_sock_t raw = (xt_sock_t)(uintptr_t)s->sock;
     char* buf = (char*)malloc(max_bytes + 1);
-    int n = recv(raw, buf, max_bytes, 0);
-    if (n <= 0) { free(buf); return NULL; }
-    buf[n] = '\0';
-    return buf;
+    for (;;) {
+        int n = recv(raw, buf, max_bytes, 0);
+        if (n > 0) { buf[n] = '\0'; return buf; }
+        if (n == 0) { free(buf); return NULL; }          // 对端关闭
+        if (xt_sock_would_block()) {                     // 非阻塞 socket 的阻塞上下文降级:短睡重试
+#if defined(_WIN32)
+            Sleep(1);
+#else
+            usleep(1000);
+#endif
+            if (s->is_closed) { free(buf); return NULL; }
+            continue;
+        }
+        free(buf); return NULL;                          // 真错误
+    }
 }
 
 int xt_net_write(void* sock_obj, const char* data, int len) {
     if (!sock_obj) return -1;
     XTSocket* s = (XTSocket*)sock_obj;
     if (s->is_closed) return -1;
-    return send((xt_sock_t)(uintptr_t)s->sock, data, len, 0);
+    xt_sock_t raw = (xt_sock_t)(uintptr_t)s->sock;
+    int sent = 0;
+    while (sent < len) {
+        int n = send(raw, data + sent, len - sent, 0);
+        if (n > 0) { sent += n; continue; }
+        if (n < 0 && xt_sock_would_block()) {            // 同上:非阻塞 socket 的阻塞上下文降级
+#if defined(_WIN32)
+            Sleep(1);
+#else
+            usleep(1000);
+#endif
+            if (s->is_closed) return -1;
+            continue;
+        }
+        return -1;                                       // 真错误或对端关闭
+    }
+    return sent;
 }
 
 void xt_net_close(void* sock_obj) {
     xt_net_close_obj((XTSocket*)sock_obj);
+}
+
+// ============================================================
+// fiber 感知 socket I/O(方案三:网络与线程调度整合)
+// 仅由异步块状态机切分点调用;约定:返回 0=已挂起,1=完成(结果已写入槽位)。
+// ============================================================
+
+// 懒置非阻塞:仅在 fiber 首次 I/O 时转换,阻塞上下文经 EWOULDBLOCK 重试兼容
+static void xt_sock_ensure_nb(XTSocket* s) {
+    if (s->nb_set) return;
+#if defined(_WIN32)
+    u_long mode = 1;
+    ioctlsocket((xt_sock_t)(uintptr_t)s->sock, FIONBIO, &mode);
+#else
+    int fl = fcntl((xt_sock_t)(uintptr_t)s->sock, F_GETFL, 0);
+    fcntl((xt_sock_t)(uintptr_t)s->sock, F_SETFL, fl | O_NONBLOCK);
+#endif
+    s->nb_set = 1;
+}
+
+// socket 等待注册表:仅调度器线程访问(scheduler_run 单驱动重入防护保证串行,无需锁)
+#define XT_MAX_SOCK_WAITS 1024
+#define XT_SOCK_WAIT_READ  1
+#define XT_SOCK_WAIT_WRITE 2
+typedef struct { XTSocket* sock; short events; } XTSockWaitEnt;
+static XTSockWaitEnt g_sock_waits[XT_MAX_SOCK_WAITS];
+static int g_sock_wait_count = 0;
+
+// 事件标志转平台 poll 事件(屏蔽 POLLRDNORM 等常量的跨平台差异)
+static short xt_sock_wait_events(int ev) {
+    short r = 0;
+#if defined(_WIN32)
+    if (ev & XT_SOCK_WAIT_READ)  r |= POLLRDNORM;
+    if (ev & XT_SOCK_WAIT_WRITE) r |= POLLWRNORM;
+#else
+    if (ev & XT_SOCK_WAIT_READ)  r |= POLLIN;
+    if (ev & XT_SOCK_WAIT_WRITE) r |= POLLOUT;
+#endif
+    return r;
+}
+
+static void xt_sock_wait_add(XTSocket* s, int events) {
+    for (int i = 0; i < g_sock_wait_count; i++) {
+        if (g_sock_waits[i].sock == s) { g_sock_waits[i].events |= xt_sock_wait_events(events); return; }
+    }
+    if (g_sock_wait_count >= XT_MAX_SOCK_WAITS) {
+        fprintf(stderr, "[玄铁运行时错误] socket 等待表溢出(超过 %d 个并发 fiber I/O 挂起)\n", XT_MAX_SOCK_WAITS);
+        exit(1);
+    }
+    g_sock_waits[g_sock_wait_count].sock = s;
+    g_sock_waits[g_sock_wait_count].events = xt_sock_wait_events(events);
+    g_sock_wait_count++;
+}
+
+// 调度器每拍调用:零超时就绪轮询,就绪/异常即摘除并唤醒等待该 socket 的 fiber
+void xt_net_sched_poll(void) {
+    if (g_sock_wait_count == 0) return;
+#if defined(_WIN32)
+    WSAPOLLFD fds[XT_MAX_SOCK_WAITS];
+    for (int i = 0; i < g_sock_wait_count; i++) {
+        fds[i].fd = (SOCKET)(uintptr_t)g_sock_waits[i].sock->sock;
+        fds[i].events = g_sock_waits[i].events;
+        fds[i].revents = 0;
+    }
+    int r = WSAPoll(fds, (ULONG)g_sock_wait_count, 0);
+    if (r <= 0) return;
+    // 逆序扫描:摘除操作与枚举下标兼容(尾换头不影响未扫项)
+    for (int i = g_sock_wait_count - 1; i >= 0; i--) {
+        if (fds[i].revents == 0) continue;
+        XTSocket* s = g_sock_waits[i].sock;
+        g_sock_waits[i] = g_sock_waits[--g_sock_wait_count];
+        xt_scheduler_wake_task((void*)s);
+    }
+#else
+    struct pollfd fds[XT_MAX_SOCK_WAITS];
+    for (int i = 0; i < g_sock_wait_count; i++) {
+        fds[i].fd = (int)(intptr_t)g_sock_waits[i].sock->sock;
+        fds[i].events = g_sock_waits[i].events;
+        fds[i].revents = 0;
+    }
+    int r = poll(fds, (nfds_t)g_sock_wait_count, 0);
+    if (r <= 0) return;
+    for (int i = g_sock_wait_count - 1; i >= 0; i--) {
+        if (fds[i].revents == 0) continue;
+        XTSocket* s = g_sock_waits[i].sock;
+        g_sock_waits[i] = g_sock_waits[--g_sock_wait_count];
+        xt_scheduler_wake_task((void*)s);
+    }
+#endif
+}
+
+// 流.读 在 fiber 内:非阻塞试读,无数据则挂起等就绪。
+// 完成语义与阻塞版一致:数据→槽=字符串;对端关闭/出错→槽=空。
+int xt_socket_read_fiber(XTValue sock_val, XTValue max_v, int64_t* slot_ptr) {
+    if (!XT_IS_REAL_PTR(sock_val)) { *slot_ptr = 0; return 1; }
+    XTObject* obj = (XTObject*)sock_val;
+    if (obj->type_id != XT_TYPE_SOCKET) {
+        fprintf(stderr, "[玄铁运行时错误] 异步块内 .读() 仅支持 socket 流(如同 .收 仅支持通道)\n");
+        exit(1);
+    }
+    XTSocket* s = (XTSocket*)sock_val;
+    if (s->is_closed) { *slot_ptr = 0; return 1; }
+    int64_t max_bytes = 4096;
+    if (XT_IS_INT(max_v)) { max_bytes = XT_TO_INT(max_v); }   // 非整参数按缺省 4096(防御)
+    if (max_bytes <= 0) max_bytes = 4096;
+    xt_sock_ensure_nb(s);
+    char* buf = (char*)malloc(max_bytes + 1);
+    int n = recv((xt_sock_t)(uintptr_t)s->sock, buf, (int)max_bytes, 0);
+    if (n > 0) {
+        XTString* str = xt_string_new_len(buf, n);   // 二进制安全(数据可含 NUL)
+        free(buf);
+        *slot_ptr = (int64_t)(uintptr_t)str;         // 属主引用入槽,完成清理由状态机释放
+        return 1;
+    }
+    free(buf);
+    if (n < 0 && xt_sock_would_block()) {
+        xt_sock_wait_add(s, XT_SOCK_WAIT_READ);
+        xt_scheduler_wait_task((void*)s);
+        return 0;
+    }
+    *slot_ptr = 0;   // n==0 对端关闭;n<0 真错误——均按空返回(与阻塞版一致)
+    return 1;
+}
+
+// 流.写 在 fiber 内:循环发送直到写完;写不动则挂起等可写,槽位跨挂起保存已发字节数(tagged)。
+// 完成语义:写完→槽=真;出错/对端关闭→槽=假。
+int xt_socket_write_fiber(XTValue sock_val, XTValue data_val, int64_t* slot_ptr) {
+    if (!XT_IS_REAL_PTR(sock_val)) { *slot_ptr = XT_FALSE; return 1; }
+    XTObject* obj = (XTObject*)sock_val;
+    if (obj->type_id != XT_TYPE_SOCKET) {
+        fprintf(stderr, "[玄铁运行时错误] 异步块内 .写() 仅支持 socket 流(如同 .发 仅支持通道)\n");
+        exit(1);
+    }
+    XTSocket* s = (XTSocket*)sock_val;
+    if (s->is_closed) { *slot_ptr = XT_FALSE; return 1; }
+    if (!XT_IS_REAL_PTR(data_val) || ((XTObject*)data_val)->type_id != XT_TYPE_STRING) {
+        *slot_ptr = XT_FALSE; return 1;
+    }
+    XTString* str = (XTString*)data_val;
+    xt_sock_ensure_nb(s);
+    int64_t total = (int64_t)str->length;
+    int64_t sent = XT_TO_INT(*slot_ptr);   // 槽初值 0 → 0;挂起重试时取回进度
+    xt_sock_t raw = (xt_sock_t)(uintptr_t)s->sock;
+    while (sent < total) {
+        int n = send(raw, str->data + sent, (int)(total - sent), 0);
+        if (n > 0) { sent += n; continue; }
+        if (n < 0 && xt_sock_would_block()) {
+            *slot_ptr = (int64_t)XT_FROM_INT(sent);
+            xt_sock_wait_add(s, XT_SOCK_WAIT_WRITE);
+            xt_scheduler_wait_task((void*)s);
+            return 0;
+        }
+        *slot_ptr = XT_FROM_INT(0);   // 出错:假
+        return 1;
+    }
+    *slot_ptr = XT_TRUE;       // 写完:真
+    return 1;
+}
+
+// 连 在 fiber 内:非阻塞连接。槽位:0=未发起;否则为在途 XTSocket*(属主引用)。
+// 完成语义与阻塞版一致:槽=结果对象(成功裹 socket,失败裹错误串)。
+int xt_socket_connect_fiber(XTValue addr_val, int64_t* slot_ptr) {
+    if (*slot_ptr == 0) {
+        // 首入:解析地址、建 socket、置非阻塞、发起连接
+        if (!XT_IS_REAL_PTR(addr_val)) {
+            *slot_ptr = (int64_t)(uintptr_t)xt_result_new(0, NULL, xt_string_new("地址无效"));
+            return 1;
+        }
+        XTString* addr = (XTString*)addr_val;
+        char host[256] = {0};
+        int port = 80;
+        const char* colon = strchr(addr->data, ':');
+        if (colon) {
+            size_t hlen = (size_t)(colon - addr->data);
+            if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
+            memcpy(host, addr->data, hlen);
+            port = atoi(colon + 1);
+        } else {
+            size_t len = strlen(addr->data);
+            if (len >= sizeof(host)) len = sizeof(host) - 1;
+            memcpy(host, addr->data, len);
+        }
+        if (port <= 0) port = 80;
+        struct sockaddr_in sa;
+        if (resolve_host(host, &sa) != 0) {
+            *slot_ptr = (int64_t)(uintptr_t)xt_result_new(0, NULL, xt_string_new("无法解析主机"));
+            return 1;
+        }
+        sa.sin_port = htons((unsigned short)port);
+        xt_sock_t raw = socket(AF_INET, SOCK_STREAM, 0);
+        if (raw == XT_INVALID_SOCK) {
+            *slot_ptr = (int64_t)(uintptr_t)xt_result_new(0, NULL, xt_string_new("无法创建socket"));
+            return 1;
+        }
+        XTSocket* s = xt_net_new_socket(raw, 0);
+        xt_sock_ensure_nb(s);
+        int rc = connect(raw, (struct sockaddr*)&sa, sizeof(sa));
+        if (rc == 0) {
+            // 立即成功(本机回环常见):裹结果入槽
+            XTValue res = (XTValue)xt_result_new(1, (void*)s, NULL);
+            xt_release((XTValue)s);            // 结果已 retain,槽的属主引用移交结果
+            *slot_ptr = (int64_t)res;
+            return 1;
+        }
+#if defined(_WIN32)
+        int inprogress = (WSAGetLastError() == WSAEWOULDBLOCK);
+#else
+        int inprogress = (errno == EINPROGRESS);
+#endif
+        if (!inprogress) {
+            xt_release((XTValue)s);            // 建连即失败:释放 socket 对象
+            *slot_ptr = (int64_t)(uintptr_t)xt_result_new(0, NULL, xt_string_new("无法连接"));
+            return 1;
+        }
+        *slot_ptr = (int64_t)(uintptr_t)s;     // 在途:属主引用入槽
+        xt_sock_wait_add(s, XT_SOCK_WAIT_WRITE);
+        xt_scheduler_wait_task((void*)s);
+        return 0;
+    }
+    // 唤醒重入:槽内是在途 XTSocket*。
+    // 先做零超时可写探测——1ms 丢失唤醒兜底会造成假性重入,此时连接可能仍在进行,
+    // 仅查 SO_ERROR 会把"尚无错误"误判为"已连接";WSAPoll 就绪才是确定结局。
+    XTSocket* s = (XTSocket*)(uintptr_t)(*slot_ptr);
+#if defined(_WIN32)
+    WSAPOLLFD pfd;
+    pfd.fd = (SOCKET)(uintptr_t)s->sock;
+    pfd.events = POLLWRNORM;
+    pfd.revents = 0;
+    int pr = WSAPoll(&pfd, 1, 0);
+    int ready = (pr > 0 && pfd.revents != 0);
+#else
+    struct pollfd pfd;
+    pfd.fd = (int)(intptr_t)s->sock;
+    pfd.events = POLLOUT;
+    pfd.revents = 0;
+    int pr = poll(&pfd, 1, 0);
+    int ready = (pr > 0 && pfd.revents != 0);
+#endif
+    if (!ready) {
+        // 假性重入:连接尚未出结局,重新挂起
+        xt_sock_wait_add(s, XT_SOCK_WAIT_WRITE);
+        xt_scheduler_wait_task((void*)s);
+        return 0;
+    }
+    int soerr = 0;
+    socklen_t elen = sizeof(soerr);
+    getsockopt((xt_sock_t)(uintptr_t)s->sock, SOL_SOCKET, SO_ERROR, (char*)&soerr, &elen);
+    if (soerr == 0 && !s->is_closed) {
+        XTValue res = (XTValue)xt_result_new(1, (void*)s, NULL);
+        xt_release((XTValue)s);
+        *slot_ptr = (int64_t)res;
+        return 1;
+    }
+    xt_release((XTValue)s);                    // 连接失败:释放 socket(底层句柄随 GC 关闭)
+    *slot_ptr = (int64_t)(uintptr_t)xt_result_new(0, NULL, xt_string_new("无法连接"));
+    return 1;
 }

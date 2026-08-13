@@ -207,6 +207,7 @@ typedef struct XTSocket {
     void* sock;       // 平台 socket 句柄 (SOCKET/int)
     int is_closed;    // 是否已关闭
     int is_listener;  // 是否为监听 socket
+    int nb_set;       // 是否已置为非阻塞(fiber I/O 懒置位;阻塞路径靠 EWOULDBLOCK 重试兼容)
 } XTSocket;
 
 /**

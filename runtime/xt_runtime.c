@@ -285,6 +285,7 @@ void xt_scheduler_run() {
     while (g_scheduler->running) {
         g_scheduler->now_us = _sched_now_us();
         xt_scheduler_timer_tick(g_scheduler->now_us);
+        xt_net_sched_poll();   // socket 就绪轮询:唤醒 fiber I/O 挂起者(注册表空时零开销)
         XTFiber* f = xt_scheduler_dequeue();
         if (!f) {
             int64_t next_wake = 0;

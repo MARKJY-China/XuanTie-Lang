@@ -50,6 +50,18 @@ int xt_net_write(void* sock_obj, const char* data, int len);
 // 关闭 socket
 void xt_net_close(void* sock_obj);
 
+// ============================================================
+// fiber 感知 socket I/O(方案三:网络与线程调度整合)
+// 仅供异步块状态机切分点调用;阻塞上下文仍走 xt_net_read/write。
+// 三者约定一致:返回 0=已挂起(等待已注册,槽位已按需更新),1=完成(结果在槽位)。
+// slot_ptr 指向状态机槽位:跨挂起持久化中间态(读:数据/空;写:tagged已发字节数;连:在途sock)。
+int  xt_socket_read_fiber(XTValue sock_val, XTValue max_v, int64_t* slot_ptr);
+int  xt_socket_write_fiber(XTValue sock_val, XTValue data_val, int64_t* slot_ptr);
+int  xt_socket_connect_fiber(XTValue addr_val, int64_t* slot_ptr);
+// 调度器主循环每拍调用:对注册表内 socket 做零超时就绪轮询,唤醒对应 fiber。
+// 注册表为空时零开销。仅调度器线程访问(单驱动保证串行)。
+void xt_net_sched_poll(void);
+
 #ifdef __cplusplus
 }
 #endif
