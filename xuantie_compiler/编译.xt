@@ -816,6 +816,7 @@
         此.写出("declare i64 @\"xt_task_result\"(i64)")
         此.写出("declare i64 @\"xt_now_ms\"()")
         此.写出("declare void @\"xt_method_missing\"(i64)")
+        此.写出("declare void @\"xt_param_type_error\"(i64)")
         此.写出("declare void @\"xt_member_missing\"(i64)")
         此.写出("declare void @\"xt_member_unknown\"(i64)")
         此.写出("declare void @\"xt_index_bad\"(i64)")
@@ -1756,6 +1757,22 @@
             
             // 标量参数：传入值为标记 i64，先脱壳再存 raw 值
             若 此.是标量类型(内部类型) {
+                若 内部类型 == "raw_i64" {
+                    // 注解标量参数守卫:入参必须是 tagged 整,否则显式报错退出——
+                    // 原行为对任意值直接 ashr 脱壳:字符串/对象传入即垃圾值且全程静默(实测抓获)
+                    设 _chk = 此.取新寄存器()
+                    此.写出("  " & _chk & " = and i64 " & argReg & ", 1")
+                    设 _ok = 此.取新寄存器()
+                    此.写出("  " & _ok & " = icmp ne i64 " & _chk & ", 0")
+                    设 _okL = 此.标(此.取新标签("param.ok"))
+                    设 _badL = 此.标(此.取新标签("param.bad"))
+                    此.写出("  br i1 " & _ok & ", label %" & _okL & ", label %" & _badL)
+                    此.写出(_badL & ":")
+                    设 _注解串 = 此.获取字符串对象(注解)
+                    此.写出("  call void @xt_param_type_error(i64 " & _注解串 & ")")
+                    此.写出("  unreachable")
+                    此.写出(_okL & ":")
+                }
                 设 unboxed = 此.确保RawI64(argReg, "i64")
                 此.写出("  store i64 " & unboxed & ", i64* " & varAddr)
                 此.符号表[arg节点2.标识符名称] = varAddr

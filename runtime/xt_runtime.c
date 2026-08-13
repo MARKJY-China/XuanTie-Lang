@@ -1294,6 +1294,20 @@ static int xt_is_real_ptr(XTValue val) {
 }
 
 /**
+ * @brief 参数类型守卫失败:注解标量参数收到非标量值(明确的编程错误,显式退出)
+ */
+void xt_param_type_error(XTValue type_val) {
+    const char* t = "?";
+    if (xt_is_real_ptr(type_val)) {
+        XTString* s = (XTString*)type_val;
+        if (s->data) t = s->data;
+    }
+    fprintf(stderr, "运行时错误: 参数类型不匹配——形参注解为 '%s',但传入的是其他类型(如字符串/对象)\n", t);
+    fprintf(stderr, "  提示: 请检查调用处实参类型;若确需混用,去掉形参的类型注解或先显式转换(整()/字())。\n");
+    exit(1);
+}
+
+/**
  * @brief 增加引用计数 (ARC Retain)
  */
 // ARC 内存序约定 (Phase 3 安全审计通过):

@@ -150,17 +150,20 @@ class XtLspClient {
         return new Promise((resolve, reject) => {
             this.sock = net.createConnection({ host: '127.0.0.1', port }, () => {
                 this.connected = true;
+                globalThis.__xtLspConnected = true;   // 供旧脚本 provider 让位(避免同名候选截胡 LSP 括号片段)
                 resolve();
             });
             this.sock.on('data', c => this.onData(c));
             this.sock.on('error', err => {
                 this.connected = false;
+                globalThis.__xtLspConnected = false;
                 this.log('连接错误: ' + err.message);
                 reject(err);
             });
             this.sock.on('close', () => {
                 const wasConnected = this.connected;
                 this.connected = false;
+                globalThis.__xtLspConnected = false;
                 if (wasConnected) {
                     this.log('连接断开,清理陈旧诊断并安排重连');
                     this.diagCollection.clear();   // 防诊断滞留

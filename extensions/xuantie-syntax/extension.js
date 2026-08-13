@@ -391,6 +391,12 @@ function activate(context) {
                     return pathItems;
                 }
 
+                // LSP 在线时,关键字/符号/成员补全全部由 xt_lsp 提供(带括号片段),
+                // 本脚本 provider 让位,仅保留上方的 引"路径" 补全(避免同名候选截胡 LSP 项)
+                if (globalThis.__xtLspConnected === true) {
+                    return [];
+                }
+
                 let text = document.getText();
                 const currentFilePath = document.uri.fsPath;
                 
