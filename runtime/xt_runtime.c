@@ -1702,7 +1702,7 @@ static XTValue xt_socket_read_exact_method(XTValue self, XTValue n_val) {
     int64_t want = XT_TO_INT(n_val);
     if (want <= 0) return (XTValue)xt_string_new("");
     int64_t got = 0;
-    char* buf = (char*)xt_net_read_exact(self, want, &got);
+    char* buf = (char*)xt_net_read_exact((void*)self, want, &got);
     if (!buf) return XT_NULL;
     XTString* str = xt_string_new_len(buf, got);   // 二进制安全
     free(buf);

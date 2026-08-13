@@ -508,10 +508,15 @@ function activate(context) {
                 for (const kw of keywords) {
                     targetWords.delete(kw);
                 }
+                // 正在输入的词自身不做候选(否则首项永远是自己,干扰选择)
+                const curWordRange = document.getWordRangeAtPosition(position);
+                const curWord = curWordRange ? document.getText(curWordRange) : '';
+                if (curWord) targetWords.delete(curWord);
 
                 for (const word of targetWords) {
                     const item = new vscode.CompletionItem(word, vscode.CompletionItemKind.Variable);
                     item.detail = analysis.globalSymbols.has(word) && !localWords.has(word) ? `全局符号: ${word}` : `当前文件: ${word}`;
+                    item.sortText = '9_' + word;   // 排 LSP 关键字/符号之后
                     try {
                         if (/[\u4e00-\u9fa5]/.test(word)) {
                             const pyArray = pinyin(word, { toneType: 'none', type: 'array' });

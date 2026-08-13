@@ -18,6 +18,13 @@ class XtLspClient {
         this.connected = false;
         this.docVersions = new Map();  // uri -> version
         this.spawned = null;
+        this.logChannel = vscode.window.createOutputChannel('玄铁 LSP');
+        this.retryTimer = null;
+    }
+
+    log(msg) {
+        const t = new Date().toLocaleTimeString();
+        this.logChannel.appendLine(`[${t}] ${msg}`);
     }
 
     // 查找 xt_lsp.exe:配置项 > 扩展目录 > PATH
@@ -93,7 +100,10 @@ class XtLspClient {
             diag.source = d.source || 'xtc';
             return diag;
         });
-        this.diagCollection.set(vscode.Uri.parse(uri), diags);
+        // 优先使用 didOpen 时保存的原生 Uri 对象,规避 Uri.parse 规范化差异导致诊断不落盘
+        const native = this.docUris && this.docUris.get(uri);
+        this.diagCollection.set(native || vscode.Uri.parse(uri), diags);
+        this.log(`诊断发布 ${uri} -> ${diags.length} 条${native ? '' : '(无原生Uri,走parse)'}`);
     }
 
     async start() {
@@ -104,16 +114,20 @@ class XtLspClient {
             await this.connect(port);
         } catch (e) {
             const serverPath = this.findServer();
-            if (!serverPath) { console.log('xt_lsp 未找到,跳过 LSP 启动'); return; }
+            if (!serverPath) { this.log('xt_lsp 未找到,跳过 LSP 启动'); return; }
+            this.log('拉起服务器: ' + serverPath);
             this.spawned = cp.spawn(serverPath, [], { stdio: 'ignore' });
-            this.spawned.on('exit', () => { this.spawned = null; });
+            this.spawned.on('exit', code => {
+                this.spawned = null;
+                this.log('服务器进程退出 code=' + code);
+            });
             await new Promise(r => setTimeout(r, 800));
             await this.connect(port);
         }
         // 握手
         await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid });
         this.notify('initialized', {});
-        console.log('xt_lsp 已连接');
+        this.log('已连接并完成握手');
         // 已在编辑中的文档补发 didOpen
         vscode.workspace.textDocuments.forEach(doc => {
             if (doc.languageId === 'xuantie') this.didOpen(doc);
@@ -127,14 +141,57 @@ class XtLspClient {
                 resolve();
             });
             this.sock.on('data', c => this.onData(c));
-            this.sock.on('error', err => { this.connected = false; reject(err); });
-            this.sock.on('close', () => { this.connected = false; });
+            this.sock.on('error', err => {
+                this.connected = false;
+                this.log('连接错误: ' + err.message);
+                reject(err);
+            });
+            this.sock.on('close', () => {
+                const wasConnected = this.connected;
+                this.connected = false;
+                if (wasConnected) {
+                    this.log('连接断开,清理陈旧诊断并安排重连');
+                    this.diagCollection.clear();   // 防诊断滞留
+                    this.scheduleReconnect(port);
+                }
+            });
         });
+    }
+
+    // 断线重连:3 秒后重试(服务器崩溃退出后重新拉起)
+    scheduleReconnect(port) {
+        if (this.retryTimer) return;
+        this.retryTimer = setTimeout(async () => {
+            this.retryTimer = null;
+            try {
+                await this.connect(port);
+            } catch (e) {
+                const serverPath = this.findServer();
+                if (!serverPath) return;
+                this.log('重连失败,重新拉起服务器');
+                this.spawned = cp.spawn(serverPath, [], { stdio: 'ignore' });
+                this.spawned.on('exit', () => { this.spawned = null; });
+                await new Promise(r => setTimeout(r, 800));
+                try { await this.connect(port); } catch (e2) { this.log('重连再失败: ' + e2.message); return; }
+            }
+            try {
+                await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid });
+                this.notify('initialized', {});
+                this.log('重连成功');
+                // 重发所有打开文档
+                vscode.workspace.textDocuments.forEach(doc => {
+                    if (doc.languageId === 'xuantie') this.didOpen(doc);
+                });
+            } catch (e) { this.log('重连握手失败: ' + e.message); }
+        }, 3000);
     }
 
     didOpen(doc) {
         const version = (this.docVersions.get(doc.uri.toString()) || 0) + 1;
         this.docVersions.set(doc.uri.toString(), version);
+        if (!this.docUris) this.docUris = new Map();
+        this.docUris.set(doc.uri.toString(), doc.uri);
+        this.log('didOpen ' + doc.uri.toString());
         this.notify('textDocument/didOpen', {
             textDocument: { uri: doc.uri.toString(), languageId: 'xuantie', version, text: doc.getText() }
         });
@@ -143,6 +200,8 @@ class XtLspClient {
     didChange(doc) {
         const version = (this.docVersions.get(doc.uri.toString()) || 0) + 1;
         this.docVersions.set(doc.uri.toString(), version);
+        if (!this.docUris) this.docUris = new Map();
+        this.docUris.set(doc.uri.toString(), doc.uri);
         // 全量同步(change:1):每次发全文
         this.notify('textDocument/didChange', {
             textDocument: { uri: doc.uri.toString(), version },
@@ -152,6 +211,7 @@ class XtLspClient {
 
     didClose(doc) {
         this.docVersions.delete(doc.uri.toString());
+        if (this.docUris) this.docUris.delete(doc.uri.toString());
         this.notify('textDocument/didClose', { textDocument: { uri: doc.uri.toString() } });
         this.diagCollection.delete(doc.uri);
     }
@@ -170,6 +230,18 @@ class XtLspClient {
 
 let client = null;
 
+// LSP CompletionItemKind → vscode.CompletionItemKind 映射(常用子集)
+function mapCompletionKind(k) {
+    switch (k) {
+        case 3: return vscode.CompletionItemKind.Function;
+        case 7: return vscode.CompletionItemKind.Class;
+        case 6: return vscode.CompletionItemKind.Variable;
+        case 14: return vscode.CompletionItemKind.Keyword;
+        case 2: return vscode.CompletionItemKind.Method;
+        default: return vscode.CompletionItemKind.Text;
+    }
+}
+
 function activateLsp(context) {
     client = new XtLspClient(context);
     client.start().catch(err => console.error('xt_lsp 启动失败:', err.message));
@@ -183,6 +255,76 @@ function activateLsp(context) {
         }),
         vscode.workspace.onDidCloseTextDocument(doc => {
             if (doc.languageId === 'xuantie' && client) client.didClose(doc);
+        }),
+        // P2:补全转发到 xt_lsp
+        vscode.languages.registerCompletionItemProvider('xuantie', {
+            async provideCompletionItems(document, position) {
+                if (!client || !client.connected) return [];
+                try {
+                    const result = await client.request('textDocument/completion', {
+                        textDocument: { uri: document.uri.toString() },
+                        position: { line: position.line, character: position.character }
+                    });
+                    return (result || []).map(it => {
+                        const ci = new vscode.CompletionItem(it.label, mapCompletionKind(it.kind));
+                        if (it.detail) ci.detail = it.detail;
+                        return ci;
+                    });
+                } catch (e) { return []; }
+            }
+        }),
+        // P2:悬停转发到 xt_lsp
+        vscode.languages.registerHoverProvider('xuantie', {
+            async provideHover(document, position) {
+                if (!client || !client.connected) return null;
+                try {
+                    const result = await client.request('textDocument/hover', {
+                        textDocument: { uri: document.uri.toString() },
+                        position: { line: position.line, character: position.character }
+                    });
+                    if (!result || !result.contents || !result.contents.value) return null;
+                    return new vscode.Hover(new vscode.MarkdownString(result.contents.value));
+                } catch (e) { return null; }
+            }
+        }),
+        // P3:跳转定义(Ctrl+点击/F12)
+        vscode.languages.registerDefinitionProvider('xuantie', {
+            async provideDefinition(document, position) {
+                if (!client || !client.connected) return null;
+                try {
+                    const result = await client.request('textDocument/definition', {
+                        textDocument: { uri: document.uri.toString() },
+                        position: { line: position.line, character: position.character }
+                    });
+                    if (!result || !result.range) return null;
+                    const r = result.range;
+                    return new vscode.Location(
+                        vscode.Uri.parse(result.uri),
+                        new vscode.Range(
+                            new vscode.Position(r.start.line, r.start.character),
+                            new vscode.Position(r.end.line, r.end.character)));
+                } catch (e) { return null; }
+            }
+        }),
+        // P3:文档符号(大纲视图/Ctrl+Shift+O)——LSP SymbolKind 与 vscode.SymbolKind 同编号,直通
+        vscode.languages.registerDocumentSymbolProvider('xuantie', {
+            async provideDocumentSymbols(document) {
+                if (!client || !client.connected) return [];
+                try {
+                    const result = await client.request('textDocument/documentSymbol', {
+                        textDocument: { uri: document.uri.toString() }
+                    });
+                    return (result || []).map(s => {
+                        const r = s.location.range;
+                        return new vscode.SymbolInformation(
+                            s.name, s.kind, '',
+                            new vscode.Location(vscode.Uri.parse(s.location.uri),
+                                new vscode.Range(
+                                    new vscode.Position(r.start.line, r.start.character),
+                                    new vscode.Position(r.end.line, r.end.character))));
+                    });
+                } catch (e) { return []; }
+            }
         })
     );
 }
