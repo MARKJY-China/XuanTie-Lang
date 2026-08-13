@@ -6,6 +6,18 @@ const vscode = require('vscode');
 const cp = require('child_process');
 const path = require('path');
 const fs = require('fs');
+const { pinyin } = require('./pinyin-pro.js');
+
+// 中文标签补 filterText(全拼+首字母),让补全可用拼音/英文筛选
+function withPinyinFilter(label) {
+    try {
+        if (/[\u4e00-\u9fa5]/.test(label)) {
+            const arr = pinyin(label, { toneType: 'none', type: 'array' });
+            return `${arr.join('')} ${arr.map(p => p[0]).join('')} ${label}`;
+        }
+    } catch (e) { /* 忽略拼音转换失败 */ }
+    return label;
+}
 
 class XtLspClient {
     constructor(context) {
@@ -256,7 +268,7 @@ function activateLsp(context) {
         vscode.workspace.onDidCloseTextDocument(doc => {
             if (doc.languageId === 'xuantie' && client) client.didClose(doc);
         }),
-        // P2:补全转发到 xt_lsp
+        // P2:补全转发到 xt_lsp('.' 触发:模块别名. 弹出成员)
         vscode.languages.registerCompletionItemProvider('xuantie', {
             async provideCompletionItems(document, position) {
                 if (!client || !client.connected) return [];
@@ -268,11 +280,18 @@ function activateLsp(context) {
                     return (result || []).map(it => {
                         const ci = new vscode.CompletionItem(it.label, mapCompletionKind(it.kind));
                         if (it.detail) ci.detail = it.detail;
+                        if (it.sortText) ci.sortText = it.sortText;
+                        ci.filterText = withPinyinFilter(it.label);   // 拼音/英文可筛选
+                        if (it.insertTextFormat === 2 && it.insertText) {
+                            ci.insertText = new vscode.SnippetString(it.insertText);
+                        } else if (it.insertText) {
+                            ci.insertText = it.insertText;
+                        }
                         return ci;
                     });
                 } catch (e) { return []; }
             }
-        }),
+        }, '.'),
         // P2:悬停转发到 xt_lsp
         vscode.languages.registerHoverProvider('xuantie', {
             async provideHover(document, position) {
