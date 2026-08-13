@@ -5868,10 +5868,21 @@
             设 右Xt = 此.确保I64(右寄存器, 右类型)
             设 my参数 = ["i64 " & 左Xt, "i64 " & 右Xt]
             此.写出("  call void @xt_retain(i64 " & 函指Xt & ")")
-            设 ovRes = 此.执行动态调用(函指Xt, my参数)
+            设 ovRes0 = 此.执行动态调用(函指Xt, my参数)
+            // 重载函数是 == 语义(!= 的取反必须在此路径就地完成):
+            // fallback 路径的 编译内建中缀 已自带 != 否定,合并块不得再否定一次(否则双重否定结果反转)
+            设 ovRes = ovRes0
+            若 节点.中缀运算符 == "!=" {
+                设 ovNeg = 此.取新寄存器()
+                此.写出("  " & ovNeg & " = xor i64 " & ovRes0 & ", 6")
+                ovRes = ovNeg
+            }
             此.写_存储_xt(ovRes, "i64", resAddr)
             此.写出("  call void @xt_release(i64 " & 函指Xt & ")")
             此.写出("  call void @xt_release(i64 " & 右Xt & ")")
+            // 左操作数在此路径必须就地释放:fallback 路径由 编译内建中缀 自己释放,
+            // 若拖到合并块统一释放,fallback 路径会对同一值二次释放(实测:实例 !=空 双重释放致堆损坏)
+            此.写出("  call void @xt_release(i64 " & 左Xt & ")")
             此.写出("  br label %" & mergeLabel)
             
             此.写出(fallbackLabel & ":")
@@ -5883,14 +5894,12 @@
             设 finalVal = 此.取新寄存器()
             此.写出("  " & finalVal & " = load i64, i64* " & resAddr)
 
-            若 节点.中缀运算符 == "!=" {
-                设 negVal = 此.取新寄存器()
-                此.写出("  " & negVal & " = xor i64 " & finalVal & ", 6")
-                finalVal = negVal
-            }
+            // 注意:!= 的否定不在此统一进行——overload 路径已在重载块内就地取反,
+            // fallback 路径由 编译内建中缀 自带 != 否定;此处再否定即双重否定(结果反转)
 
             此.写出("  call void @xt_release(i64 " & 键Xt & ")")
-            此.写出("  call void @xt_release(i64 " & 左Xt & ")")
+            // 注意:左操作数不在此统一释放——overload 路径已在重载块内就地释放,
+            // fallback 路径由 编译内建中缀 自行释放;此处再释放即二次释放(堆损坏)
             设 _r = [finalVal, "i64"]
             返 _r
         }
@@ -6296,8 +6305,13 @@
             返 res
         }
         若 类型 == "函数名" {
+            // 裸函数名作值:包成 XTFunction 对象(owned)。
+            // 原行为 ptrtoint 存裸代码地址——入容器/变量后任何 release/调用都按对象解引用,必崩
+            // (实测:{\"造\": 哑} 构造即堆损坏;设 f=哑 同病。LSP 前置排查抓获)
+            设 _raw = 此.取新寄存器()
+            此.写出("  " & _raw & " = bitcast i64 (i64, ...)* @\"" & regStr & "\" to i8*")
             设 res = 此.取新寄存器()
-            此.写出("  " & res & " = ptrtoint i64 (i64, ...)* @\"" & regStr & "\" to i64")
+            此.写出("  " & res & " = call i64 @xt_func_new(i8* " & _raw & ")")
             返 res
         }
         设 res2 = 此.取新寄存器()

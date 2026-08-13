@@ -1,0 +1,131 @@
+// lsp/xt_lsp.xt — 玄铁 LSP 服务器(P1:诊断同步)
+// 传输:TCP 回环(开发期);帧格式 Content-Length(字节数) 头 + \r\n\r\n + JSON 体。
+// 架构:听 每连接一线程,协议循环就在连接线程里跑(阻塞上下文);
+//   帧的精确取体用 读足(N)(恰好 N 字节,绝无 读 尽力而为导致的黏包/截断问题)。
+
+引 "../xuantie_compiler/词法.xt"
+引 "../xuantie_compiler/语法分析.xt"
+
+设 文档表 = {}          // uri -> 文档全文
+
+// 读一帧:头部逐字节(纯 ASCII,短),体按 Content-Length 精确读取
+函 读一帧(流) {
+    设 头 = ""
+    循 {
+        设 c = 流.读足(1)
+        若 c == 空 { 返 空 }
+        头 = 头 & c
+        若 头.长度 >= 4 {
+            若 头.截取(头.长度 - 4, 头.长度) == "\r\n\r\n" { 断 }
+        }
+    }
+    设 体长 = -1
+    遍历 行 于 头.分割("\r\n") {
+        若 行.包含?("Content-Length") {
+            设 kv = 行.分割(":")
+            若 kv.长度 > 1 {
+                设 转 = 整(kv[1])
+                若 转.成功 { 体长 = 转.值 }
+            }
+        }
+    }
+    若 体长 < 0 { 返 空 }
+    返 流.读足(体长)
+}
+
+函 写帧(流, 载荷) {
+    流.写("Content-Length: " & 载荷.字节数 & "\r\n\r\n" & 载荷)
+}
+
+// 玄铁诊断 → LSP Diagnostic 数组
+// 行列转换:玄铁 行/列 均 1 起;LSP 0 起。列为字符列,对 BMP 字符(含中文)恰等于 UTF-16 单元数
+函 分析诊断(文本) {
+    设 词法 = 造 词法分析器(文本)
+    设 解析 = 造 语法分析器(词法)
+    解析.严格度 = "默认"
+    设 _树 = 解析.解析程序()
+    设 诊断们 = []
+    遍历 错 于 解析.错误结构列表 {
+        设 行号 = 错["行"] - 1
+        设 列号 = 错["列"] - 1
+        若 行号 < 0 { 行号 = 0 }
+        若 列号 < 0 { 列号 = 0 }
+        诊断们.追加({
+            "range": {"start": {"line": 行号, "character": 列号}, "end": {"line": 行号, "character": 列号 + 1}},
+            "severity": 1,
+            "source": "xtc",
+            "message": 错["消息"]
+        })
+    }
+    遍历 警 于 解析.警告结构列表 {
+        设 警行 = 警["行"] - 1
+        设 警列 = 警["列"] - 1
+        若 警行 < 0 { 警行 = 0 }
+        若 警列 < 0 { 警列 = 0 }
+        诊断们.追加({
+            "range": {"start": {"line": 警行, "character": 警列}, "end": {"line": 警行, "character": 警列 + 1}},
+            "severity": 2,
+            "source": "xtc",
+            "message": "[" & 警["码"] & "] " & 警["消息"]
+        })
+    }
+    返 诊断们
+}
+
+函 发布诊断(流, uri, 文本) {
+    设 诊断们 = 分析诊断(文本)
+    写帧(流, 化({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+        "params": {"uri": uri, "diagnostics": 诊断们}}))
+}
+
+// 协议主循环(连接线程内,阻塞)
+函 跑协议(流) {
+    循 {
+        设 体 = 读一帧(流)
+        若 体 == 空 { 断 }
+        设 消息 = 解(体)
+        若 消息 == 空 { 续 }
+        设 方法 = ""
+        若 消息.含?("method") { 方法 = 消息["method"] }
+        设 有id = 消息.含?("id")
+
+        若 方法 == "initialize" {
+            写帧(流, 化({"jsonrpc": "2.0", "id": 消息["id"], "result": {
+                "capabilities": {"textDocumentSync": {"openClose": 真, "change": 1, "save": 真}},
+                "serverInfo": {"name": "xt_lsp", "version": "v1.0-rc"}}}))
+        } 抑 方法 == "shutdown" {
+            若 有id { 写帧(流, 化({"jsonrpc": "2.0", "id": 消息["id"], "result": 空})) }
+        } 抑 方法 == "exit" {
+            流.关()
+            终 0
+        } 抑 方法 == "textDocument/didOpen" {
+            设 文档 = 消息["params"]["textDocument"]
+            设 uri = 文档["uri"]
+            文档表[uri] = 文档["text"]
+            发布诊断(流, uri, 文档表[uri])
+        } 抑 方法 == "textDocument/didChange" {
+            设 参2 = 消息["params"]
+            设 uri2 = 参2["textDocument"]["uri"]
+            设 变更 = 参2["contentChanges"]
+            若 变更.长度 > 0 {
+                文档表[uri2] = 变更[0]["text"]
+                发布诊断(流, uri2, 文档表[uri2])
+            }
+        } 抑 方法 == "textDocument/didClose" {
+            设 uri3 = 消息["params"]["textDocument"]["uri"]
+            文档表[uri3] = ""
+            写帧(流, 化({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                "params": {"uri": uri3, "diagnostics": []}}))
+        } 否 {
+            // 未知请求给空结果(宽容),通知直接忽略
+            若 有id { 写帧(流, 化({"jsonrpc": "2.0", "id": 消息["id"], "result": 空})) }
+        }
+    }
+    流.关()
+}
+
+听(20807, 函(流) {
+    跑协议(流)
+})
+示("xt_lsp 已就绪,监听 127.0.0.1:20807 (LSP/TCP)")
+循 { 时.睡(1000) }

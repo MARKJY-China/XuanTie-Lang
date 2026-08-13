@@ -48,6 +48,16 @@
                     "type": "boolean",
                     "default": false,
                     "description": "是否开启玄铁关键字的代码片段补全。关闭时（默认），拼音补全仅插入关键字本身。"
+                },
+                "xuantie.lspPort": {
+                    "type": "number",
+                    "default": 20807,
+                    "description": "玄铁 LSP 服务器(xt_lsp.exe)的 TCP 回环端口。"
+                },
+                "xuantie.lspServerPath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "xt_lsp.exe 的路径。留空则使用扩展自带 server/xt_lsp.exe。"
                 }
             }
         }

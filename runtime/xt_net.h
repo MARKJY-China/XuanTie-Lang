@@ -44,6 +44,10 @@ XTValue xt_closure_call1(XTValue fn_val, XTValue arg);
 // 从 socket 读取数据，返回 XTString
 void* xt_net_read(void* sock_obj, int max_bytes);
 
+// 精确读满 want 字节(协议帧用):成功返回 malloc 缓冲区(out_got 为实际字节数),
+// 对端提前关闭/出错返回 NULL
+char* xt_net_read_exact(void* sock_obj, int64_t want, int64_t* out_got);
+
 // 向 socket 写入数据
 int xt_net_write(void* sock_obj, const char* data, int len);
 

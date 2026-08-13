@@ -670,9 +670,16 @@ function activate(context) {
     );
 
     context.subscriptions.push(provider, symbolProvider, definitionProvider);
+
+    // LSP 客户端:连接/拉起玄铁自写 LSP 服务器(xt_lsp.exe),提供实时诊断
+    const { activateLsp } = require('./lspClient.js');
+    activateLsp(context);
 }
 
-function deactivate() {}
+function deactivate() {
+    const { deactivateLsp } = require('./lspClient.js');
+    return deactivateLsp();
+}
 
 module.exports = {
     activate,

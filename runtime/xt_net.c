@@ -653,6 +653,34 @@ int xt_net_write(void* sock_obj, const char* data, int len) {
     return sent;
 }
 
+// 精确读满 want 字节:返回值经 out_got 给出实际字节数;对端提前关闭/出错返回 NULL
+char* xt_net_read_exact(void* sock_obj, int64_t want, int64_t* out_got) {
+    if (out_got) *out_got = 0;
+    if (!sock_obj || want <= 0) return NULL;
+    XTSocket* s = (XTSocket*)sock_obj;
+    if (s->is_closed) return NULL;
+    xt_sock_t raw = (xt_sock_t)(uintptr_t)s->sock;
+    char* buf = (char*)malloc(want + 1);
+    int64_t got = 0;
+    while (got < want) {
+        int n = recv(raw, buf + got, (int)(want - got), 0);
+        if (n > 0) { got += n; continue; }
+        if (n < 0 && xt_sock_would_block()) {            // 非阻塞 socket 的阻塞上下文降级
+#if defined(_WIN32)
+            Sleep(1);
+#else
+            usleep(1000);
+#endif
+            if (s->is_closed) { free(buf); return NULL; }
+            continue;
+        }
+        free(buf); return NULL;                          // 对端关闭或真错误
+    }
+    buf[got] = '\0';
+    if (out_got) *out_got = got;
+    return buf;
+}
+
 void xt_net_close(void* sock_obj) {
     xt_net_close_obj((XTSocket*)sock_obj);
 }

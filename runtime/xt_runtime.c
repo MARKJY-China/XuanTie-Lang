@@ -1694,6 +1694,21 @@ static XTValue xt_socket_close_method(XTValue self) {
     return XT_TRUE;
 }
 
+// 流.读足(字节数) — 精确读满 N 字节(阻塞上下文协议帧用;不足一直等,对端关闭返 空)
+// 与 读 的差异:读 是「尽力而为」(有多少返回多少,上限不定),读足 是「恰好 N 字节」。
+static XTValue xt_socket_read_exact_method(XTValue self, XTValue n_val) {
+    if (!xt_is_real_ptr(self)) return XT_NULL;
+    if (!XT_IS_INT(n_val)) return XT_NULL;
+    int64_t want = XT_TO_INT(n_val);
+    if (want <= 0) return (XTValue)xt_string_new("");
+    int64_t got = 0;
+    char* buf = (char*)xt_net_read_exact(self, want, &got);
+    if (!buf) return XT_NULL;
+    XTString* str = xt_string_new_len(buf, got);   // 二进制安全
+    free(buf);
+    return (XTValue)str;
+}
+
 // 流.转字() — 单参数版本
 static XTValue xt_socket_tostring_method(XTValue self) {
     return (XTValue)xt_string_new("Socket连接");
@@ -2031,6 +2046,7 @@ XTValue xt_dict_get(XTValue dict_val, XTValue key) {
         if (!xt_is_real_ptr(key)) return XT_NULL;
         const char* m = ((XTString*)key)->data;
         if (strcmp(m, "读") == 0 || strcmp(m, "read") == 0) return xt_func_new((void*)xt_socket_read_method);
+        if (strcmp(m, "读足") == 0 || strcmp(m, "readn") == 0) return xt_func_new((void*)xt_socket_read_exact_method);
         if (strcmp(m, "写") == 0 || strcmp(m, "发") == 0 || strcmp(m, "write") == 0 || strcmp(m, "send") == 0) return xt_func_new((void*)xt_socket_write_method);
         if (strcmp(m, "关") == 0 || strcmp(m, "close") == 0) return xt_func_new((void*)xt_socket_close_method);
         if (strcmp(m, "转字") == 0 || strcmp(m, "toString") == 0) return xt_func_new((void*)xt_socket_tostring_method);
@@ -2094,6 +2110,8 @@ XTValue xt_get_member(XTValue obj_val, XTValue key_val) {
         const char* method = ((XTString*)key_val)->data;
         if (strcmp(method, "读") == 0 || strcmp(method, "read") == 0)
             return xt_func_new((void*)xt_socket_read_method);
+        if (strcmp(method, "读足") == 0 || strcmp(method, "readn") == 0)
+            return xt_func_new((void*)xt_socket_read_exact_method);
         if (strcmp(method, "写") == 0 || strcmp(method, "发") == 0 || strcmp(method, "write") == 0 || strcmp(method, "send") == 0)
             return xt_func_new((void*)xt_socket_write_method);
         if (strcmp(method, "关") == 0 || strcmp(method, "close") == 0)
@@ -3288,9 +3306,12 @@ static XTValue json_parse_value(const char** p);
 static XTString* json_parse_string(const char** p) {
     if (**p != '"') return NULL;
     (*p)++;
-    char buf[4096];
-    size_t pos = 0;
-    while (**p && **p != '"' && pos < sizeof(buf) - 1) {
+    // 动态缓冲:原 4096 定长缓冲会在长字符串(>4KB)上静默截断→解析失败整包返空
+    // (LSP didOpen 全文必超 4KB,实测抓获)。按倍增扩容,长度以 pos 为准(二进制安全)。
+    size_t cap = 256, pos = 0;
+    char* buf = (char*)malloc(cap);
+    while (**p && **p != '"') {
+        if (pos + 8 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
         if (**p == '\\') {
             (*p)++;
             switch (**p) {
@@ -3323,8 +3344,9 @@ static XTString* json_parse_string(const char** p) {
         (*p)++;
     }
     if (**p == '"') (*p)++;
-    buf[pos] = '\0';
-    return xt_string_new(buf);
+    XTString* res = xt_string_new_len(buf, pos);
+    free(buf);
+    return res;
 }
 
 static XTValue json_parse_number(const char** p) {
