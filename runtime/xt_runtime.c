@@ -695,6 +695,34 @@ XTValue xt_string_get_char(XTValue str_val, int64_t index) {
 }
 
 /**
+ * @brief 字符串 → 逻辑字符数组 (单次遍历 O(n);供 遍历 语句高效迭代)
+ * 原 遍历 逐字调用 xt_string_get_char(每次从头走 UTF-8 边界,O(n) 一个),
+ * 整串迭代退化为 O(n²)(自举实测:50 万字符 109 秒)。
+ */
+XTValue xt_string_chars(XTValue str_val) {
+    if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    xt_string_guard(str_val, "遍历");
+    XTString* s = (XTString*)str_val;
+    XTValue arr = xt_array_new(16);
+    const char* p = s->data;
+    while (*p) {
+        unsigned char c = (unsigned char)*p;
+        int len = 1;
+        if (c < 0x80) len = 1;
+        else if ((c & 0xE0) == 0xC0) len = 2;
+        else if ((c & 0xF0) == 0xE0) len = 3;
+        else if ((c & 0xF8) == 0xF0) len = 4;
+        char buf[5] = {0};
+        for (int i = 0; i < len && p[i]; i++) buf[i] = p[i];
+        XTValue cs = (XTValue)xt_string_new(buf);
+        xt_array_append(arr, cs);
+        xt_release(cs);
+        p += len;
+    }
+    return arr;
+}
+
+/**
  * @brief 获取指定偏移处的原始字节
  */
 XTValue xt_string_get_byte(XTValue str_val, int64_t byte_index) {
@@ -971,6 +999,19 @@ void xt_member_missing(XTValue name_val) {
     }
     fprintf(stderr, "运行时错误: 对非对象值(整数/布尔/空)访问成员 '%s'\n", name);
     fprintf(stderr, "  提示: 成员访问(如 .成功/.值/.长度)只对对象有效;请先用类型检查或 结果 判定保护。\n");
+    exit(1);
+}
+
+// 未知成员诊断:对象类型不支持该成员(非字典/实例/结果/Socket 的动态成员访问)时显式报错退出。
+// 原行为:对任意对象静默返 空,拼写错误/类型误用被吞掉(违「宁可报错」原则)。
+void xt_member_unknown(XTValue name_val) {
+    const char* name = "?";
+    if (xt_is_real_ptr(name_val)) {
+        XTString* s = (XTString*)name_val;
+        if (s->data) name = s->data;
+    }
+    fprintf(stderr, "运行时错误: 该值没有成员 '%s'(仅字典/型实例/结果/Socket 支持动态成员访问)\n", name);
+    fprintf(stderr, "  提示: 请检查成员名拼写;字符串/数组等内建类型的成员以官方手册为准。\n");
     exit(1);
 }
 
