@@ -11,7 +11,7 @@ LLVM_DIR=${LLVM_DIR:-/d/LLVM}
 TDM_DIR=${TDM_DIR:-/c/TDM-GCC-64}
 TDM_VER=10.3.0
 CLANG_RES_VER=22
-PKG=$ROOT/temp/pkg_test/玄铁
+PKG=$ROOT/temp/pkg_test/XuanTie
 
 rm -rf $ROOT/temp/pkg_test
 mkdir -p $PKG/{runtime,lib,tools,GUIDE,examples}
@@ -39,7 +39,7 @@ cp $TDM_DIR/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/{collect2.exe,liblto_plugin-
 cp $TDM_DIR/x86_64-w64-mingw32/bin/ld.exe $M/x86_64-w64-mingw32/bin/
 cp $TDM_DIR/lib/gcc/x86_64-w64-mingw32/$TDM_VER/{crtbegin.o,crtend.o,libgcc.a,libgcc_s.a} \
    $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER/
-cp $TDM_DIR/x86_64-w64-mingw32/lib/{crt2.o,libmingw32.a,libmingwex.a,libmsvcrt.a,libmsvcrt-os.a,libkernel32.a,libuser32.a,libws2_32.a,libsecur32.a,libadvapi32.a,libshell32.a,libole32.a,libuuid.a,libopengl32.a,libgdi32.a,libwinmm.a,libmingwthrd.a,libpthread.a,libmoldname.a,libwinpthread.a,default-manifest.o} \
+cp $TDM_DIR/x86_64-w64-mingw32/lib/{crt2.o,libmingw32.a,libmingwex.a,libmsvcrt.a,libmsvcrt-os.a,libkernel32.a,libuser32.a,libws2_32.a,libsecur32.a,libadvapi32.a,libshell32.a,libole32.a,libuuid.a,libopengl32.a,libgdi32.a,libwinmm.a,libmingwthrd.a,libpthread.a,libmoldname.a,libwinpthread.a,libcomdlg32.a,default-manifest.o} \
    $M/x86_64-w64-mingw32/lib/
 
 # ── 3. runtime:源码 + 预编译 .o(预编译用开发机完整 clang;发行机无 C 头文件故必须随包)──
@@ -76,8 +76,8 @@ cat > $PKG/README.md << 'EOF'
 中文静态强类型编译型语言。本包为绿色免安装版,解压即用:
 
 ```
-xtc.exe 铁 hello.xt            # 编译(自带 clang/MinGW,无需装任何工具链)
-xtc.exe 铁 hello.xt --检查     # 只检查不产出(语法+语义全量诊断)
+xtc.exe tie hello.xt            # 编译(自带 clang/MinGW,无需装任何工具链)
+xtc.exe tie hello.xt -jc     # 只检查不产出(语法+语义全量诊断)
 ```
 
 - `runtime/` 玄铁 C 运行时(源码+预编译对象)

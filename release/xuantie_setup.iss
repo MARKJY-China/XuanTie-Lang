@@ -30,7 +30,7 @@ Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "addpath"; Description: "把玄铁加入用户 PATH(推荐,终端可直接使用 xtc)"; GroupDescription: "环境配置:"; Flags: checkedonce
 
 [Files]
-Source: "..\temp\pkg_test\玄铁\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+Source: "..\temp\pkg_test\XuanTie\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Code]
 // 追加 {app} 到用户 PATH(幂等:已含则不重复)
