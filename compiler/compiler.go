@@ -332,6 +332,20 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\treturn false\n")
 	c.output.WriteString("}\n\n")
 
+	c.output.WriteString("func lte(l, r interface{}) bool {\n")
+	c.output.WriteString("\tif li, ok := l.(int64); ok {\n")
+	c.output.WriteString("\t\tif ri, ok := r.(int64); ok { return li <= ri }\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn false\n")
+	c.output.WriteString("}\n\n")
+
+	c.output.WriteString("func gte(l, r interface{}) bool {\n")
+	c.output.WriteString("\tif li, ok := l.(int64); ok {\n")
+	c.output.WriteString("\t\tif ri, ok := r.(int64); ok { return li >= ri }\n")
+	c.output.WriteString("\t}\n")
+	c.output.WriteString("\treturn false\n")
+	c.output.WriteString("}\n\n")
+
 	c.output.WriteString("func toSlice(v interface{}) []interface{} {\n")
 	c.output.WriteString("\tif s, ok := v.(*[]interface{}); ok { return *s }\n")
 	c.output.WriteString("\tif s, ok := v.([]interface{}); ok { return s }\n")
@@ -1733,8 +1747,17 @@ func (c *GoCompiler) infixExpressionCode(e *ast.InfixExpression, isAssignment bo
 		return fmt.Sprintf("(reflect.DeepEqual(%s, %s))", left, right)
 	case "<":
 		return fmt.Sprintf("lt(%s, %s)", left, right)
+	case "<=":
+		return fmt.Sprintf("lte(%s, %s)", left, right)
 	case ">":
 		return fmt.Sprintf("gt(%s, %s)", left, right)
+	case ">=":
+		return fmt.Sprintf("gte(%s, %s)", left, right)
+	case "或", "||":
+		// interface{} 操作数需 isTruthy 归一为 Go bool(与 非 同款)
+		return fmt.Sprintf("(isTruthy(%s) || isTruthy(%s))", left, right)
+	case "且", "&&":
+		return fmt.Sprintf("(isTruthy(%s) && isTruthy(%s))", left, right)
 	case "&": // 字符串拼接
 		return fmt.Sprintf("add(%s, %s)", left, right)
 	case "位与":

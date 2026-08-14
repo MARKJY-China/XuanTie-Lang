@@ -206,6 +206,19 @@ func EvalContext(node ast.Node, env map[string]object.Object, isAssignment bool)
 		return evalRequestExpression(n, env)
 	case *ast.ExecuteExpression:
 		return evalExecuteExpression(n, env)
+	case *ast.InputExpression:
+		// 输(提示语):转调 stdlib 注册的同名 builtin(读 stdin 一行)
+		if builtin, ok := stdlib.Builtins["输"]; ok {
+			if n.Prompt != nil {
+				promptVal := EvalContext(n.Prompt, env, isAssignment)
+				if isError(promptVal) {
+					return promptVal
+				}
+				return builtin.(*object.Builtin).Fn(promptVal)
+			}
+			return builtin.(*object.Builtin).Fn()
+		}
+		return newError(n.GetLine(), "找不到内置函数 输")
 	case *ast.ChannelExpression:
 		return &object.Channel{Value: make(chan object.Object, 100)}
 	case *ast.FunctionLiteral:
