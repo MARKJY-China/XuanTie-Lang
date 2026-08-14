@@ -136,8 +136,8 @@ class XtLspClient {
             await new Promise(r => setTimeout(r, 800));
             await this.connect(port);
         }
-        // 握手
-        await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid });
+        // 握手(_xtcPath:P4 语义诊断用,保存时服务器子进程调 xtc --检查)
+        await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid, _xtcPath: cfg.get('xtcPath', '') });
         this.notify('initialized', {});
         this.log('已连接并完成握手');
         // 已在编辑中的文档补发 didOpen
@@ -190,7 +190,8 @@ class XtLspClient {
                 try { await this.connect(port); } catch (e2) { this.log('重连再失败: ' + e2.message); return; }
             }
             try {
-                await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid });
+                await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid,
+                    _xtcPath: vscode.workspace.getConfiguration('xuantie').get('xtcPath', '') });
                 this.notify('initialized', {});
                 this.log('重连成功');
                 // 重发所有打开文档
@@ -231,6 +232,14 @@ class XtLspClient {
         if (this.docUris) this.docUris.delete(doc.uri.toString());
         this.notify('textDocument/didClose', { textDocument: { uri: doc.uri.toString() } });
         this.diagCollection.delete(doc.uri);
+    }
+
+    // P4:保存 → 服务器跑 xtc --检查 出语义诊断(保存级为权威全集)
+    didSave(doc) {
+        this.notify('textDocument/didSave', {
+            textDocument: { uri: doc.uri.toString() },
+            _fsPath: doc.uri.fsPath
+        });
     }
 
     async stop() {
@@ -274,6 +283,9 @@ function activateLsp(context) {
         }),
         vscode.workspace.onDidCloseTextDocument(doc => {
             if (doc.languageId === 'xuantie' && client) client.didClose(doc);
+        }),
+        vscode.workspace.onDidSaveTextDocument(doc => {
+            if (doc.languageId === 'xuantie' && client) client.didSave(doc);
         }),
         // P2:补全转发到 xt_lsp('.' 触发:模块别名. 弹出成员)
         vscode.languages.registerCompletionItemProvider('xuantie', {

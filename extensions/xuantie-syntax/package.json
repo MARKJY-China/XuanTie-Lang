@@ -2,7 +2,7 @@
     "name": "xuantie-syntax",
     "displayName": "玄铁 (XuanTie)",
     "description": "玄铁编程语言的VSCode插件。支持完善的语法高亮、代码片段补全、关键字提示等功能。",
-    "version": "2.1.0",
+    "version": "2.1.1",
     "publisher": "xuantie",
     "icon": "icon.ico",
     "main": "./extension.js",
@@ -58,6 +58,11 @@
                     "type": "string",
                     "default": "",
                     "description": "xt_lsp.exe 的路径。留空则使用扩展自带 server/xt_lsp.exe。"
+                },
+                "xuantie.xtcPath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "xtc.exe(玄铁编译器)的路径,用于保存文件时的语义级诊断(xtc --检查)。留空则自动探测 xt_lsp.exe 同目录,再退到 PATH。"
                 }
             }
         }
