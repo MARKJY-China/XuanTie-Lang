@@ -2,7 +2,7 @@
     "name": "xuantie-syntax",
     "displayName": "玄铁 (XuanTie)",
     "description": "玄铁编程语言的VSCode插件。支持完善的语法高亮、代码片段补全、关键字提示等功能。",
-    "version": "1.9.0",
+    "version": "2.0.0",
     "publisher": "xuantie",
     "icon": "icon.ico",
     "main": "./extension.js",

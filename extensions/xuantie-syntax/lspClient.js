@@ -208,7 +208,8 @@ class XtLspClient {
         this.docUris.set(doc.uri.toString(), doc.uri);
         this.log('didOpen ' + doc.uri.toString());
         this.notify('textDocument/didOpen', {
-            textDocument: { uri: doc.uri.toString(), languageId: 'xuantie', version, text: doc.getText() }
+            textDocument: { uri: doc.uri.toString(), languageId: 'xuantie', version, text: doc.getText() },
+            _fsPath: doc.uri.fsPath   // 真实磁盘路径(URI 对中文路径百分号编码,服务器端解码不便)
         });
     }
 
@@ -220,7 +221,8 @@ class XtLspClient {
         // 全量同步(change:1):每次发全文
         this.notify('textDocument/didChange', {
             textDocument: { uri: doc.uri.toString(), version },
-            contentChanges: [{ text: doc.getText() }]
+            contentChanges: [{ text: doc.getText() }],
+            _fsPath: doc.uri.fsPath
         });
     }
 
@@ -253,6 +255,8 @@ function mapCompletionKind(k) {
         case 6: return vscode.CompletionItemKind.Variable;
         case 14: return vscode.CompletionItemKind.Keyword;
         case 2: return vscode.CompletionItemKind.Method;
+        case 9: return vscode.CompletionItemKind.Module;
+        case 22: return vscode.CompletionItemKind.Struct;
         default: return vscode.CompletionItemKind.Text;
     }
 }

@@ -54,8 +54,8 @@
 					"match": "\\b(设|常|型|函|造|公|私|护|承|口|变量|常量|函数|外|覆|弱)\\b"
 				},
 				{
-					"name": "support.type.xt",
-					"match": "\\b(整|小数|字|逻|判|空|数组|字典|字节|结果|任务|字符串|整数|逻辑)\\b"
+					"name": "storage.type.primitive.xt",
+					"match": "\\b(整|小数|字|布尔|空|数组|字典|字节|结果|任务|字符串|整数|逻辑)\\b"
 				},
 				{
 					"name": "support.function.xt",
