@@ -342,8 +342,31 @@
         目标三元组 = 架构 & "-" & 平台
     }
 
+    // 编译器自身目录解析(发行包布局定位的基础:runtime\ lib\ tools\ 均按自身同级查找)
+    设 _自身路径 = xt_self_path()
+    设 _自身目录 = ""
+    若 _自身路径 != "" {
+        设 _pi = _自身路径.字节数 - 1
+        当 _pi >= 0 {
+            设 _c = _自身路径.截取(_pi, _pi + 1)
+            若 _c == "\\" 或 _c == "/" {
+                _自身目录 = _自身路径.截取(0, _pi + 1)
+                断
+            }
+            _pi = _pi - 1
+        }
+    }
+    // 自带工具链定位(发行包布局:编译器同级 tools\ 下的极简 clang/MinGW 优先,免 PATH 配置;
+    // 开发环境无 tools\ 目录,回退 PATH 里的 clang/gcc)
+    设 clang程序 = "clang"
+    设 gcc程序 = "gcc"
+    若 _自身目录 != "" {
+        若 文件.存在?(_自身目录 & "tools\\clang\\bin\\clang.exe") { clang程序 = _自身目录 & "tools\\clang\\bin\\clang.exe" }
+        若 文件.存在?(_自身目录 & "tools\\mingw\\bin\\gcc.exe") { gcc程序 = _自身目录 & "tools\\mingw\\bin\\gcc.exe" }
+    }
+
     // 调用 clang 生成对象文件
-    设 clang指令 = "clang -g -target " & 目标三元组 & " " & 优化等级 & " -c \"" & ll路径 & "\" -o \"" & o路径 & "\""
+    设 clang指令 = "\"" & clang程序 & "\" -g -target " & 目标三元组 & " " & 优化等级 & " -c \"" & ll路径 & "\" -o \"" & o路径 & "\""
     若 输出详细 { 示("Clang指令: " & clang指令) }
     若 输出详细 { 示("[MAIN4] 执行clang, 指令长度=" & clang指令.字节数) }
     设 clang结果 = 执(clang指令)
@@ -359,19 +382,6 @@
     // 寻找运行时 (优先寻找编译好的 .o 文件，以支持轻量化打包)
     // 查找顺序:① 编译器自身所在目录(exe 同级/上一级)——任意目录调用都能找到随包运行时;
     //           ② 调用方 CWD 的 runtime\ 与 ..\runtime\——仓库开发环境兼容
-    设 _自身路径 = xt_self_path()
-    设 _自身目录 = ""
-    若 _自身路径 != "" {
-        设 _pi = _自身路径.字节数 - 1
-        当 _pi >= 0 {
-            设 _c = _自身路径.截取(_pi, _pi + 1)
-            若 _c == "\\" 或 _c == "/" {
-                _自身目录 = _自身路径.截取(0, _pi + 1)
-                断
-            }
-            _pi = _pi - 1
-        }
-    }
     设 _运行时候选 = []
     若 _自身目录 != "" {
         _运行时候选.追加(_自身目录 & "runtime\\xt_runtime.o")
@@ -391,34 +401,42 @@
         示("错误: 未找到运行时文件(xt_runtime.o/.c),已尝试编译器自身目录与当前目录")
         终 1
     }
-    设 runtimeDir = "runtime"
 
-    // 寻找线程池文件（与运行时文件同目录）
-    设 tpFile = runtimeDir & "\\xt_threadpool.c"
-    若 非 文件.存在?(tpFile) {
-        tpFile = "..\\runtime\\xt_threadpool.c"
-    }
-    若 非 文件.存在?(tpFile) {
-        // 最后尝试与 rtFile 相同的路径
-        设 tpFile = rtFile.替换("xt_runtime.c", "xt_threadpool.c").替换("xt_runtime.o", "xt_threadpool.c")
-    }
-    若 非 文件.存在?(tpFile) {
-        tpFile = ""  // 线程池文件不存在时跳过（向后兼容旧版运行时）
-    }
+    // 寻找线程池/网络栈/TLS 文件:预编译 .o 优先(发行包布局——目标机无 C 头文件,链接直吃 .o;
+    // 且免去每次编译现场编 3 个 .c);找不到回退 .c(开发环境,由 gcc 链接时现场编译)
+    设 tpFile = ""
+    设 _伴随候选 = []
+    若 _自身目录 != "" { _伴随候选.追加(_自身目录 & "runtime\\xt_threadpool.o") }
+    _伴随候选.追加("runtime\\xt_threadpool.o")
+    _伴随候选.追加("..\\runtime\\xt_threadpool.o")
+    _伴随候选.追加("runtime\\xt_threadpool.c")
+    _伴随候选.追加("..\\runtime\\xt_threadpool.c")
+    _伴随候选.追加(rtFile.替换("xt_runtime.c", "xt_threadpool.c").替换("xt_runtime.o", "xt_threadpool.o"))
+    遍历 _bc 于 _伴随候选 { 若 文件.存在?(_bc) { tpFile = _bc ; 断 } }
     若 输出详细 且 tpFile != "" { 示("线程池文件: " & tpFile) }
 
-    // 寻找网络栈文件（与线程池同目录）
-    设 netFile = runtimeDir & "\\xt_net.c"
-    若 非 文件.存在?(netFile) { netFile = "..\\runtime\\xt_net.c" }
-    若 非 文件.存在?(netFile) { netFile = rtFile.替换("xt_runtime.c", "xt_net.c").替换("xt_runtime.o", "xt_net.c") }
-    若 非 文件.存在?(netFile) { netFile = "" }
+    // 寻找网络栈文件(同线程池:.o 优先)
+    设 netFile = ""
+    设 _伴随候选2 = []
+    若 _自身目录 != "" { _伴随候选2.追加(_自身目录 & "runtime\\xt_net.o") }
+    _伴随候选2.追加("runtime\\xt_net.o")
+    _伴随候选2.追加("..\\runtime\\xt_net.o")
+    _伴随候选2.追加("runtime\\xt_net.c")
+    _伴随候选2.追加("..\\runtime\\xt_net.c")
+    _伴随候选2.追加(rtFile.替换("xt_runtime.c", "xt_net.c").替换("xt_runtime.o", "xt_net.o"))
+    遍历 _bc2 于 _伴随候选2 { 若 文件.存在?(_bc2) { netFile = _bc2 ; 断 } }
     若 输出详细 且 netFile != "" { 示("网络栈文件: " & netFile) }
 
-    // 寻找 TLS 栈文件(Schannel 系统原生 TLS,与网络栈同目录)
-    设 tlsFile = runtimeDir & "\\xt_tls.c"
-    若 非 文件.存在?(tlsFile) { tlsFile = "..\\runtime\\xt_tls.c" }
-    若 非 文件.存在?(tlsFile) { tlsFile = rtFile.替换("xt_runtime.c", "xt_tls.c").替换("xt_runtime.o", "xt_tls.c") }
-    若 非 文件.存在?(tlsFile) { tlsFile = "" }
+    // 寻找 TLS 栈文件(Schannel 系统原生 TLS,同上:.o 优先)
+    设 tlsFile = ""
+    设 _伴随候选3 = []
+    若 _自身目录 != "" { _伴随候选3.追加(_自身目录 & "runtime\\xt_tls.o") }
+    _伴随候选3.追加("runtime\\xt_tls.o")
+    _伴随候选3.追加("..\\runtime\\xt_tls.o")
+    _伴随候选3.追加("runtime\\xt_tls.c")
+    _伴随候选3.追加("..\\runtime\\xt_tls.c")
+    _伴随候选3.追加(rtFile.替换("xt_runtime.c", "xt_tls.c").替换("xt_runtime.o", "xt_tls.o"))
+    遍历 _bc3 于 _伴随候选3 { 若 文件.存在?(_bc3) { tlsFile = _bc3 ; 断 } }
     若 输出详细 且 tlsFile != "" { 示("TLS栈文件: " & tlsFile) }
 
     // 检测渲染库导入(编译阶段由 编译.引用了渲染 记录,含经 UI 等包间接引入)
@@ -470,12 +488,17 @@
         若 输出详细 { 示("检测到渲染库: " & 渲染桥C & " + " & raylibA) }
     }
 
-    // 编译渲染桥
+    // 编译渲染桥(发行包预编译的 渲染桥.o 优先:目标机无 C 头文件/无 raylib 源码依赖,链接直吃 .o)
     若 使用渲染 {
+        设 _桥预编 = 渲染桥C.替换("渲染桥.c", "渲染桥.o")
+        若 文件.存在?(_桥预编) {
+            渲染桥Obj = _桥预编
+            若 输出详细 { 示("使用预编译渲染桥: " & 渲染桥Obj) }
+        } 否 {
         设 时间戳2 = 指纹of(渲染桥C)
         渲染桥Obj = 缓存目录 & "\\xt_" & 时间戳2 & "_bridge.o"
         设 渲染包含目录 = raylibA.替换("\\libraylib.a", "")
-        设 桥clang指令 = "clang -g -target " & 目标三元组 & " " & 优化等级 & " -c \"" & 渲染桥C & "\" -o \"" & 渲染桥Obj & "\" -I \"" & 渲染包含目录 & "\""
+        设 桥clang指令 = "\"" & clang程序 & "\" -g -target " & 目标三元组 & " " & 优化等级 & " -c \"" & 渲染桥C & "\" -o \"" & 渲染桥Obj & "\" -I \"" & 渲染包含目录 & "\""
         若 输出详细 { 示("渲染桥 clang: " & 桥clang指令) }
         设 桥clang结果 = 执(桥clang指令)
         若 非 桥clang结果.成功 或 非 文件.存在?(渲染桥Obj) {
@@ -484,6 +507,7 @@
             执("cmd /c del /q \"" & ll路径 & "\" \"" & o路径 & "\" 2>nul")
             xt_arena_destroy(池)
             终 1
+        }
         }
     }
 
@@ -497,7 +521,7 @@
 
     设 链接指令 = ""
     若 链接方式 == "静态" {
-        链接指令 = "gcc -g -static -Wl,--stack,16777216 -Wl,--no-insert-timestamp \"" & o路径 & "\" \"" & rtFile & "\""
+        链接指令 = "\"" & gcc程序 & "\" -g -static -Wl,--stack,16777216 -Wl,--no-insert-timestamp \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
         若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
@@ -505,7 +529,7 @@
         若 窗口模式 { 链接指令 = 链接指令 & " -mwindows" }
         链接指令 = 链接指令 & " -lws2_32 -lsecur32 -o \"" & 输出路径 & "\""
     } 否 {
-        链接指令 = "gcc -g -Wl,--stack,16777216 -Wl,--no-insert-timestamp \"" & o路径 & "\" \"" & rtFile & "\""
+        链接指令 = "\"" & gcc程序 & "\" -g -Wl,--stack,16777216 -Wl,--no-insert-timestamp \"" & o路径 & "\" \"" & rtFile & "\""
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
         若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
