@@ -3286,7 +3286,12 @@ func (c *LLVMCompiler) compileExternalFunctionStatement(s *ast.ExternalFunctionS
 	paramStr := strings.Join(params, ", ")
 
 	addrReg := "@\"" + s.Name.Value + "\""
-	c.globalOutput.WriteString(fmt.Sprintf("declare %s %s(%s)\n", retType, addrReg, paramStr))
+	// 同名外函只 declare 一次(多模块各自声明同一 runtime 外函时,如 xt_self_path,
+	// 不去重会产生重复 declare,LLVM 报 invalid redefinition)
+	if !c.declaredGlobals[s.Name.Value] {
+		c.declaredGlobals[s.Name.Value] = true
+		c.globalOutput.WriteString(fmt.Sprintf("declare %s %s(%s)\n", retType, addrReg, paramStr))
+	}
 	c.symbolTable[s.Name.Value] = SymbolInfo{AddrReg: addrReg, IsGlobal: true, Type: retType}
 }
 
