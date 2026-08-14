@@ -1,17 +1,33 @@
 #!/bin/bash
 # ══════════════════════════════════════════════════════════════
 # 玄铁发行包一键组装(在开发机运行)
-# 产出: temp/pkg_test/玄铁/(payload,供 Inno Setup 与压缩包共用)
+# 产出: temp/pkg_test/XuanTie/(payload,供 Inno Setup 与压缩包共用)
 # 依赖: 开发机的 LLVM($LLVM_DIR)、TDM-GCC($TDM_DIR)、已构建的 build/xtc.exe 等
-# 用法: bash release/make_pkg.sh
+# 用法: **必须在 Git Bash 中运行** → bash release/make_pkg.sh
+#       (PowerShell 里直接敲 bash 会命中 WSL 的 bash,没有 /g 盘符挂载,脚本报 Permission denied)
 # ══════════════════════════════════════════════════════════════
 set -e
-ROOT=/g/FUsed_Folders/Project/XuanTie
+
+# 环境守卫:仅支持 Git Bash / MSYS2(WSL 的盘符布局是 /mnt/<盘>,不兼容)
+if ! uname | grep -qiE "MINGW|MSYS"; then
+  echo "错误: 请在 Git Bash 中运行此脚本(当前环境疑似 WSL/Cygwin:$(uname -a | cut -c1-60))"
+  echo "      PowerShell 用法: & \"C:\Program Files\Git\bin\bash.exe\" release/make_pkg.sh"
+  exit 1
+fi
+
+# 自定位仓库根(脚本固定在 release/ 下,仓库根即其上一级),兼容任意克隆位置
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LLVM_DIR=${LLVM_DIR:-/d/LLVM}
 TDM_DIR=${TDM_DIR:-/c/TDM-GCC-64}
 TDM_VER=10.3.0
 CLANG_RES_VER=22
 PKG=$ROOT/temp/pkg_test/XuanTie
+
+# 工具链前置检查:缺了立即明确报错,不静默烂尾
+[ -f "$LLVM_DIR/bin/clang.exe" ] || { echo "错误: 未找到 clang($LLVM_DIR),请设 LLVM_DIR 环境变量指向 LLVM 根目录"; exit 1; }
+[ -f "$TDM_DIR/bin/gcc.exe" ]    || { echo "错误: 未找到 gcc($TDM_DIR),请设 TDM_DIR 环境变量指向 TDM-GCC 根目录"; exit 1; }
+[ -f "$ROOT/build/xtc.exe" ]     || { echo "错误: 未找到 build/xtc.exe,请先构建编译器"; exit 1; }
 
 rm -rf $ROOT/temp/pkg_test
 mkdir -p $PKG/{runtime,lib,tools,GUIDE,examples}
@@ -64,7 +80,7 @@ clang -target x86_64-w64-windows-gnu -O2 -c $ROOT/lib/渲染/渲染桥.c -o $PKG
 cp $ROOT/GUIDE/玄铁语言参考手册.md $PKG/GUIDE/
 cp $ROOT/GUIDE/[0-9]*.md $PKG/GUIDE/
 find $ROOT/examples -maxdepth 1 -name "*.xt" -exec cp {} $PKG/examples/ \;
-for D in 斐波那契 数学 位运算符; do
+for D in 斐波那契 数学 位运算符 UI界面; do
   mkdir -p $PKG/examples/$D
   find $ROOT/examples/$D -name "*.xt" -exec cp {} $PKG/examples/$D/ \; 2>/dev/null || true
 done

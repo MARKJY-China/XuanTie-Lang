@@ -785,6 +785,9 @@
         设 up = _环境值("USERPROFILE")
         若 up != "" { 候选.追加(up & "\\.tiepm\\已安装\\UI\\assets\\" & 名) }
     }
+    // ①.5 XUANTIE_HOME(安装器写入的用户环境变量 → 安装目录\lib\UI\assets)
+    设 xh = _环境值("XUANTIE_HOME")
+    若 xh != "" { 候选.追加(xh & "\\lib\\UI\\assets\\" & 名) }
     // ② 程序自身目录(exeDir\assets,发行包布局)
     设 自径 = xt_self_path()
     若 自径 != "" {
@@ -957,7 +960,7 @@
         确保默认字体()
     }
 
-    当 非 R.窗口应关闭() {
+    当 非 R.窗口应关闭?() {
         设 鼠x = R.鼠X() ; 设 鼠y = R.鼠Y()
         设 左键 = R.鼠标刚按下?(0)
         _左键按住 = R.鼠标按下?(0) == 1

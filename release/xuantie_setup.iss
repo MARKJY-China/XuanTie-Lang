@@ -23,6 +23,10 @@ UninstallDisplayName={#MyAppName}
 ; 中文界面
 ShowLanguageDialog=no
 
+[Registry]
+; 玄铁安装目录写入用户环境变量(UI 库默认字体等运行时资源按此定位);卸载自动删除
+Root: HKCU; Subkey: "Environment"; ValueType: string; ValueName: "XUANTIE_HOME"; ValueData: "{app}"; Flags: uninsdeletevalue
+
 [Languages]
 Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 
