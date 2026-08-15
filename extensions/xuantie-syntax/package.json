@@ -2,7 +2,7 @@
     "name": "xuantie-syntax",
     "displayName": "玄铁 (XuanTie)",
     "description": "玄铁编程语言的VSCode插件。支持完善的语法高亮、代码片段补全、关键字提示等功能。",
-    "version": "2.1.1",
+    "version": "2.2.0",
     "publisher": "xuantie",
     "icon": "icon.ico",
     "main": "./extension.js",
@@ -52,7 +52,16 @@
                 "xuantie.lspPort": {
                     "type": "number",
                     "default": 20807,
-                    "description": "玄铁 LSP 服务器(xt_lsp.exe)的 TCP 回环端口。"
+                    "description": "玄铁 LSP 服务器(xt_lsp.exe)的 TCP 回环端口。仅 lspTransport=tcp 时生效。"
+                },
+                "xuantie.lspTransport": {
+                    "type": "string",
+                    "enum": [
+                        "stdio",
+                        "tcp"
+                    ],
+                    "default": "stdio",
+                    "description": "LSP 传输方式:stdio(推荐,插件直接拉起 xt_lsp 子进程,每窗口独立);tcp(开发调试,连接 127.0.0.1:20807 上手动启动的 xt_lsp --tcp)。"
                 },
                 "xuantie.lspServerPath": {
                     "type": "string",

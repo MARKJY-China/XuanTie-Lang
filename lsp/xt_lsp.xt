@@ -1,23 +1,36 @@
-// lsp/xt_lsp.xt — 玄铁 LSP 服务器(P1:诊断同步)
-// 传输:TCP 回环(开发期);帧格式 Content-Length(字节数) 头 + \r\n\r\n + JSON 体。
-// 架构:听 每连接一线程,协议循环就在连接线程里跑(阻塞上下文);
-//   帧的精确取体用 读足(N)(恰好 N 字节,绝无 读 尽力而为导致的黏包/截断问题)。
+// lsp/xt_lsp.xt — 玄铁 LSP 服务器
+// 传输:stdio(默认,正式形态——VSCode spawn 管道直连,Windows 下运行时惰性切二进制模式);
+//      --tcp 参数回退 TCP 回环 20807(开发调试)。
+// 帧格式 Content-Length(字节数) 头 + \r\n\r\n + JSON 体。
+// 架构:tcp 模式 听 每连接一线程;stdio 模式主线程直接跑协议循环。
+//   帧的精确取体用 读足(N)/xt_stdin_read_n(恰好 N 字节,绝无 读 尽力而为导致的黏包/截断问题)。
 
 引 "../xuantie_compiler/词法.xt"
 引 "../xuantie_compiler/语法分析.xt"
 
 外 函 xt_self_path(): 字   // runtime 内建:取自身可执行文件绝对路径(探测同目录 xtc.exe 用)
+外 函 xt_get_args(): 数组  // 命令行参数(--tcp 判定用)
+外 函 xt_stdin_read_n(n: 整): 字   // stdio 传输原语:stdin 精确读 n 字节(EOF 返 空)
+外 函 xt_stdout_write(串: 字): 空  // 协议帧写 stdout(二进制模式,不加换行)
+外 函 xt_stderr_write(串: 字): 空  // 日志写 stderr(stdio 模式 stdout 被帧独占)
 
 设 文档表 = {}          // uri -> 文档全文
 设 路径表 = {}          // uri -> 真实磁盘路径(客户端 _fsPath 旁路,中文路径免 URI 解码)
 设 用户目录 = ""        // USERPROFILE(惰性首取)
 设 编译器路径 = ""      // xtc 路径(initialize 时解析)
+设 传输模式 = "stdio"   // stdio(默认,正式形态) | tcp(开发调试,--tcp 启用)
+
+// 双模式读足:tcp 走 socket 流,stdio 走 stdin 原语(语义同为"恰好 N 字节,对端关闭返 空")
+函 原语读足(流, n) {
+    若 传输模式 == "tcp" { 返 流.读足(n) }
+    返 xt_stdin_read_n(n)
+}
 
 // 读一帧:头部逐字节(纯 ASCII,短),体按 Content-Length 精确读取
 函 读一帧(流) {
     设 头 = ""
     循 {
-        设 c = 流.读足(1)
+        设 c = 原语读足(流, 1)
         若 c == 空 { 返 空 }
         头 = 头 & c
         若 头.长度 >= 4 {
@@ -35,11 +48,12 @@
         }
     }
     若 体长 < 0 { 返 空 }
-    返 流.读足(体长)
+    返 原语读足(流, 体长)
 }
 
 函 写帧(流, 载荷) {
-    流.写("Content-Length: " & 载荷.字节数 & "\r\n\r\n" & 载荷)
+    设 帧 = "Content-Length: " & 载荷.字节数 & "\r\n\r\n" & 载荷
+    若 传输模式 == "tcp" { 流.写(帧) } 否 { xt_stdout_write(帧) }
 }
 
 // 分析+发布诊断,并同步刷新符号缓存(P2 补全/悬停用)
@@ -901,7 +915,7 @@
         } 抑 方法 == "shutdown" {
             若 有id { 写帧(流, 化({"jsonrpc": "2.0", "id": 消息["id"], "result": 空})) }
         } 抑 方法 == "exit" {
-            流.关()
+            若 传输模式 == "tcp" { 流.关() }
             终 0
         } 抑 方法 == "textDocument/completion" {
             处理补全(流, 消息)
@@ -942,11 +956,19 @@
             若 有id { 写帧(流, 化({"jsonrpc": "2.0", "id": 消息["id"], "result": 空})) }
         }
     }
-    流.关()
+    若 传输模式 == "tcp" { 流.关() }
 }
 
-听(20807, 函(流) {
-    跑协议(流)
-})
-示("xt_lsp 已就绪,监听 127.0.0.1:20807 (LSP/TCP)")
-循 { 时.睡(1000) }
+// 启动:默认 stdio(VSCode spawn 管道直连,正式形态);--tcp 回退开发调试监听
+设 _启动参数 = xt_get_args()
+遍历 _a 于 _启动参数 { 若 _a == "--tcp" { 传输模式 = "tcp" } }
+若 传输模式 == "tcp" {
+    听(20807, 函(流) {
+        跑协议(流)
+    })
+    示("xt_lsp 已就绪,监听 127.0.0.1:20807 (LSP/TCP)")
+    循 { 时.睡(1000) }
+} 否 {
+    xt_stderr_write("xt_lsp 已就绪(stdio 模式)\n")
+    跑协议(空)
+}

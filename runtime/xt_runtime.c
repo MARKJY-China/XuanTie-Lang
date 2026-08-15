@@ -2964,6 +2964,75 @@ XTValue xt_input(XTValue prompt_val) {
     return (XTValue)xt_string_new("");
 }
 
+// ============================================================
+// stdio 传输原语(LSP over stdio 等进程管道协议用)
+// 关键:Windows 下 stdin/stdout 默认文本模式会把 \n 翻译成 \r\n,
+// Content-Length 帧会因此错位——首次使用时惰性 _setmode 到 _O_BINARY。
+// 注意:不要在 xt_init 全局做——普通程序的 示() 依赖文本模式的控制台行为。
+// ============================================================
+#ifdef _WIN32
+static void xt_stdio_binary_once(FILE* stream, int* done) {
+    if (*done) return;
+    _setmode(_fileno(stream), _O_BINARY);
+    *done = 1;
+}
+#endif
+
+/**
+ * @brief 从 stdin 精确读取 n 字节(阻塞;EOF/出错且未读满返 空;与 流.读足 语义对齐)
+ * 玄铁侧: 外 函 xt_stdin_read_n(n: 整): 字
+ */
+XTValue xt_stdin_read_n(XTValue n_val) {
+    if (!XT_IS_INT(n_val)) return XT_NULL;
+    int64_t want = XT_TO_INT(n_val);
+    if (want <= 0) return (XTValue)xt_string_new("");
+#ifdef _WIN32
+    static int s_stdin_binary = 0;
+    xt_stdio_binary_once(stdin, &s_stdin_binary);
+#endif
+    char* buf = (char*)malloc((size_t)want);
+    if (!buf) return XT_NULL;
+    size_t got = 0;
+    while (got < (size_t)want) {
+        size_t r = fread(buf + got, 1, (size_t)want - got, stdin);
+        if (r == 0) { free(buf); return XT_NULL; }   // EOF 或错误:协议对端已关闭
+        got += r;
+    }
+    XTString* str = xt_string_new_len(buf, got);   // 二进制安全
+    free(buf);
+    return (XTValue)str;
+}
+
+/**
+ * @brief 原样写 stdout(不加换行,写后即 flush——协议帧独占 stdout 时用)
+ * 玄铁侧: 外 函 xt_stdout_write(串: 字)
+ */
+XTValue xt_stdout_write(XTValue s_val) {
+    if (!XT_IS_REAL_PTR(s_val)) return XT_NULL;
+    XTString* s = (XTString*)s_val;
+    if (s->header.type_id != XT_TYPE_STRING) return XT_NULL;
+#ifdef _WIN32
+    static int s_stdout_binary = 0;
+    xt_stdio_binary_once(stdout, &s_stdout_binary);
+#endif
+    fwrite(s->data, 1, s->length, stdout);
+    fflush(stdout);
+    return XT_NULL;
+}
+
+/**
+ * @brief 原样写 stderr(日志通道:stdio 协议下 stdout 被帧独占,日志必须走这里)
+ * 玄铁侧: 外 函 xt_stderr_write(串: 字)
+ */
+XTValue xt_stderr_write(XTValue s_val) {
+    if (!XT_IS_REAL_PTR(s_val)) return XT_NULL;
+    XTString* s = (XTString*)s_val;
+    if (s->header.type_id != XT_TYPE_STRING) return XT_NULL;
+    fwrite(s->data, 1, s->length, stderr);
+    fflush(stderr);
+    return XT_NULL;
+}
+
 static double xt_to_double(XTValue val);
 
 XTValue xt_math_random(XTValue max_val) {

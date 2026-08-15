@@ -296,6 +296,14 @@ void xt_print_bool(int val);
 void xt_print_float(double val);
 void xt_print_value(XTValue val); 
 
+// --- stdio 传输原语(LSP over stdio 等管道协议;Windows 下惰性切二进制模式) ---
+/// 从 stdin 精确读取 n 字节(阻塞;EOF 未读满返 空)
+XTValue xt_stdin_read_n(XTValue n_val);
+/// 原样写 stdout(不加换行,写后 flush)
+XTValue xt_stdout_write(XTValue s_val);
+/// 原样写 stderr(stdio 协议下的日志通道)
+XTValue xt_stderr_write(XTValue s_val);
+
 // --- 对象创建与管理 ---
 
 /// 创建一个新的整数 (标记指针)

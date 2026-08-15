@@ -23,6 +23,8 @@ class XtLspClient {
     constructor(context) {
         this.context = context;
         this.sock = null;
+        this.proc = null;          // stdio 模式的子进程
+        this.transport = 'stdio';  // stdio(默认,正式形态) | tcp(开发调试)
         this.buffer = Buffer.alloc(0);
         this.nextId = 1;
         this.pending = new Map();      // id -> {resolve, reject}
@@ -55,7 +57,13 @@ class XtLspClient {
     }
 
     send(obj) {
-        if (this.sock && this.connected) this.sock.write(this.encode(obj));
+        if (!this.connected) return;
+        const buf = this.encode(obj);
+        if (this.transport === 'tcp') {
+            if (this.sock) this.sock.write(buf);
+        } else if (this.proc && this.proc.stdin.writable) {
+            this.proc.stdin.write(buf);
+        }
     }
 
     request(method, params) {
@@ -120,30 +128,81 @@ class XtLspClient {
 
     async start() {
         const cfg = vscode.workspace.getConfiguration('xuantie');
-        const port = cfg.get('lspPort', 20807);
-        // 先尝试直连(用户可能已手动起服务);失败则尝试拉起自带的 xt_lsp.exe
-        try {
-            await this.connect(port);
-        } catch (e) {
+        this.transport = cfg.get('lspTransport', 'stdio');
+        if (this.transport === 'tcp') {
+            const port = cfg.get('lspPort', 20807);
+            // 先尝试直连(用户可能已手动起服务);失败则尝试拉起自带的 xt_lsp.exe
+            try {
+                await this.connect(port);
+            } catch (e) {
+                const serverPath = this.findServer();
+                if (!serverPath) { this.log('xt_lsp 未找到,跳过 LSP 启动'); return; }
+                this.log('拉起服务器(tcp): ' + serverPath);
+                this.spawned = cp.spawn(serverPath, ['--tcp'], { stdio: 'ignore' });
+                this.spawned.on('exit', code => {
+                    this.spawned = null;
+                    this.log('服务器进程退出 code=' + code);
+                });
+                await new Promise(r => setTimeout(r, 800));
+                await this.connect(port);
+            }
+        } else {
+            // stdio(正式形态):spawn 管道直连,每窗口独立进程,无端口冲突
             const serverPath = this.findServer();
             if (!serverPath) { this.log('xt_lsp 未找到,跳过 LSP 启动'); return; }
-            this.log('拉起服务器: ' + serverPath);
-            this.spawned = cp.spawn(serverPath, [], { stdio: 'ignore' });
-            this.spawned.on('exit', code => {
-                this.spawned = null;
-                this.log('服务器进程退出 code=' + code);
-            });
-            await new Promise(r => setTimeout(r, 800));
-            await this.connect(port);
+            this.spawnServer(serverPath);
         }
-        // 握手(_xtcPath:P4 语义诊断用,保存时服务器子进程调 xtc --检查)
+        await this.handshake(cfg);
+    }
+
+    // stdio 模式:拉起 xt_lsp 子进程并接管其 stdin/stdout(stderr 进输出频道)
+    spawnServer(serverPath) {
+        this.log('拉起服务器(stdio): ' + serverPath);
+        this.proc = cp.spawn(serverPath, [], { stdio: ['pipe', 'pipe', 'pipe'] });
+        this.proc.stdout.on('data', c => this.onData(c));
+        this.proc.stderr.on('data', c => {
+            const t = c.toString('utf8').trim();
+            if (t) this.log('[server] ' + t);
+        });
+        this.proc.on('exit', code => {
+            const was = this.connected;
+            this.connected = false;
+            globalThis.__xtLspConnected = false;
+            this.proc = null;
+            this.log('服务器进程退出 code=' + code);
+            if (was) {
+                this.diagCollection.clear();   // 防诊断滞留
+                this.scheduleRespawn();
+            }
+        });
+        this.connected = true;
+        globalThis.__xtLspConnected = true;   // 供旧脚本 provider 让位
+    }
+
+    // 握手(_xtcPath:P4 语义诊断用,保存时服务器子进程调 xtc --检查)+ 补发已开文档
+    async handshake(cfg) {
         await this.request('initialize', { capabilities: {}, rootUri: null, processId: process.pid, _xtcPath: cfg.get('xtcPath', '') });
         this.notify('initialized', {});
-        this.log('已连接并完成握手');
-        // 已在编辑中的文档补发 didOpen
+        this.log('已连接并完成握手(' + this.transport + ')');
         vscode.workspace.textDocuments.forEach(doc => {
             if (doc.languageId === 'xuantie') this.didOpen(doc);
         });
+    }
+
+    // stdio 进程死亡重拉:2 秒后重新 spawn 并重握手
+    scheduleRespawn() {
+        if (this.retryTimer) return;
+        this.retryTimer = setTimeout(async () => {
+            this.retryTimer = null;
+            const serverPath = this.findServer();
+            if (!serverPath) return;
+            this.log('重拉服务器(stdio)...');
+            this.spawnServer(serverPath);
+            try {
+                await this.handshake(vscode.workspace.getConfiguration('xuantie'));
+                this.log('重拉成功');
+            } catch (e) { this.log('重拉握手失败: ' + e.message); }
+        }, 2000);
     }
 
     connect(port) {
@@ -183,8 +242,8 @@ class XtLspClient {
             } catch (e) {
                 const serverPath = this.findServer();
                 if (!serverPath) return;
-                this.log('重连失败,重新拉起服务器');
-                this.spawned = cp.spawn(serverPath, [], { stdio: 'ignore' });
+                this.log('重连失败,重新拉起服务器(tcp)');
+                this.spawned = cp.spawn(serverPath, ['--tcp'], { stdio: 'ignore' });
                 this.spawned.on('exit', () => { this.spawned = null; });
                 await new Promise(r => setTimeout(r, 800));
                 try { await this.connect(port); } catch (e2) { this.log('重连再失败: ' + e2.message); return; }
@@ -250,6 +309,7 @@ class XtLspClient {
         } catch (e) { /* 忽略关停异常 */ }
         if (this.sock) this.sock.destroy();
         if (this.spawned) { try { this.spawned.kill(); } catch (e) {} }
+        if (this.proc) { try { this.proc.kill(); } catch (e) {} this.proc = null; }
         this.diagCollection.dispose();
     }
 }
