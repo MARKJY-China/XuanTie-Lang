@@ -67,6 +67,14 @@
 外 函 XT_LoadFontEx(filename: 字, fontSize: 整, refText: 字): 整
 外 函 XT_FontGDI_Create(face: 字, size: 整): 整
 外 函 XT_SaveScreenshot(path: 字): 空
+外 函 XT_BeginScissor(x: 整, y: 整, w: 整, h: 整): 空
+外 函 XT_EndScissor(): 空
+外 函 xt_string_from_codepoint(cp: 整): 字
+外 函 XT_GetClipboard(): 字
+外 函 XT_SetClipboard(text: 字): 空
+外 函 XT_SetIMEPos(x: 整, y: 整): 空
+外 函 XT_IME_Hook(): 整
+外 函 XT_IME_GetComp(): 字
 外 函 XT_UnloadFont(fontPtr: 整): 空
 外 函 XT_DrawTextEx(fontPtr: 整, text: 字, x: 整, y: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_MeasureTextEx(fontPtr: 整, text: 字, fontSize: 整, spacing: 整): 整
@@ -290,6 +298,42 @@
     XT_SaveScreenshot(路径)
 }
 
+// 裁剪绘制区域(UI 输入栏等需限制内容于控件边界内的场景):成对使用,勿跨帧
+公 函 裁剪开始(x, y, 宽, 高) {
+    XT_BeginScissor(x, y, 宽, 高)
+}
+公 函 裁剪结束() {
+    XT_EndScissor()
+}
+
+// Unicode 码点 → 单字符字符串(配合 获字符() 做文本输入;中文 IME 上屏字符可用)
+公 函 字自码点(码点) {
+    返 xt_string_from_codepoint(码点)
+}
+
+// 系统剪贴板读写(输入栏 Ctrl+C/V 用)
+公 函 取剪贴板() {
+    返 XT_GetClipboard()
+}
+公 函 设剪贴板(文本) {
+    XT_SetClipboard(文本)
+}
+
+// IME 候选框定位(输入栏获焦/光标移动时调用,让中文输入法候选窗跟随光标而非停在屏幕左上)
+公 函 设输入法位置(x, y) {
+    XT_SetIMEPos(x, y)
+}
+
+// IME 内联组合钩子(窗口初始化后调用一次,幂等):拦 WM_IME_COMPOSITION 读组合中串,
+// 使拼音串可直接显示在输入栏内(内联组合)。结果字符上屏路径不变。
+公 函 安装输入法钩子() {
+    返 XT_IME_Hook()
+}
+// 当前组合中的拼音串(无组合时返空串;输入栏自绘用)
+公 函 取组合串() {
+    返 XT_IME_GetComp()
+}
+
 // 加载字体并依据参考文本精准提取所需字符码点（缺字无忧，纹理精简）
 公 函 加载字体精准(文件, 字号, 参考文本) {
     返 XT_LoadFontEx(文件, 字号, 参考文本)
@@ -497,6 +541,9 @@
 公 常 键左Shift = 340
 公 常 键右Shift = 344
 公 常 键Ctrl = 341
+公 常 键右Ctrl = 345
+公 常 键V = 86
+公 常 键X = 88
 
 // 鼠标按钮
 公 常 鼠左键 = 0

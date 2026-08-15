@@ -624,9 +624,11 @@ XTString* xt_string_new_len(const char* data, size_t len) {
         // 在 Arena 中分配数据，一次性回收，防止自举编译器产生数百万个小碎内存
         s->data = (char*)xt_arena_alloc_raw(len + 1);
         s->data_in_arena = 1;
+        s->capacity = 0;           // arena 数据不可原地追加
     } else {
         s->data = (char*)malloc(len + 1);
         s->data_in_arena = 0;
+        s->capacity = len;         // 堆数据:容量即长度(追加时触发倍增扩容)
     }
     
     if (s->data) {
@@ -650,6 +652,27 @@ XTString* xt_string_new(const char* data) {
 XTString* xt_string_from_char(char c) {
     char buf[2] = {c, '\0'};
     return xt_string_new(buf);
+}
+
+/**
+ * @brief Unicode 码点 → UTF-8 字符串(输入栏接收 获字符 的码点用;支持 1-4 字节全范围)
+ */
+XTValue xt_string_from_codepoint(XTValue cp_val) {
+    if (!XT_IS_INT(cp_val)) return (XTValue)xt_string_new("");
+    int64_t cp = XT_TO_INT(cp_val);
+    char buf[5];
+    int n = 0;
+    if (cp < 0) cp = 0xFFFD;   // 非法负值 → 替换字符
+    if (cp < 0x80) { buf[n++] = (char)cp; }
+    else if (cp < 0x800) { buf[n++] = (char)(0xC0 | (cp >> 6)); buf[n++] = (char)(0x80 | (cp & 0x3F)); }
+    else if (cp < 0x10000) { buf[n++] = (char)(0xE0 | (cp >> 12)); buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[n++] = (char)(0x80 | (cp & 0x3F)); }
+    else {
+        if (cp > 0x10FFFF) cp = 0xFFFD;
+        buf[n++] = (char)(0xF0 | (cp >> 18)); buf[n++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[n++] = (char)(0x80 | ((cp >> 6) & 0x3F)); buf[n++] = (char)(0x80 | (cp & 0x3F));
+    }
+    buf[n] = '\0';
+    return (XTValue)xt_string_new_len(buf, (size_t)n);
 }
 
 /**
@@ -1858,21 +1881,76 @@ int xt_string_contains(XTString* s, XTString* sub) {
 /**
  * @brief 字符串拼接核心逻辑
  */
+// data/len 级拼接核心(concat 与字面量直拼共用)
+// maxrc = 原地追加的引用计数阈值:xt_add 等"load+retain"路径传 2(槽位+临时引用);
+// xt_string_append 自拼接路径(load 不 retain)传 1。超过即共享,走慢路径新建,不污染共享者。
+static XTString* xt_concat_raw(XTString* s1, const char* d2, size_t len2, uint32_t maxrc) {
+    size_t len1 = s1 ? s1->length : 0;
+    size_t total_len = len1 + len2;
+
+    // 原地追加快路径(根治拼接 O(n²)):左串独占时直接在左缓冲追加,容量不足倍增 realloc。
+    // d2 指向 s1 自身数据(如 s=s+s)时自重叠 memcpy 是 UB,走慢路径。
+    // 契约:返回对象与 s1 同指针,先 retain 一次预支调用方对 s1 的 release,使其净增为零。
+    if (s1 && !s1->data_in_arena && d2 != s1->data) {
+        uint32_t _rc = atomic_load_explicit(&s1->header.ref_count, memory_order_relaxed);
+        if (_rc >= 1 && _rc <= maxrc) {
+            if (s1->capacity < total_len) {
+                size_t newcap = s1->capacity;
+                if (newcap < 16) newcap = 16;
+                while (newcap < total_len) newcap *= 2;
+                char* nd = (char*)realloc(s1->data, newcap + 1);
+                if (!nd) goto _slow;   // 扩容失败回退慢路径
+                s1->data = nd;
+                s1->capacity = newcap;
+            }
+            if (len2 > 0) memcpy(s1->data + len1, d2, len2);
+            s1->data[total_len] = '\0';
+            s1->length = total_len;
+            xt_retain((XTValue)s1);
+            return s1;
+        }
+    }
+
+_slow:;
+    // 慢路径:新建结果对象(单次拷贝,不再有历史的三重复制)
+    XTString* res = (XTString*)xt_malloc(sizeof(XTString), XT_TYPE_STRING);
+    res->length = total_len;
+    if (g_current_arena) {
+        res->data = (char*)xt_arena_alloc_raw(total_len + 1);
+        res->data_in_arena = 1;
+        res->capacity = 0;
+    } else {
+        res->data = (char*)malloc(total_len + 1);
+        res->data_in_arena = 0;
+        res->capacity = total_len;
+    }
+    if (len1 > 0) memcpy(res->data, s1->data, len1);
+    if (len2 > 0) memcpy(res->data + len1, d2, len2);
+    res->data[total_len] = '\0';
+    return res;
+}
+
 XTString* xt_string_concat(XTString* s1, XTString* s2) {
     if (s1) xt_string_guard((XTValue)s1, "连接");
     if (s2) xt_string_guard((XTValue)s2, "连接");
-    size_t len1 = s1 ? s1->length : 0;
-    size_t len2 = s2 ? s2->length : 0;
-    size_t total_len = len1 + len2;
-    
-    char* data = (char*)malloc(total_len + 1);
-    if (len1 > 0) memcpy(data, s1->data, len1);
-    if (len2 > 0) memcpy(data + len1, s2->data, len2);
-    data[total_len] = '\0';
-    
-    XTString* res = xt_string_new_len(data, total_len);
-    free(data);
-    return res;
+    // 通用拼接(+/&/示内拼接)永不原地:左串仍被变量持有而结果不写回该变量,
+    // 原地追加会改写变量内容(实测 OOP/闭包场景污染崩溃)。原地追加只允许在
+    // 编译期确证写回同变量的自拼接路径(xt_string_append*,maxrc=1)。
+    return xt_concat_raw(s1, s2 ? s2->data : "", s2 ? s2->length : 0, 0);
+}
+
+/**
+ * @brief 字面量直拼(s = s + "字面量" 的编译落点):零对象分配,直接按数据追加。
+ * 契约同 xt_string_append:不消耗 a;原地复用时 retain 预支。
+ */
+XTValue xt_string_append_lit(XTValue a, const char* d, int64_t len) {
+    int aStr = xt_is_real_ptr(a) && ((XTObject*)a)->type_id == XT_TYPE_STRING;
+    if (aStr) return (XTValue)xt_concat_raw((XTString*)a, d, (size_t)len, 1);   // 自拼接阈值 1
+    // 非字符串左值(启发误中):转字符串后拼
+    XTString* s = xt_obj_to_string(a);
+    XTString* r = xt_concat_raw(s, d, (size_t)len, 2);   // 新串 + ots 引用,阈值 2
+    xt_release((XTValue)s);
+    return (XTValue)r;
 }
 
 /**
@@ -3519,6 +3597,26 @@ XTValue xt_json_deserialize(XTString* json_str) {
 
 // --- 通用算术与位运算 Fallback ---
 
+/**
+ * @brief 自拼接专用追加(s = s + X 的编译落点):字符串情形原地追加优先,其余回退 xt_add。
+ * 契约:不消耗 a/b 的引用;原地复用 a 时先 retain 预支(调用方随后 release a 一次,净平衡)。
+ */
+XTValue xt_string_append(XTValue a, XTValue b) {
+    int aStr = xt_is_real_ptr(a) && ((XTObject*)a)->type_id == XT_TYPE_STRING;
+    int bStr = xt_is_real_ptr(b) && ((XTObject*)b)->type_id == XT_TYPE_STRING;
+    if (aStr || bStr) {
+        XTString* sa; int saOwned = 0;
+        if (aStr) { sa = (XTString*)a; } else { sa = xt_obj_to_string(a); saOwned = 1; }
+        XTString* sb; int sbOwned = 0;
+        if (bStr) { sb = (XTString*)b; } else { sb = xt_obj_to_string(b); sbOwned = 1; }
+        XTString* r = xt_concat_raw(sa, sb->data, sb->length, 1);   // 自拼接路径:load 未 retain,阈值 1
+        if (saOwned) xt_release((XTValue)sa);
+        if (sbOwned) xt_release((XTValue)sb);
+        return (XTValue)r;
+    }
+    return xt_add(a, b);
+}
+
 XTValue xt_add(XTValue a, XTValue b) {
     // 字符串拼接分派:任一侧为字符串对象 → 字符串化拼接(与 & 运算符、GSC 解释器语义一致)。
     // 编译器对静态不可证纯整数的 boxed i64 一律落到这里——boxed 可能是字符串指针,
@@ -3526,11 +3624,15 @@ XTValue xt_add(XTValue a, XTValue b) {
     int aStr = xt_is_real_ptr(a) && ((XTObject*)a)->type_id == XT_TYPE_STRING;
     int bStr = xt_is_real_ptr(b) && ((XTObject*)b)->type_id == XT_TYPE_STRING;
     if (aStr || bStr) {
-        XTString* sa = xt_obj_to_string(a);   // +1 引用
-        XTString* sb = xt_obj_to_string(b);   // +1 引用
+        // 字符串侧直接引用(不经 obj_to_string 的 retain)——否则左串 ref 恒 ≥2,
+        // concat 的独占原地追加快路径永不命中(拼接退化为 O(n²))。
+        XTString* sa; int saOwned = 0;
+        if (aStr) { sa = (XTString*)a; } else { sa = xt_obj_to_string(a); saOwned = 1; }
+        XTString* sb; int sbOwned = 0;
+        if (bStr) { sb = (XTString*)b; } else { sb = xt_obj_to_string(b); sbOwned = 1; }
         XTString* r = xt_string_concat(sa, sb);
-        xt_release((XTValue)sa);
-        xt_release((XTValue)sb);
+        if (saOwned) xt_release((XTValue)sa);
+        if (sbOwned) xt_release((XTValue)sb);
         return (XTValue)r;
     }
     if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) + XT_TO_INT(b));

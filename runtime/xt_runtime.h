@@ -225,6 +225,7 @@ typedef struct {
     XTObject header;
     char* data;           ///< 字符数组 (UTF-8)
     size_t length;        ///< 字符串字节长度
+    size_t capacity;      ///< data 堆缓冲的分配容量(仅非 arena;0 = 不可原地追加)
     uint8_t data_in_arena; ///< 标志位：data 是否由 Arena 分配 (不可 free)
 } XTString;
 
@@ -319,6 +320,8 @@ XTValue xt_func_new(void* func_ptr);
 XTString* xt_string_new(const char* data);
 /// 创建指定长度的字符串
 XTString* xt_string_new_len(const char* data, size_t len);
+/// Unicode 码点 → UTF-8 字符串(输入框收 获字符 码点用)
+XTValue xt_string_from_codepoint(XTValue cp_val);
 /// 从单个字符创建 XT 字符串
 XTString* xt_string_from_char(char c);
 XTValue xt_string_get_char(XTValue str_val, int64_t index);
@@ -453,6 +456,10 @@ XTValue xt_file_exists(XTValue path);
 
 // --- 算术与位运算接口 (用于 Fallback/多态/重载支持) ---
 XTValue xt_add(XTValue a, XTValue b);
+/// 自拼接专用(s = s + X):字符串原地追加优先,其余回退 xt_add
+XTValue xt_string_append(XTValue a, XTValue b);
+/// 字面量直拼(s = s + "字面量"):零对象分配追加
+XTValue xt_string_append_lit(XTValue a, const char* d, int64_t len);
 XTValue xt_sub(XTValue a, XTValue b);
 XTValue xt_mul(XTValue a, XTValue b);
 XTValue xt_div(XTValue a, XTValue b);

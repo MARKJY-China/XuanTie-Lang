@@ -25,13 +25,14 @@
 #define XT_TO_BOOL(v)   ((v) == XT_TRUE)
 
 // XTString 结构 (与 xt_runtime.h/c 对齐)
-// 运行时 XTString: { XTObject(12字节) + 填充(4) + char* data(8) + size_t length(8) + uint8_t(1) }
+// 运行时 XTString: { XTObject(12字节) + 填充(4) + char* data(8) + size_t length(8) + size_t capacity(8) + uint8_t(1) }
 typedef struct {
     uint32_t magic;
     uint32_t ref_count;
     uint32_t type_id;
     char*    data;
     size_t   length;
+    size_t   capacity;   // 堆缓冲分配容量(原地追加用;arena 串为 0)
     uint8_t  data_in_arena;
 } XTString;
 
@@ -59,6 +60,9 @@ static const char* xt_get_cstr(uintptr_t v) {
     }
     return "";
 }
+
+// runtime 字符串构造(剪贴板读取等需返回玄铁字符串对象的桥函数用)
+extern void* xt_string_new(const char*);
 
 // 提取浮点数: 如果是 XTFloat 对象则返回 value
 static double xt_get_float(uintptr_t v) {
@@ -1042,3 +1046,128 @@ void XT_SaveScreenshot(uintptr_t pathVal) {
     if (!IS_PTR(pathVal)) return;
     TakeScreenshot(xt_get_cstr(pathVal));
 }
+
+/* 裁剪(UI 输入栏等需限制绘制区域的控件用):raylib BeginScissorMode/EndScissorMode 桥接 */
+void XT_BeginScissor(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h) {
+    BeginScissorMode((int)XT_TO_INT(x), (int)XT_TO_INT(y), (int)XT_TO_INT(w), (int)XT_TO_INT(h));
+}
+void XT_EndScissor(void) {
+    EndScissorMode();
+}
+
+/* 系统剪贴板(输入栏 Ctrl+C/V 用) */
+uintptr_t XT_GetClipboard(void) {
+    const char* t = GetClipboardText();
+    if (!t) t = "";
+    return (uintptr_t)xt_string_new(t);
+}
+void XT_SetClipboard(uintptr_t text) {
+    if (!IS_PTR(text)) return;
+    SetClipboardText(xt_get_cstr(text));
+}
+
+#ifdef _WIN32
+/* IME 候选框定位(输入栏获焦/光标移动时调用,让中文输入法候选窗跟随光标) */
+typedef void* XT_HWND;
+typedef void* XT_HIMC;
+typedef struct { long l, t, r, b; } XT_RECT;
+typedef struct { unsigned long dwStyle; struct { long x, y; } pt; XT_RECT area; } XT_COMPFORM;
+extern __declspec(dllimport) XT_HWND WINAPI GetForegroundWindow(void);
+extern __declspec(dllimport) XT_HIMC WINAPI ImmGetContext(XT_HWND);
+extern __declspec(dllimport) int WINAPI ImmReleaseContext(XT_HWND, XT_HIMC);
+extern __declspec(dllimport) int WINAPI ImmSetCompositionWindow(XT_HIMC, XT_COMPFORM*);
+extern __declspec(dllimport) int WINAPI ImmSetCandidateWindow(XT_HIMC, XT_COMPFORM*);
+_Static_assert(sizeof(XT_COMPFORM) == 28, "COMPOSITIONFORM 布局漂移");
+
+void XT_SetIMEPos(uintptr_t x, uintptr_t y) {
+    XT_HWND hwnd = GetForegroundWindow();
+    if (!hwnd) return;
+    XT_HIMC himc = ImmGetContext(hwnd);
+    if (!himc) return;
+    // CFS_FORCE_POSITION|CFS_POINT:候选窗跟随光标。注意 IME 会为被抑制的组合窗
+    // 预留约 26px 行高,候选窗落在 pt 下方约 26px——由调用方(UI 输入栏)补偿。
+    // CFS_CANDIDATEPOS 被部分 IME 忽视;CFS_RECT 会被微软拼音误判翻到上方。
+    XT_COMPFORM cf;
+    memset(&cf, 0, sizeof(cf));
+    cf.dwStyle = 0x0022;
+    cf.pt.x = (long)XT_TO_INT(x);
+    cf.pt.y = (long)XT_TO_INT(y);
+    ImmSetCompositionWindow(himc, &cf);
+    ImmReleaseContext(hwnd, himc);
+}
+
+/* ---- IME 内联组合(拼音串直接显示在输入栏内) ----
+   原理:子类化 raylib 窗口 WndProc,拦 WM_IME_COMPOSITION 读组合中串(GCS_COMPSTR)存全局,
+   消息照常放行给 GLFW(结果字符经 GetCharPressed 上屏,路径不变)。
+   组合串由 UI 输入栏自绘(下划线样式),实现"拼音打在栏内"。 */
+typedef intptr_t (WINAPI *XT_WNDPROC)(XT_HWND, unsigned int, uintptr_t, intptr_t);
+extern __declspec(dllimport) intptr_t WINAPI SetWindowLongPtrW(XT_HWND, int, intptr_t);
+extern __declspec(dllimport) intptr_t WINAPI CallWindowProcW(XT_WNDPROC, XT_HWND, unsigned int, uintptr_t, intptr_t);
+extern __declspec(dllimport) long WINAPI ImmGetCompositionStringW(XT_HIMC, unsigned long, void*, unsigned long);
+extern __declspec(dllimport) int WINAPI WideCharToMultiByte(unsigned int, unsigned long, const wchar_t*, int, char*, int, void*, void*);
+
+#define XT_WM_IME_STARTCOMP  0x010D
+#define XT_WM_IME_ENDCOMP    0x010E
+#define XT_WM_IME_COMP       0x010F
+#define XT_GCS_COMPSTR       0x0008
+#define XT_GWLP_WNDPROC      (-4)
+
+static XT_WNDPROC xt_glfw_proc = NULL;
+static wchar_t xt_ime_comp[256];
+static int xt_ime_comp_len = 0;
+
+static intptr_t WINAPI xt_ime_wndproc(XT_HWND hwnd, unsigned int msg, uintptr_t wp, intptr_t lp) {
+    if (msg == XT_WM_IME_STARTCOMP) {
+        // 吃掉开始组合:不创建 IME 原生组合窗(拼音串由输入栏内联自绘);
+        // 不放行给 GLFW——GLFW 不需要该消息来收结果字符(结果走 COMPOSITION 的 RESULTSTR)
+        xt_ime_comp_len = 0;
+        xt_ime_comp[0] = 0;
+        return 0;
+    } else if (msg == XT_WM_IME_ENDCOMP) {
+        xt_ime_comp_len = 0;
+        xt_ime_comp[0] = 0;
+    } else if (msg == XT_WM_IME_COMP) {
+        if (lp & XT_GCS_COMPSTR) {
+            XT_HIMC himc = ImmGetContext(hwnd);
+            if (himc) {
+                long n = ImmGetCompositionStringW(himc, XT_GCS_COMPSTR, NULL, 0);
+                if (n > 0 && n < 510) {
+                    ImmGetCompositionStringW(himc, XT_GCS_COMPSTR, xt_ime_comp, (unsigned long)(n + 2));
+                    xt_ime_comp_len = (int)(n / 2);
+                    xt_ime_comp[xt_ime_comp_len] = 0;
+                } else {
+                    xt_ime_comp_len = 0;
+                    xt_ime_comp[0] = 0;
+                }
+                ImmReleaseContext(hwnd, himc);
+            }
+        }
+    }
+    return CallWindowProcW(xt_glfw_proc, hwnd, msg, wp, lp);
+}
+
+/* 安装 IME 钩子(窗口初始化后调用,幂等);成功返 1 */
+uintptr_t XT_IME_Hook(void) {
+    XT_HWND hwnd = (XT_HWND)GetWindowHandle();
+    if (!hwnd) return XT_FROM_INT(0);
+    if (xt_glfw_proc) return XT_FROM_INT(1);
+    intptr_t old = SetWindowLongPtrW(hwnd, XT_GWLP_WNDPROC, (intptr_t)xt_ime_wndproc);
+    if (!old) return XT_FROM_INT(0);
+    xt_glfw_proc = (XT_WNDPROC)old;
+    return XT_FROM_INT(1);
+}
+
+/* 当前组合中串(UTF-8;无组合时返空串) */
+uintptr_t XT_IME_GetComp(void) {
+    if (xt_ime_comp_len <= 0) return (uintptr_t)xt_string_new("");
+    char u8[768];
+    int n = WideCharToMultiByte(65001, 0, xt_ime_comp, xt_ime_comp_len, u8, 767, NULL, NULL);
+    if (n <= 0) return (uintptr_t)xt_string_new("");
+    u8[n] = 0;
+    return (uintptr_t)xt_string_new(u8);
+}
+#else
+uintptr_t XT_IME_Hook(void) { return XT_FROM_INT(0); }
+uintptr_t XT_IME_GetComp(void) { return (uintptr_t)xt_string_new(""); }
+void XT_SetIMEPos(uintptr_t x, uintptr_t y) { (void)x; (void)y; }
+#endif
