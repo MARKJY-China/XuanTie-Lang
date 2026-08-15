@@ -3,6 +3,28 @@ const fs = require('fs');
 const path = require('path');
 const { pinyin } = require('./pinyin-pro.js');
 
+// 中文标签补 filterText(全拼+首字母+多音字全部读音),与 lspClient.js 同款
+// 多音字实例:行 → xing/hang/heng 均可筛中(中文直觉:打 hang 也应补出 行)
+function withPinyinFilter(label) {
+    try {
+        if (/[\u4e00-\u9fa5]/.test(label)) {
+            const arr = pinyin(label, { toneType: 'none', type: 'array' });
+            const parts = [arr.join(''), arr.map(p => p[0]).join('')];
+            const readings = new Set();
+            const initials = new Set(parts[1]);
+            for (const ch of label) {
+                if (/[\u4e00-\u9fa5]/.test(ch)) {
+                    const multi = pinyin(ch, { toneType: 'none', type: 'array', multiple: true });
+                    for (const r of multi) { readings.add(r); initials.add(r[0]); }
+                }
+            }
+            parts.push(...readings, ...initials, label);
+            return parts.join(' ');
+        }
+    } catch (e) { /* 忽略拼音转换失败 */ }
+    return label;
+}
+
 // 忽略这些内置关键字，不把它们当作当前文件变量
 const keywords = new Set([
     "设", "常", "型", "函", "造", "公", "私", "护", "承", "口",
@@ -77,15 +99,7 @@ const keywordCompletionItemsWithSnippets = keywordSnippets.map(ks => {
     const item = new vscode.CompletionItem(ks.label, vscode.CompletionItemKind.Snippet);
     item.insertText = new vscode.SnippetString(ks.body);
     item.detail = ks.desc;
-    
-    try {
-        const pyArray = pinyin(ks.label, { toneType: 'none', type: 'array' });
-        const fullPinyin = pyArray.join('');
-        const firstLetters = pyArray.map(p => p[0]).join('');
-        item.filterText = `${fullPinyin} ${firstLetters} ${ks.label}`;
-    } catch (e) {
-        item.filterText = ks.label;
-    }
+    item.filterText = withPinyinFilter(ks.label);
     return item;
 });
 
@@ -94,15 +108,7 @@ const keywordCompletionItemsOnly = keywordSnippets.map(ks => {
     const item = new vscode.CompletionItem(ks.label, vscode.CompletionItemKind.Keyword);
     item.insertText = ks.label;
     item.detail = `关键字: ${ks.label}`;
-    
-    try {
-        const pyArray = pinyin(ks.label, { toneType: 'none', type: 'array' });
-        const fullPinyin = pyArray.join('');
-        const firstLetters = pyArray.map(p => p[0]).join('');
-        item.filterText = `${fullPinyin} ${firstLetters} ${ks.label}`;
-    } catch (e) {
-        item.filterText = ks.label;
-    }
+    item.filterText = withPinyinFilter(ks.label);
     return item;
 });
 
@@ -475,14 +481,7 @@ function activate(context) {
                                 const addPinyinItem = (name, kind, detail) => {
                                     const item = new vscode.CompletionItem(name, kind);
                                     item.detail = detail;
-                                    try {
-                                        if (/[\u4e00-\u9fa5]/.test(name)) {
-                                            const pyArray = pinyin(name, { toneType: 'none', type: 'array' });
-                                            item.filterText = `${pyArray.join('')} ${pyArray.map(p=>p[0]).join('')} ${name}`;
-                                        } else {
-                                            item.filterText = name;
-                                        }
-                                    } catch(e) { item.filterText = name; }
+                                    item.filterText = withPinyinFilter(name);
                                     completionItems.push(item);
                                 };
                                 
@@ -523,14 +522,7 @@ function activate(context) {
                     const item = new vscode.CompletionItem(word, vscode.CompletionItemKind.Variable);
                     item.detail = analysis.globalSymbols.has(word) && !localWords.has(word) ? `全局符号: ${word}` : `当前文件: ${word}`;
                     item.sortText = '9_' + word;   // 排 LSP 关键字/符号之后
-                    try {
-                        if (/[\u4e00-\u9fa5]/.test(word)) {
-                            const pyArray = pinyin(word, { toneType: 'none', type: 'array' });
-                            item.filterText = `${pyArray.join('')} ${pyArray.map(p=>p[0]).join('')} ${word}`;
-                        } else {
-                            item.filterText = word;
-                        }
-                    } catch(e) { item.filterText = word; }
+                    item.filterText = withPinyinFilter(word);
                     completionItems.push(item);
                 }
 

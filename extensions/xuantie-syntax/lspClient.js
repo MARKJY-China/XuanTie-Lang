@@ -8,12 +8,23 @@ const path = require('path');
 const fs = require('fs');
 const { pinyin } = require('./pinyin-pro.js');
 
-// 中文标签补 filterText(全拼+首字母),让补全可用拼音/英文筛选
+// 中文标签补 filterText(全拼+首字母+多音字全部读音),让补全可用拼音/英文筛选
+// 多音字实例:行 → xing/hang/heng 均可筛中(否则打 UI.hang 补不出 UI.行)
 function withPinyinFilter(label) {
     try {
         if (/[\u4e00-\u9fa5]/.test(label)) {
             const arr = pinyin(label, { toneType: 'none', type: 'array' });
-            return `${arr.join('')} ${arr.map(p => p[0]).join('')} ${label}`;
+            const parts = [arr.join(''), arr.map(p => p[0]).join('')];   // 首选全拼 + 首选首字母
+            const readings = new Set();
+            const initials = new Set(parts[1]);
+            for (const ch of label) {
+                if (/[\u4e00-\u9fa5]/.test(ch)) {
+                    const multi = pinyin(ch, { toneType: 'none', type: 'array', multiple: true });
+                    for (const r of multi) { readings.add(r); initials.add(r[0]); }
+                }
+            }
+            parts.push(...readings, ...initials, label);
+            return parts.join(' ');
         }
     } catch (e) { /* 忽略拼音转换失败 */ }
     return label;
