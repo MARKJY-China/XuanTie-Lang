@@ -65,6 +65,8 @@
 // === 字体（支持中文） ===
 外 函 XT_LoadFont(filename: 字, fontSize: 整): 整
 外 函 XT_LoadFontEx(filename: 字, fontSize: 整, refText: 字): 整
+外 函 XT_FontGDI_Create(face: 字, size: 整): 整
+外 函 XT_SaveScreenshot(path: 字): 空
 外 函 XT_UnloadFont(fontPtr: 整): 空
 外 函 XT_DrawTextEx(fontPtr: 整, text: 字, x: 整, y: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_MeasureTextEx(fontPtr: 整, text: 字, fontSize: 整, spacing: 整): 整
@@ -274,6 +276,18 @@
 // 加载字体（支持中文，需指定系统字体路径）
 公 函 加载字体(文件, 字号) {
     返 XT_LoadFont(文件, 字号)
+}
+
+// 加载系统字体(GDI 光栅化,Windows 系统级视觉效果:灰阶抗锯齿、生僻字系统回落;
+// 按需栅格化+图集缓存,无需 ttf 文件。字体名如 "微软雅黑"/"宋体")
+// 返回句柄同样适用于 绘字体文字/量字体文字/释字体
+公 函 加载系统字体(字体名, 字号) {
+    返 XT_FontGDI_Create(字体名, 字号)
+}
+
+// 截图导出 PNG(当前帧缓冲,须在一帧 结束绘图 之后调用;渲染调试/自动验收用)
+公 函 截图(路径) {
+    XT_SaveScreenshot(路径)
 }
 
 // 加载字体并依据参考文本精准提取所需字符码点（缺字无忧，纹理精简）

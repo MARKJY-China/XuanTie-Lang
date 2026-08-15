@@ -696,7 +696,19 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     return XT_FROM_INT(xt_font_count);
 }
 
+#ifdef _WIN32
+/* GDI 字体(系统级光栅化)前向声明——实现在文件尾 GDI 段 */
+uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal);
+void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
+                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a);
+uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize);
+void XT_FontGDI_Unload(uintptr_t handle);
+#endif
+
 void XT_UnloadFont(uintptr_t fontHandle) {
+#ifdef _WIN32
+    if (XT_TO_INT(fontHandle) >= 100) { XT_FontGDI_Unload(fontHandle); return; }
+#endif
     Font* p = xt_get_font(fontHandle);
     if (p) {
         // 避免卸载 raylib 默认字体（baseSize 为默认字体的标记）
@@ -709,6 +721,12 @@ void XT_UnloadFont(uintptr_t fontHandle) {
 void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t y,
                    uintptr_t fontSize, uintptr_t spacing,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+#ifdef _WIN32
+    if (XT_TO_INT(fontHandle) >= 100) {   // GDI 字体(系统级光栅化)
+        XT_FontGDI_DrawText(fontHandle, text, x, y, fontSize, r, g, b, a);
+        return;
+    }
+#endif
     Font* p = xt_get_font(fontHandle);
     if (p) {
         Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
@@ -721,8 +739,306 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
 
 // 用指定字体测量文字宽度（UI 布局需要精确宽度做控件尺寸与居中）
 uintptr_t XT_MeasureTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t fontSize, uintptr_t spacing) {
+#ifdef _WIN32
+    if (XT_TO_INT(fontHandle) >= 100) {   // GDI 精确度量
+        return XT_FontGDI_Measure(fontHandle, text, fontSize);
+    }
+#endif
     Font* p = xt_get_font(fontHandle);
     if (!p) return XT_FROM_INT(0);
     Vector2 v = MeasureTextEx(*p, xt_get_cstr(text), (float)XT_TO_INT(fontSize), (float)XT_TO_INT(spacing));
     return XT_FROM_INT((int64_t)(v.x + 0.5));
+}
+
+#ifdef _WIN32
+// ============================================================
+// GDI 字体(Windows 系统级光栅化:按需栅格化 + 动态图集缓存)
+// 视觉效果 = 系统灰阶抗锯齿(GetGlyphOutlineW XT_GGO_GRAY8,与系统应用同级);
+// 无需 ttf 文件(直接用系统字体名,如 微软雅黑);生僻字由系统字体引擎自动回落。
+// 句柄规则:>= 100 为 GDI 字体;XT_DrawTextEx/XT_MeasureTextEx/XT_UnloadFont 自动分派。
+// 延续桥内风格:不包 <windows.h>(与 raylib 符号冲突),GDI 声明手写,
+// 布局以 _Static_assert 编译期自检(若 SDK 布局漂移,编译即炸,不静默错)。
+// ============================================================
+typedef void* XT_HDC;
+typedef void* XT_HFONT;
+typedef void* XT_HGDIOBJ;
+typedef unsigned short XT_WCHAR;
+typedef unsigned char XT_BYTE;
+typedef struct { short fract; short value; } XT_FIXED;
+typedef struct { XT_FIXED eM11, eM12, eM21, eM22; } XT_MAT2;
+typedef struct { long x, y; } XT_POINT;
+typedef struct {
+    unsigned int gmBlackBoxX, gmBlackBoxY;
+    XT_POINT gmptGlyphOrigin;
+    short gmCellIncX, gmCellIncY;
+} XT_GLYPHMETRICS;
+typedef struct { long cx, cy; } XT_SIZE;
+typedef struct {
+    long tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading;
+    long tmAveCharWidth, tmMaxCharWidth, tmWeight, tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY;
+    XT_WCHAR tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+    XT_BYTE tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+} XT_TEXTMETRICW;
+_Static_assert(sizeof(XT_MAT2) == 16, "XT_MAT2 布局漂移");
+_Static_assert(sizeof(XT_GLYPHMETRICS) == 20, "XT_GLYPHMETRICS 布局漂移");
+_Static_assert(sizeof(XT_TEXTMETRICW) == 60, "XT_TEXTMETRICW 布局漂移");
+
+extern __declspec(dllimport) XT_HFONT WINAPI CreateFontW(
+    int, int, int, int, int, unsigned long, unsigned long, unsigned long,
+    unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, const wchar_t*);
+extern __declspec(dllimport) unsigned long WINAPI GetGlyphOutlineW(
+    XT_HDC, unsigned int, unsigned int, XT_GLYPHMETRICS*, unsigned long, void*, const XT_MAT2*);
+extern __declspec(dllimport) XT_HDC WINAPI CreateCompatibleDC(XT_HDC);
+extern __declspec(dllimport) XT_HGDIOBJ WINAPI SelectObject(XT_HDC, XT_HGDIOBJ);
+extern __declspec(dllimport) int WINAPI DeleteObject(XT_HGDIOBJ);
+extern __declspec(dllimport) int WINAPI DeleteDC(XT_HDC);
+extern __declspec(dllimport) int WINAPI GetTextMetricsW(XT_HDC, XT_TEXTMETRICW*);
+extern __declspec(dllimport) int WINAPI GetTextExtentPoint32W(XT_HDC, const wchar_t*, int, XT_SIZE*);
+
+#define XT_GGO_GRAY8   6   /* GGO_GRAY8_BITMAP(65 级灰阶 0..64);5 是 GRAY4(17 级),曾误用致字形粗大 */
+#define XT_FW_NORMAL   400
+#define XT_DEFAULT_CHARSET 1
+
+#define XT_GDI_MAX_FONTS 4
+#define XT_GDI_ATLAS 2048          /* 图集边长(GRAY_ALPHA 2B/px,8MB) */
+#define XT_GDI_HASH_CAP 8192       /* 字形缓存槽数(开放寻址) */
+
+typedef struct {
+    int cp;              /* 0 = 空槽 */
+    int sizeIdx;
+    int w, h;            /* 位图尺寸(0 = 空白字形,如空格) */
+    int ox, oy;          /* gmptGlyphOrigin(相对基线) */
+    int adv;             /* 前进宽 gmCellIncX */
+    int ax, ay;          /* 图集内位置 */
+} XTGdiGlyph;
+
+typedef struct {
+    int used;
+    wchar_t face[64];
+    XT_HDC hdc;
+    int sizes[8];
+    XT_HFONT hfonts[8];
+    int ascents[8];      /* 每字号 tmAscent(基线换算用) */
+    int sizeCount;
+    XTGdiGlyph* hash;    /* XT_GDI_HASH_CAP 开放寻址 */
+    Image atlasImg;
+    Texture2D atlasTex;
+    int atlasReady;
+    int curX, curY, rowH;
+    int dirty;           /* 本帧有新字形入图集(需 UpdateTexture) */
+} XTGdiFont;
+
+static XTGdiFont xt_gdi_fonts[XT_GDI_MAX_FONTS];
+
+/* UTF-8 → 码点(单字符);返回 cp,*adv = 消耗字节数(与 XT_LoadFontEx 的解码同款) */
+static int xt_gdi_next_cp(const char* s, int* adv) {
+    unsigned char b0 = (unsigned char)s[0];
+    if (b0 < 0x80) { *adv = 1; return b0; }
+    if (b0 < 0xE0) { *adv = 2; return ((b0 & 0x1F) << 6) | (s[1] & 0x3F); }
+    if (b0 < 0xF0) { *adv = 3; return ((b0 & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F); }
+    *adv = 4;
+    return ((b0 & 0x07) << 18) | ((s[1] & 0x3F) << 12) | ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+}
+
+/* 字号槽:按字号建/取 XT_HFONT 与 ascent */
+static int xt_gdi_size_slot(XTGdiFont* f, int size) {
+    if (size <= 0) size = 32;
+    for (int i = 0; i < f->sizeCount; i++) if (f->sizes[i] == size) return i;
+    if (f->sizeCount >= 8) return 0;   /* 槽满回退首字号(罕见:UI 字号有限) */
+    int i = f->sizeCount++;
+    XT_HFONT hf = CreateFontW(-size, 0, 0, 0, XT_FW_NORMAL, 0, 0, 0, XT_DEFAULT_CHARSET,
+                           0, 0, 6,
+                           0, f->face);
+    if (!hf) return 0;
+    f->sizes[i] = size;
+    f->hfonts[i] = hf;
+    SelectObject(f->hdc, hf);
+    XT_TEXTMETRICW tm;
+    GetTextMetricsW(f->hdc, &tm);
+    f->ascents[i] = tm.tmAscent;
+    return i;
+}
+
+/* 取字形(未缓存则 GDI 栅格化并入图集);返回 NULL = 无法栅格化 */
+static XTGdiGlyph* xt_gdi_glyph_get(XTGdiFont* f, int cp, int sizeIdx) {
+    uint32_t h = ((uint32_t)cp * 31u + (uint32_t)sizeIdx) & (XT_GDI_HASH_CAP - 1);
+    for (int probe = 0; probe < XT_GDI_HASH_CAP; probe++) {
+        int idx = (int)((h + probe) & (XT_GDI_HASH_CAP - 1));
+        XTGdiGlyph* g = &f->hash[idx];
+        if (g->cp == 0) {
+            /* 空槽 → 栅格化 */
+            XT_HFONT hf = f->hfonts[sizeIdx];
+            SelectObject(f->hdc, hf);
+            XT_MAT2 m2 = {{0,1},{0,0},{0,0},{0,1}};
+            XT_GLYPHMETRICS gm;
+            unsigned long need = GetGlyphOutlineW(f->hdc, (unsigned int)cp, XT_GGO_GRAY8, &gm, 0, NULL, &m2);
+            if (need == 0xFFFFFFFFUL) return NULL;   /* GDI_ERROR */
+            g->cp = cp;
+            g->sizeIdx = sizeIdx;
+            g->ox = gm.gmptGlyphOrigin.x;
+            g->oy = gm.gmptGlyphOrigin.y;
+            g->adv = (int)gm.gmCellIncX;
+            g->w = (int)gm.gmBlackBoxX;
+            g->h = (int)gm.gmBlackBoxY;
+            if (g->adv <= 0) g->adv = f->sizes[sizeIdx] / 2;
+            if (need == 0 || g->w <= 0 || g->h <= 0) { g->w = 0; g->h = 0; return g; }   /* 空白字形 */
+            /* 图集行架分配 */
+            if (f->curX + g->w > XT_GDI_ATLAS) {
+                f->curX = 0;
+                f->curY += f->rowH + 4;   /* 4px 间隔防双线性渗色 */
+                f->rowH = 0;
+            }
+            if (f->curY + g->h > XT_GDI_ATLAS) return NULL;   /* 图集满(>4000 汉字 UI 用不到) */
+            g->ax = f->curX;
+            g->ay = f->curY;
+            f->curX += g->w + 4;
+            if (g->h > f->rowH) f->rowH = g->h;
+            /* 取位图(GGO_GRAY8:0..64 灰阶,行 4 字节对齐) */
+            unsigned char* bmp = (unsigned char*)malloc(need);
+            if (!bmp) return NULL;
+            GetGlyphOutlineW(f->hdc, (unsigned int)cp, XT_GGO_GRAY8, &gm, need, bmp, &m2);
+            int stride = (g->w + 3) & ~3;
+            unsigned char* pix = (unsigned char*)f->atlasImg.data;   /* GRAY_ALPHA: lum,alpha */
+            for (int row = 0; row < g->h; row++) {
+                for (int col = 0; col < g->w; col++) {
+                    int gray = bmp[row * stride + col];              /* 0..64 */
+                    int alpha = gray * 4; if (alpha > 255) alpha = 255;
+                    size_t off = ((size_t)(g->ay + row) * XT_GDI_ATLAS + (size_t)(g->ax + col)) * 2;
+                    pix[off] = 255;                                   /* luminance(白,tint 上色) */
+                    pix[off + 1] = (unsigned char)alpha;
+                }
+            }
+            free(bmp);
+            f->dirty = 1;
+            return g;
+        }
+        if (g->cp == cp && g->sizeIdx == sizeIdx) return g;   /* 命中 */
+    }
+    return NULL;
+}
+
+/* 创建 GDI 字体上下文;返回 100+索引 句柄,失败返 0 */
+uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
+    if (!IS_PTR(faceVal)) return XT_FROM_INT(0);
+    const char* faceU8 = xt_get_cstr(faceVal);
+    int idx = -1;
+    for (int i = 0; i < XT_GDI_MAX_FONTS; i++) if (!xt_gdi_fonts[i].used) { idx = i; break; }
+    if (idx < 0) return XT_FROM_INT(0);
+    XTGdiFont* f = &xt_gdi_fonts[idx];
+    memset(f, 0, sizeof(*f));
+    MultiByteToWideChar(65001, 0, faceU8, -1, f->face, 64);
+    f->hdc = CreateCompatibleDC(NULL);
+    if (!f->hdc) return XT_FROM_INT(0);
+    f->hash = (XTGdiGlyph*)calloc(XT_GDI_HASH_CAP, sizeof(XTGdiGlyph));
+    if (!f->hash) { DeleteDC(f->hdc); return XT_FROM_INT(0); }
+    /* 图集惰性首绘建(GL 上下文须已存在——调用方时序在窗口初始化后) */
+    f->atlasImg = GenImageColor(XT_GDI_ATLAS, XT_GDI_ATLAS, (Color){0, 0, 0, 0});
+    ImageFormat(&f->atlasImg, PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA);
+    /* 首字号预热(失败 = 字体名无效,整体失败) */
+    int baseSize = (int)XT_TO_INT(sizeVal);
+    if (xt_gdi_size_slot(f, baseSize) < 0 || f->sizeCount == 0) {
+        UnloadImage(f->atlasImg);
+        free(f->hash);
+        DeleteDC(f->hdc);
+        return XT_FROM_INT(0);
+    }
+    /* 校验字体名真实有效(GDI 会静默回落默认字体——检测 CreateFont 总能成,故仅记录) */
+    f->used = 1;
+    return XT_FROM_INT(100 + idx);
+}
+
+/* 绘制文本(GDI 路径):逐码点缓存查询,缺失批量入图集后一次上传,再逐字绘 */
+void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
+                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    int64_t h64 = XT_TO_INT(handle);
+    int idx = (int)(h64 - 100);
+    if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return;
+    XTGdiFont* f = &xt_gdi_fonts[idx];
+    if (!f->used) return;
+    const char* s = xt_get_cstr(text);
+    int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
+    /* 第一遍:确保全部码点已栅格化(新字形置 dirty) */
+    {
+        const char* p = s;
+        while (*p) {
+            int adv; int cp = xt_gdi_next_cp(p, &adv);
+            if (cp < 32) { p += adv; continue; }
+            xt_gdi_glyph_get(f, cp, sizeIdx);
+            p += adv;
+        }
+    }
+    /* 图集纹理首建,或仅在有新字形时更新(避免每帧全量上传 8MB) */
+    if (!f->atlasReady) {
+        f->atlasTex = LoadTextureFromImage(f->atlasImg);
+        SetTextureFilter(f->atlasTex, TEXTURE_FILTER_BILINEAR);
+        f->atlasReady = 1;
+        f->dirty = 0;
+    } else if (f->dirty) {
+        UpdateTexture(f->atlasTex, (const unsigned char*)f->atlasImg.data);
+        f->dirty = 0;
+    }
+    /* 第二遍:绘制 */
+    Color tint = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+                  (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    int penX = (int)XT_TO_INT(x);
+    int baseTop = (int)XT_TO_INT(y);
+    int ascent = f->ascents[sizeIdx];
+    const char* p = s;
+    while (*p) {
+        int adv; int cp = xt_gdi_next_cp(p, &adv);
+        p += adv;
+        if (cp < 32) { if (cp == ' ') penX += f->sizes[sizeIdx] / 3 + 1; continue; }
+        XTGdiGlyph* gl = xt_gdi_glyph_get(f, cp, sizeIdx);
+        if (!gl) { penX += f->sizes[sizeIdx] / 2; continue; }
+        if (gl->w > 0 && gl->h > 0) {
+            Rectangle src = {(float)gl->ax, (float)gl->ay, (float)gl->w, (float)gl->h};
+            /* 基线换算:字形顶 = 行顶 + ascent - origin.y */
+            Vector2 dst = {(float)(penX + gl->ox), (float)(baseTop + ascent - gl->oy)};
+            DrawTextureRec(f->atlasTex, src, dst, tint);
+        }
+        penX += gl->adv > 0 ? gl->adv : adv * f->sizes[sizeIdx] / 3;
+    }
+}
+
+/* 测量文本宽度(GDI 精确度量,GetTextExtentPoint32W) */
+uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize) {
+    int64_t h64 = XT_TO_INT(handle);
+    int idx = (int)(h64 - 100);
+    if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return XT_FROM_INT(0);
+    XTGdiFont* f = &xt_gdi_fonts[idx];
+    if (!f->used) return XT_FROM_INT(0);
+    int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
+    SelectObject(f->hdc, f->hfonts[sizeIdx]);
+    const char* s = xt_get_cstr(text);
+    int wlen = MultiByteToWideChar(65001, 0, s, -1, NULL, 0);
+    if (wlen <= 0) return XT_FROM_INT(0);
+    wchar_t* ws = (wchar_t*)malloc((size_t)wlen * sizeof(wchar_t));
+    if (!ws) return XT_FROM_INT(0);
+    MultiByteToWideChar(65001, 0, s, -1, ws, wlen);
+    XT_SIZE ext = {0, 0};
+    GetTextExtentPoint32W(f->hdc, ws, wlen - 1, &ext);
+    free(ws);
+    return XT_FROM_INT((int64_t)ext.cx);
+}
+
+/* 释放 GDI 字体 */
+void XT_FontGDI_Unload(uintptr_t handle) {
+    int64_t h64 = XT_TO_INT(handle);
+    int idx = (int)(h64 - 100);
+    if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return;
+    XTGdiFont* f = &xt_gdi_fonts[idx];
+    if (!f->used) return;
+    for (int i = 0; i < f->sizeCount; i++) DeleteObject(f->hfonts[i]);
+    if (f->atlasReady) UnloadTexture(f->atlasTex);
+    UnloadImage(f->atlasImg);
+    free(f->hash);
+    DeleteDC(f->hdc);
+    f->used = 0;
+}
+#endif /* _WIN32 */
+
+/* 截图导出 PNG(当前帧缓冲;渲染调试/自动化验收用——须在 结束绘图 之后调用) */
+void XT_SaveScreenshot(uintptr_t pathVal) {
+    if (!IS_PTR(pathVal)) return;
+    TakeScreenshot(xt_get_cstr(pathVal));
 }
