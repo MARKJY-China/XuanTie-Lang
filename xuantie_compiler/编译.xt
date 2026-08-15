@@ -813,6 +813,7 @@
         此.写出("declare %XTString* @\"xt_string_new\"(i8*)")
         此.写出("declare %XTString* @\"xt_obj_to_string\"(i64)")
         此.写出("declare %XTString* @\"xt_string_concat\"(%XTString*, %XTString*)")
+        此.写出("declare i64 @\"xt_add\"(i64, i64)")
         此.写出("declare %XTString* @\"xt_string_substring\"(%XTString*, i64, i64)")
         此.写出("declare i64 @\"xt_string_split\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_replace\"(i64, i64, i64)")
@@ -5901,16 +5902,19 @@
                 设 _pfOvRes = 此.执行动态调用(_pfFn, ["i64 " & _lXt2, "i64 " & _rXt2])
                 此.写_存储_xt(_pfOvRes, "i64", _pfRes)
                 此.写出("  call void @xt_release(i64 " & _pfFn & ")")
+                // 重载路径自行承担操作数释放(原 merge 段统一释放对 fallback 路径构成二次释放——
+                // 内建中缀自释放后 merge 再放,指针值双 release 即堆损坏;标记整数 no-op 从未暴露)
+                此.写出("  call void @xt_release(i64 " & _lXt2 & ")")
+                此.写出("  call void @xt_release(i64 " & _rXt2 & ")")
                 此.写出("  br label %" & _pfMergeL)
                 此.写出(_pfFbL & ":")
                 设 _pfFbRes = 此.编译内建中缀(节点, 左寄存器, 左类型, 右寄存器, 右类型)
                 此.写_存储_xt(_pfFbRes[0], _pfFbRes[1], _pfRes)
                 此.写出("  br label %" & _pfMergeL)
                 此.写出(_pfMergeL & ":")
+                // merge 不再统一释放:快路径(标记整数)无需,重载路径已自管,fallback 由内建中缀自释放
                 设 _pfFinal = 此.取新寄存器()
                 此.写出("  " & _pfFinal & " = load i64, i64* " & _pfRes)
-                此.写出("  call void @xt_release(i64 " & _lXt2 & ")")
-                此.写出("  call void @xt_release(i64 " & _rXt2 & ")")
                 设 _r = [_pfFinal, "i64"]
                 返 _r
             }
@@ -6181,7 +6185,22 @@
         }
         
         若 指令 == "" { 返 ["0", "i64"] }
-        
+
+        // 加法的运行时分派(根治字符串拼接堆损坏):到此处说明静态无法确证纯整数
+        // (5992 推导类型=="整" 的静态路径早已退),boxed i64 可能是字符串指针——
+        // 内联 add 会把指针当整数加(指针算术产出野指针,release 即堆损坏)。
+        // xt_add 运行时按对象类型分派:任一侧字符串→拼接,否则数值加。
+        若 指令 == "add" {
+            设 _aXt = 此.符(此.确保I64(左寄存器, 左类型))
+            设 _bXt = 此.符(此.确保I64(右寄存器, 右类型))
+            设 _addRes = 此.取新寄存器()
+            此.写出("  " & _addRes & " = call i64 @xt_add(i64 " & _aXt & ", i64 " & _bXt & ")")
+            此.写_释放_xt(左寄存器, 左类型)
+            此.写_释放_xt(右寄存器, 右类型)
+            设 _radd = [_addRes, "i64"]
+            返 _radd
+        }
+
         设 左原 = 此.确保RawI64(左寄存器, 左类型)
         设 右原 = 此.确保RawI64(右寄存器, 右类型)
         设 res = 此.取新寄存器()

@@ -3520,6 +3520,19 @@ XTValue xt_json_deserialize(XTString* json_str) {
 // --- 通用算术与位运算 Fallback ---
 
 XTValue xt_add(XTValue a, XTValue b) {
+    // 字符串拼接分派:任一侧为字符串对象 → 字符串化拼接(与 & 运算符、GSC 解释器语义一致)。
+    // 编译器对静态不可证纯整数的 boxed i64 一律落到这里——boxed 可能是字符串指针,
+    // 绝不可按整数内联 add(指针算术产出野指针,release 即堆损坏)。
+    int aStr = xt_is_real_ptr(a) && ((XTObject*)a)->type_id == XT_TYPE_STRING;
+    int bStr = xt_is_real_ptr(b) && ((XTObject*)b)->type_id == XT_TYPE_STRING;
+    if (aStr || bStr) {
+        XTString* sa = xt_obj_to_string(a);   // +1 引用
+        XTString* sb = xt_obj_to_string(b);   // +1 引用
+        XTString* r = xt_string_concat(sa, sb);
+        xt_release((XTValue)sa);
+        xt_release((XTValue)sb);
+        return (XTValue)r;
+    }
     if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) + XT_TO_INT(b));
     return XT_FROM_INT(xt_to_int(a) + xt_to_int(b));
 }
