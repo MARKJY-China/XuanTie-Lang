@@ -8,6 +8,7 @@
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROOT_WIN="$(cygpath -w "$ROOT")"   # PowerShell 只认 Windows 形式路径(G:\...)
 ISCC=$ROOT/temp/innosetup/ISCC.exe
 VER=v1.0.0
 
@@ -23,14 +24,15 @@ echo "═══ 3/3 压缩包 ═══"
 cd "$ROOT/temp/pkg_test"
 rm -rf xuantie_${VER}_windows_amd64
 cp -r XuanTie xuantie_${VER}_windows_amd64
-# Compress-Archive 会撞 Defender 实时扫描对新拷贝文件的瞬时锁(arm_*.h 高发),带重试
+# Compress-Archive 会撞 Defender 实时扫描对新拷贝文件的瞬时锁(arm_*.h 高发),带重试;
+# DestinationPath 必须 Windows 形式(cygpath 转换),否则 PathNotFound
 for i in 1 2 3 4; do
   sleep 20
-  if powershell -NoProfile -Command "Compress-Archive -Path 'xuantie_${VER}_windows_amd64' -DestinationPath '$ROOT\\release\\xuantie_${VER}_windows_amd64.zip' -CompressionLevel Optimal -Force"; then
+  if powershell -NoProfile -Command "Compress-Archive -Path 'xuantie_${VER}_windows_amd64' -DestinationPath '${ROOT_WIN}\\release\\xuantie_${VER}_windows_amd64.zip' -CompressionLevel Optimal -Force"; then
     break
   fi
-  echo "  zip 第 $i 次遇文件锁,等待重试..."
-  if [ "$i" = "4" ]; then echo "错误: zip 重试 4 次仍被锁,请检查占用进程后重跑"; exit 1; fi
+  echo "  zip 第 $i 次失败(多为 Defender 瞬时锁),等待重试..."
+  if [ "$i" = "4" ]; then echo "错误: zip 重试 4 次仍失败,请检查上方真实报错后重跑"; exit 1; fi
 done
 
 echo "═══ 发布物 ═══"
