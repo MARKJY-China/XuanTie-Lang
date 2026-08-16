@@ -2060,6 +2060,20 @@ static int _xt_as_double(XTValue v, double* out) {
     return 0;
 }
 
+// 公共浮点提取(编译器浮点路径用):标记整/布尔/整对象/浮点对象 → double;非数值返 0.0
+double xt_f64_of(XTValue v) {
+    double d = 0.0;
+    _xt_as_double(v, &d);
+    return d;
+}
+
+// 浮点负号(前缀 "-" 的浮点落点)
+XTValue xt_fneg(XTValue v) {
+    double d = 0.0;
+    _xt_as_double(v, &d);
+    return (XTValue)xt_float_new(-d);
+}
+
 int xt_compare(XTValue a, XTValue b) {
     if (a == b) return 0;
     if (XT_IS_INT(a) && XT_IS_INT(b)) {
@@ -3636,26 +3650,70 @@ XTValue xt_add(XTValue a, XTValue b) {
         return (XTValue)r;
     }
     if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) + XT_TO_INT(b));
+    // 浮点分派:任一侧浮点对象且两侧均可数值化(整/浮混合提升)→ double 运算,结果装箱浮点
+    {
+        double _da, _db;
+        int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
+        int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
+        if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
+            return (XTValue)xt_float_new(_da + _db);
+        }
+    }
     return XT_FROM_INT(xt_to_int(a) + xt_to_int(b));
 }
 
 XTValue xt_sub(XTValue a, XTValue b) {
     if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) - XT_TO_INT(b));
+    {
+        double _da, _db;
+        int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
+        int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
+        if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
+            return (XTValue)xt_float_new(_da - _db);
+        }
+    }
     return XT_FROM_INT(xt_to_int(a) - xt_to_int(b));
 }
 
 XTValue xt_mul(XTValue a, XTValue b) {
     if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) * XT_TO_INT(b));
+    {
+        double _da, _db;
+        int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
+        int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
+        if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
+            return (XTValue)xt_float_new(_da * _db);
+        }
+    }
     return XT_FROM_INT(xt_to_int(a) * xt_to_int(b));
 }
 
 XTValue xt_div(XTValue a, XTValue b) {
+    // 浮点分派(除零与整数路径同约定:返 0.0)
+    {
+        double _da, _db;
+        int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
+        int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
+        if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
+            if (_db == 0.0) return (XTValue)xt_float_new(0.0);
+            return (XTValue)xt_float_new(_da / _db);
+        }
+    }
     int64_t vb = xt_to_int(b);
     if (vb == 0) return XT_FROM_INT(0);
     return XT_FROM_INT(xt_to_int(a) / vb);
 }
 
 XTValue xt_mod(XTValue a, XTValue b) {
+    {
+        double _da, _db;
+        int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
+        int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
+        if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
+            if (_db == 0.0) return (XTValue)xt_float_new(0.0);
+            return (XTValue)xt_float_new(fmod(_da, _db));
+        }
+    }
     int64_t vb = xt_to_int(b);
     if (vb == 0) return XT_FROM_INT(0);
     return XT_FROM_INT(xt_to_int(a) % vb);

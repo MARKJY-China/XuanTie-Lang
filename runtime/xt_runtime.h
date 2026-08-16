@@ -388,6 +388,10 @@ void xt_retain_forever(XTValue val);
 
 /// 将任意 XTValue 转换为 64 位整数表示
 int64_t xt_to_int(XTValue val);
+/// 将数值 XTValue 提取为 double(标记整/布尔/整对象/浮点对象;非数值返 0.0)
+double xt_f64_of(XTValue val);
+/// 浮点负号(前缀 "-" 的浮点落点)
+XTValue xt_fneg(XTValue v);
 /// 显式转换为整数对象或标记指针
 XTValue xt_convert_to_int(XTValue val);
 /// 显式转换为浮点数对象
