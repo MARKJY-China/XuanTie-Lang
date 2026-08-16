@@ -86,6 +86,11 @@
 外 函 XT_UnloadTexture(texPtr: 整): 空
 外 函 XT_DrawTexture(texPtr: 整, x: 整, y: 整, tr: 整, tg: 整, tb: 整, ta: 整): 空
 外 函 XT_DrawTextureEx(texPtr: 整, x: 整, y: 整, rotation: 整, scale: 整, tr: 整, tg: 整, tb: 整, ta: 整): 空
+外 函 XT_TextureW(texPtr: 整): 整
+外 函 XT_TextureH(texPtr: 整): 整
+外 函 XT_DrawTextureQuad(texPtr: 整, x: 整, y: 整, w: 整, h: 整, tr: 整, tg: 整, tb: 整, ta: 整): 空
+外 函 XT_LoadTextureSVG(filename: 字, w: 整, h: 整): 整
+外 函 XT_GenGradientTexture(w: 整, h: 整, r1: 整, g1: 整, b1: 整, a1: 整, r2: 整, g2: 整, b2: 整, a2: 整, dir: 整, radius: 整, feather: 整): 整
 
 // ============================================================
 // 输入
@@ -372,6 +377,31 @@
 // 带旋转(度)和缩放倍率的纹理绘制
 公 函 绘纹理Ex(纹理句柄, x, y, 旋转角, 缩放, tr, tg, tb, ta) {
     XT_DrawTextureEx(纹理句柄, x, y, 旋转角, 缩放, tr, tg, tb, ta)
+}
+
+// 纹理宽高查询(v1.2.0)
+公 函 量纹理宽(纹理句柄) {
+    返 XT_TextureW(纹理句柄)
+}
+公 函 量纹理高(纹理句柄) {
+    返 XT_TextureH(纹理句柄)
+}
+
+// 整图缩放到指定 w×h 矩形绘制(v1.2.0,图标适配用)
+公 函 绘纹理区(纹理句柄, x, y, 宽, 高, tr, tg, tb, ta) {
+    XT_DrawTextureQuad(纹理句柄, x, y, 宽, 高, tr, tg, tb, ta)
+}
+
+// 加载 SVG 并光栅化为纹理(v1.2.0);宽/高传 0 取 SVG 固有尺寸,否则等比适配进 宽×高
+公 函 加载SVG纹理(文件, 宽, 高) {
+    返 XT_LoadTextureSVG(文件, 宽, 高)
+}
+
+// 圆角渐变纹理生成(v1.2.0):双色线性渐变 + 圆角 SDF 抗锯齿 + 边缘羽化。
+// 方向: 0=横向 1=竖向;羽化: 边缘过渡像素(1=仅抗锯齿);圆角: 像素(0=直角)。
+// 桥内带 8 槽参数缓存,每帧同参调用不重复生成;纯色渐变(色1=色2)即圆角羽化纯色块。
+公 函 生成渐变纹理(宽, 高, r1, g1, b1, a1, r2, g2, b2, a2, 方向, 圆角, 羽化) {
+    返 XT_GenGradientTexture(宽, 高, r1, g1, b1, a1, r2, g2, b2, a2, 方向, 圆角, 羽化)
 }
 
 // 按键是否按下

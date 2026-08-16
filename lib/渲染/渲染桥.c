@@ -88,6 +88,13 @@ static uintptr_t xt_make_float(double v) {
 #include "raylib.h"
 #include <stdio.h>   // FILE/fread(宽字符读文件用)
 #include <wchar.h>   // _wfopen(Windows)
+#include <math.h>    // sqrtf/fabsf(渐变圆角 SDF 用)
+
+// === nanosvg(SVG 光栅化,单头库;输入栏图标等用) ===
+#define NANOSVG_IMPLEMENTATION
+#include "nanosvg.h"
+#define NANOSVGRAST_IMPLEMENTATION
+#include "nanosvgrast.h"
 
 // Win32 Unicode API 前向声明（避免包含 <windows.h> 与 raylib 冲突）
 #ifndef WINAPI
@@ -151,6 +158,10 @@ static unsigned char* xt_read_file_bytes(const char* u8path, int* outSize) {
 // ============================================================
 
 void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
+    // MSAA 4x:圆角矩形/斜边的 GPU 级抗锯齿(raylib 的 DrawRectangleRounded 是三角形扇
+    // 拼合,不开多重采样时边缘台阶感严重)。须在 InitWindow 前设置;取不到多样本
+    // 帧缓冲时 GLFW 自动降级,不影响功能。
+    SetConfigFlags(0x00000020); // FLAG_MSAA_4X_HINT
     InitWindow((int)XT_TO_INT(w), (int)XT_TO_INT(h), xt_get_cstr(title));
 }
 
@@ -407,23 +418,28 @@ void XT_DrawFPS(uintptr_t x, uintptr_t y) {
 // 纹理句柄池:返回 1-based 标记整数索引(与字体句柄同方案)。
 // 历史教训:此前直接返回裸 Texture2D* 指针,玄铁 ARC 会把该值当 XTObject 做
 // retain/release/析构,读取 Texture2D 字段当 magic → 报堆损坏甚至错误释放 C 内存。
-static Texture2D xt_tex_pool[16];
-static int xt_tex_used[16];
+// v1.2.0 起 16→32:UI 图标缓存 + 渐变纹理缓存 + 用户纹理共存,16 槽不够。
+static Texture2D xt_tex_pool[32];
+static int xt_tex_used[32];
+
+static int xt_tex_alloc(void) {
+    for (int i = 0; i < 32; i++) {
+        if (!xt_tex_used[i]) return i;
+    }
+    return -1;
+}
 
 static Texture2D* xt_get_tex(uintptr_t v) {
     if (!IS_INT(v)) return NULL;
     int64_t idx = XT_TO_INT(v);
-    if (idx < 1 || idx > 16) return NULL;
+    if (idx < 1 || idx > 32) return NULL;
     if (!xt_tex_used[idx - 1]) return NULL;
     return &xt_tex_pool[idx - 1];
 }
 
-// 返回纹理句柄(1-16 的标记整数),失败或满池返回 0
+// 返回纹理句柄(1-32 的标记整数),失败或满池返回 0
 uintptr_t XT_LoadTexture(uintptr_t filename) {
-    int slot = -1;
-    for (int i = 0; i < 16; i++) {
-        if (!xt_tex_used[i]) { slot = i; break; }
-    }
+    int slot = xt_tex_alloc();
     if (slot < 0) return XT_FROM_INT(0);
     // 宽字符读文件+内存加载(支持中文路径),扩展名决定解码格式
     const char* path = xt_get_cstr(filename);
@@ -449,7 +465,7 @@ uintptr_t XT_LoadTexture(uintptr_t filename) {
 void XT_UnloadTexture(uintptr_t texPtr) {
     if (!IS_INT(texPtr)) return;
     int64_t idx = XT_TO_INT(texPtr);
-    if (idx < 1 || idx > 16 || !xt_tex_used[idx - 1]) return;
+    if (idx < 1 || idx > 32 || !xt_tex_used[idx - 1]) return;
     Texture2D* p = &xt_tex_pool[idx - 1];
     UnloadTexture(*p);
     xt_tex_used[idx - 1] = 0;
@@ -476,6 +492,183 @@ void XT_DrawTextureEx(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t rota
         DrawTexturePro(*p, src, (Rectangle){pos.x, pos.y, (float)p->width * XT_TO_INT(scale), (float)p->height * XT_TO_INT(scale)},
                        origin, (float)XT_TO_INT(rotation), tint);
     }
+}
+
+// ---- v1.2.0:UI 图标/渐变/羽化支撑 ----
+
+uintptr_t XT_TextureW(uintptr_t texPtr) {
+    Texture2D* p = xt_get_tex(texPtr);
+    return XT_FROM_INT(p ? p->width : 0);
+}
+uintptr_t XT_TextureH(uintptr_t texPtr) {
+    Texture2D* p = xt_get_tex(texPtr);
+    return XT_FROM_INT(p ? p->height : 0);
+}
+
+// 整图缩放到指定矩形绘制(图标适配栏高用;绘纹理Ex 的整数倍缩放不够用)
+void XT_DrawTextureQuad(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
+                        uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
+    Texture2D* p = xt_get_tex(texPtr);
+    if (!p) return;
+    Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
+                  (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
+    DrawTexturePro(*p, (Rectangle){0, 0, (float)p->width, (float)p->height},
+                   (Rectangle){(float)XT_TO_INT(x), (float)XT_TO_INT(y), (float)XT_TO_INT(w), (float)XT_TO_INT(h)},
+                   (Vector2){0, 0}, 0.0f, tint);
+}
+
+// SVG 纹理:nanosvg 解析+光栅化为 RGBA 位图后上 GPU。宽/高传 0 则取 SVG 固有尺寸,
+// 否则等比缩放到恰好放入 w×h(居中左上对齐)。宽字符读文件,中文路径安全。
+uintptr_t XT_LoadTextureSVG(uintptr_t filename, uintptr_t w, uintptr_t h) {
+    int slot = xt_tex_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    Texture2D tex;
+    memset(&tex, 0, sizeof(tex));
+    int dataSize = 0;
+    unsigned char* data = xt_read_file_bytes(xt_get_cstr(filename), &dataSize);
+    if (data) {
+        // nsvgParse 会原地修改缓冲,且要求 NUL 结尾
+        char* buf = (char*)malloc((size_t)dataSize + 1);
+        memcpy(buf, data, dataSize);
+        buf[dataSize] = 0;
+        free(data);
+        NSVGimage* svg = nsvgParse(buf, "px", 96.0f);
+        free(buf);
+        if (svg) {
+            int W = (int)XT_TO_INT(w), H = (int)XT_TO_INT(h);
+            if (W <= 0) W = (int)svg->width;
+            if (H <= 0) H = (int)svg->height;
+            if (W > 0 && H > 0 && svg->width > 0 && svg->height > 0) {
+                float sc = (float)W / svg->width;
+                float sc2 = (float)H / svg->height;
+                if (sc2 < sc) sc = sc2;
+                unsigned char* rgba = (unsigned char*)calloc((size_t)W * H * 4, 1);
+                NSVGrasterizer* rast = nsvgCreateRasterizer();
+                nsvgRasterize(rast, svg, 0, 0, sc, rgba, W, H, W * 4);
+                nsvgDeleteRasterizer(rast);
+                Image img;
+                img.data = rgba;
+                img.width = W;
+                img.height = H;
+                img.mipmaps = 1;
+                img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                tex = LoadTextureFromImage(img);
+                free(rgba);
+            }
+            nsvgDelete(svg);
+        }
+    }
+    xt_tex_pool[slot] = tex;
+    xt_tex_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
+// 圆角渐变纹理生成器:逐像素双色线性插值 + 圆角矩形 SDF 覆盖度。
+// 一份代码同时解决:背景渐变(横/竖)、渐变色的圆角抗锯齿、边缘羽化(羽化>1)。
+// 方向: 0=横向 1=竖向;羽化: 边缘过渡像素数(1=仅抗锯齿);圆角: 像素(0=直角)。
+// 带 8 槽参数缓存:UI 每帧用同参调用直接命中,不重复生成;缓存满轮转淘汰并释放旧纹理。
+typedef struct {
+    int w, h, dir, radius, feather;
+    unsigned char c1[4], c2[4];
+    int slot;   // 纹理池槽位(0-based);-1=空项
+} XT_GradEntry;
+static XT_GradEntry xt_grad_cache[8];
+static int xt_grad_init = 0;
+
+uintptr_t XT_GenGradientTexture(uintptr_t w, uintptr_t h,
+                                uintptr_t r1, uintptr_t g1, uintptr_t b1, uintptr_t a1,
+                                uintptr_t r2, uintptr_t g2, uintptr_t b2, uintptr_t a2,
+                                uintptr_t dir, uintptr_t radius, uintptr_t feather) {
+    int W = (int)XT_TO_INT(w), H = (int)XT_TO_INT(h);
+    int D = (int)XT_TO_INT(dir), R = (int)XT_TO_INT(radius), F = (int)XT_TO_INT(feather);
+    if (W <= 0 || H <= 0) return XT_FROM_INT(0);
+    if (R < 0) R = 0;
+    if (F < 1) F = 1;
+    unsigned char c1[4] = {(unsigned char)XT_TO_INT(r1), (unsigned char)XT_TO_INT(g1),
+                           (unsigned char)XT_TO_INT(b1), (unsigned char)XT_TO_INT(a1)};
+    unsigned char c2[4] = {(unsigned char)XT_TO_INT(r2), (unsigned char)XT_TO_INT(g2),
+                           (unsigned char)XT_TO_INT(b2), (unsigned char)XT_TO_INT(a2)};
+    if (!xt_grad_init) {
+        for (int i = 0; i < 8; i++) xt_grad_cache[i].slot = -1;
+        xt_grad_init = 1;
+    }
+    for (int i = 0; i < 8; i++) {
+        XT_GradEntry* e = &xt_grad_cache[i];
+        if (e->slot >= 0 && e->w == W && e->h == H && e->dir == D && e->radius == R && e->feather == F
+            && memcmp(e->c1, c1, 4) == 0 && memcmp(e->c2, c2, 4) == 0) {
+            return XT_FROM_INT(e->slot + 1);
+        }
+    }
+    int slot = xt_tex_alloc();
+    if (slot < 0) {
+        // 池满:淘汰最老缓存项腾槽(淘汰项若正被绘制会在下一帧重建,可接受)
+        int victim = -1;
+        for (int i = 0; i < 8; i++) {
+            if (xt_grad_cache[i].slot >= 0) { victim = i; break; }
+        }
+        if (victim < 0) return XT_FROM_INT(0);
+        slot = xt_grad_cache[victim].slot;
+        UnloadTexture(xt_tex_pool[slot]);
+        xt_tex_used[slot] = 0;
+        xt_grad_cache[victim].slot = -1;
+        slot = xt_tex_alloc();
+        if (slot < 0) return XT_FROM_INT(0);
+    }
+    unsigned char* px = (unsigned char*)malloc((size_t)W * H * 4);
+    if (!px) return XT_FROM_INT(0);
+    float halfW = W * 0.5f, halfH = H * 0.5f;
+    float inW = halfW - R, inH = halfH - R;
+    if (inW < 0) inW = 0;
+    if (inH < 0) inH = 0;
+    for (int py = 0; py < H; py++) {
+        for (int pxx = 0; pxx < W; pxx++) {
+            float t = (D == 0) ? ((W > 1) ? (float)pxx / (float)(W - 1) : 0.0f)
+                               : ((H > 1) ? (float)py / (float)(H - 1) : 0.0f);
+            // 圆角矩形 SDF(负值在形内)
+            float qx = fabsf(pxx + 0.5f - halfW) - inW;
+            float qy = fabsf(py + 0.5f - halfH) - inH;
+            float ax = qx > 0 ? qx : 0.0f, ay = qy > 0 ? qy : 0.0f;
+            float mx = qx > qy ? qx : qy;
+            float d = sqrtf(ax * ax + ay * ay) + (mx < 0 ? mx : 0.0f) - R;
+            float cov = 0.5f - d / (float)F;
+            if (cov < 0) cov = 0;
+            if (cov > 1) cov = 1;
+            unsigned char* o = px + ((size_t)py * W + pxx) * 4;
+            o[0] = (unsigned char)(c1[0] + (int)((c2[0] - c1[0]) * t));
+            o[1] = (unsigned char)(c1[1] + (int)((c2[1] - c1[1]) * t));
+            o[2] = (unsigned char)(c1[2] + (int)((c2[2] - c1[2]) * t));
+            o[3] = (unsigned char)((c1[3] + (int)((c2[3] - c1[3]) * t)) * cov);
+        }
+    }
+    Image img;
+    img.data = px;
+    img.width = W;
+    img.height = H;
+    img.mipmaps = 1;
+    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+    Texture2D tex = LoadTextureFromImage(img);
+    free(px);
+    xt_tex_pool[slot] = tex;
+    xt_tex_used[slot] = 1;
+    // 登记缓存(优先空项,无空项轮转淘汰最老的)
+    int ci = -1;
+    for (int i = 0; i < 8; i++) {
+        if (xt_grad_cache[i].slot < 0) { ci = i; break; }
+    }
+    if (ci < 0) {
+        ci = 0;
+        UnloadTexture(xt_tex_pool[xt_grad_cache[0].slot]);
+        xt_tex_used[xt_grad_cache[0].slot] = 0;
+    }
+    xt_grad_cache[ci].w = W;
+    xt_grad_cache[ci].h = H;
+    xt_grad_cache[ci].dir = D;
+    xt_grad_cache[ci].radius = R;
+    xt_grad_cache[ci].feather = F;
+    memcpy(xt_grad_cache[ci].c1, c1, 4);
+    memcpy(xt_grad_cache[ci].c2, c2, 4);
+    xt_grad_cache[ci].slot = slot;
+    return XT_FROM_INT(slot + 1);
 }
 
 // ============================================================
@@ -704,8 +897,9 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
 /* GDI 字体(系统级光栅化)前向声明——实现在文件尾 GDI 段 */
 uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal);
 void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
-                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a);
-uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize);
+                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
+                         uintptr_t spacing);
+uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize, uintptr_t spacing);
 void XT_FontGDI_Unload(uintptr_t handle);
 #endif
 
@@ -727,7 +921,7 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
 #ifdef _WIN32
     if (XT_TO_INT(fontHandle) >= 100) {   // GDI 字体(系统级光栅化)
-        XT_FontGDI_DrawText(fontHandle, text, x, y, fontSize, r, g, b, a);
+        XT_FontGDI_DrawText(fontHandle, text, x, y, fontSize, r, g, b, a, spacing);
         return;
     }
 #endif
@@ -745,7 +939,7 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
 uintptr_t XT_MeasureTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t fontSize, uintptr_t spacing) {
 #ifdef _WIN32
     if (XT_TO_INT(fontHandle) >= 100) {   // GDI 精确度量
-        return XT_FontGDI_Measure(fontHandle, text, fontSize);
+        return XT_FontGDI_Measure(fontHandle, text, fontSize, spacing);
     }
 #endif
     Font* p = xt_get_font(fontHandle);
@@ -953,12 +1147,14 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
 
 /* 绘制文本(GDI 路径):逐码点缓存查询,缺失批量入图集后一次上传,再逐字绘 */
 void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
-                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
+                         uintptr_t spacing) {
     int64_t h64 = XT_TO_INT(handle);
     int idx = (int)(h64 - 100);
     if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return;
     XTGdiFont* f = &xt_gdi_fonts[idx];
     if (!f->used) return;
+    int sp = (int)XT_TO_INT(spacing);   // 字距:加在每字符步进上(绘制侧,末字符多出的间距不可见)
     const char* s = xt_get_cstr(text);
     int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
     /* 第一遍:确保全部码点已栅格化(新字形置 dirty) */
@@ -987,10 +1183,15 @@ void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_
     int penX = (int)XT_TO_INT(x);
     int baseTop = (int)XT_TO_INT(y);
     int ascent = f->ascents[sizeIdx];
+    int first = 1;
     const char* p = s;
     while (*p) {
         int adv; int cp = xt_gdi_next_cp(p, &adv);
         p += adv;
+        /* 字距加在相邻字符之间(首字符前不加),
+           与 Measure 的"每字符一个后置间距槽"严格对齐——选区/光标据此计算才不偏 */
+        if (!first) penX += sp;
+        first = 0;
         if (cp < 32) { if (cp == ' ') penX += f->sizes[sizeIdx] / 3 + 1; continue; }
         XTGdiGlyph* gl = xt_gdi_glyph_get(f, cp, sizeIdx);
         if (!gl) { penX += f->sizes[sizeIdx] / 2; continue; }
@@ -1004,13 +1205,15 @@ void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_
     }
 }
 
-/* 测量文本宽度(GDI 精确度量,GetTextExtentPoint32W) */
-uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize) {
+/* 测量文本宽度(GDI 精确度量,GetTextExtentPoint32W;字距按"每字符一个后置间距槽"计 = spacing×字符数,
+   使 测量(前缀) 恰为下一字形的左缘,选区/光标/IME 定位全部对齐绘制侧) */
+uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize, uintptr_t spacing) {
     int64_t h64 = XT_TO_INT(handle);
     int idx = (int)(h64 - 100);
     if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return XT_FROM_INT(0);
     XTGdiFont* f = &xt_gdi_fonts[idx];
     if (!f->used) return XT_FROM_INT(0);
+    int sp = (int)XT_TO_INT(spacing);
     int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
     SelectObject(f->hdc, f->hfonts[sizeIdx]);
     const char* s = xt_get_cstr(text);
@@ -1022,6 +1225,14 @@ uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSiz
     XT_SIZE ext = {0, 0};
     GetTextExtentPoint32W(f->hdc, ws, wlen - 1, &ext);
     free(ws);
+    if (sp > 0) {
+        int cps = 0;
+        const char* p = s;
+        while (*p) { int adv; xt_gdi_next_cp(p, &adv); p += adv; cps++; }
+        /* 每字符带一个后置间距槽(sp×cps):前缀测量值即下一字形的左缘,
+           选区矩形 [测量(起点前缀), 测量(终点前缀)) 两条边都与绘制侧精确对齐 */
+        ext.cx += (int64_t)sp * cps;
+    }
     return XT_FROM_INT((int64_t)ext.cx);
 }
 
@@ -1044,7 +1255,12 @@ void XT_FontGDI_Unload(uintptr_t handle) {
 /* 截图导出 PNG(当前帧缓冲;渲染调试/自动化验收用——须在 结束绘图 之后调用) */
 void XT_SaveScreenshot(uintptr_t pathVal) {
     if (!IS_PTR(pathVal)) return;
-    TakeScreenshot(xt_get_cstr(pathVal));
+    // 不用 raylib TakeScreenshot:它会把 "G:/..." 正斜杠绝对路径也拼上工作目录。
+    // ExportImage 底层 fopen:相对路径天然按 CWD 解析,绝对路径原样使用。
+    Image img = LoadImageFromScreen();
+    if (!img.data) return;
+    ExportImage(img, xt_get_cstr(pathVal));
+    UnloadImage(img);
 }
 
 /* 裁剪(UI 输入栏等需限制绘制区域的控件用):raylib BeginScissorMode/EndScissorMode 桥接 */
