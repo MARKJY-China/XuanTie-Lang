@@ -407,6 +407,58 @@ function activate(context) {
                     return pathItems;
                 }
 
+                // ---- UI 控件选项补全(位置感知) ----
+                // 光标位于 UI.控件({...}) 的选项字典内时,按该控件给出其拥有的参数;
+                // 不在选项上下文则不给(不会把别的控件的参数塞进来)
+                {
+                    const textBefore = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
+                    const callRe = /UI\.(按钮|输入栏|文本|矩形|行|列|叠|绝对|容器|空白|弹性)\s*\(/g;
+                    let cm, lastCall = null;
+                    while ((cm = callRe.exec(textBefore)) !== null) { lastCall = cm; }
+                    if (lastCall) {
+                        // 从该调用点扫描配平:栈顶是 { 说明光标在选项字典内
+                        const stack = [];
+                        for (let i = lastCall.index; i < textBefore.length; i++) {
+                            const ch = textBefore[i];
+                            if (ch === '"' || ch === "'") {
+                                i++;
+                                while (i < textBefore.length && textBefore[i] !== ch) {
+                                    if (textBefore[i] === '\\') i++;
+                                    i++;
+                                }
+                                continue;
+                            }
+                            if (ch === '(' || ch === '{') stack.push(ch);
+                            else if (ch === ')' || ch === '}') stack.pop();
+                        }
+                        if (stack.length >= 2 && stack[stack.length - 1] === '{') {
+                            // 状态子字典(悬浮/按下/禁用)内:只给状态覆写三件套
+                            const stateTail = textBefore.match(/(悬浮|按下|禁用)\s*:\s*\{[^{}]*$/);
+                            const 通用 = ["宽", "高", "x", "y", "弹性", "主轴对齐", "叉轴对齐", "间距", "内边距", "外边距", "圆角", "边框色", "边框宽", "字号", "字色", "颜色", "字距", "底色", "底色2", "渐变向", "羽化", "阴影", "可视", "禁用"];
+                            const 状态色 = ["悬底色", "按底色", "禁底色", "悬字色", "按字色", "禁字色", "悬边色", "按边色", "禁边色"];
+                            const 控件参数 = {
+                                "按钮": ["悬浮", "按下", "禁用", "点击", "触发", "连发间隔", "首按延迟", "悬浮上浮", "按下缩放"],
+                                "输入栏": ["占位", "占位色", "只读", "提交", "焦框色", "焦框宽", "框色", "左图标", "右图标", "图标尺寸", "图标距", "图标色", "右图标点击"],
+                                "文本": [],
+                                "矩形": [],
+                                "行": [], "列": [], "叠": [], "绝对": [], "容器": [], "空白": [], "弹性": []
+                            };
+                            let keys;
+                            if (stateTail) {
+                                keys = ["底色", "字色", "边色"];
+                            } else {
+                                keys = 控件参数[lastCall[1]].concat(状态色, 通用);
+                            }
+                            return keys.map(k => {
+                                const item = new vscode.CompletionItem(k, vscode.CompletionItemKind.Field);
+                                item.insertText = k + ": ";
+                                item.detail = "UI." + lastCall[1] + " 选项";
+                                return item;
+                            });
+                        }
+                    }
+                }
+
                 // LSP 在线时,关键字/符号/成员补全全部由 xt_lsp 提供(带括号片段),
                 // 本脚本 provider 让位,仅保留上方的 引"路径" 补全(避免同名候选截胡 LSP 项)
                 if (globalThis.__xtLspConnected === true) {

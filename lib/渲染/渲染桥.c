@@ -351,6 +351,55 @@ void XT_DrawRectangleRoundedLines(uintptr_t x, uintptr_t y, uintptr_t w, uintptr
     DrawRectangleRoundedLinesEx(rec, roundness, 12, thick, c);
 }
 
+// ---- 千分定点坐标(×1000 → float):亚像素平滑绘制,微交互/动画专用 ----
+// 整数坐标在 2~3px 行程的动画里只剩两三档台阶;小数坐标交给 GPU(MSAA/双线性)逐帧平滑插值。
+static float xt_kf(uintptr_t v) { return (float)XT_TO_INT(v) / 1000.0f; }
+
+void XT_DrawRectFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
+                   uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
+    DrawRectangleRec(rec, c);
+}
+
+void XT_DrawRectLinesFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h, uintptr_t lineThick,
+                        uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
+    float thick = (float)XT_TO_INT(lineThick);
+    if (thick < 1.0f) thick = 1.0f;
+    DrawRectangleLinesEx(rec, thick, c);
+}
+
+void XT_DrawRoundedRectFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h, uintptr_t roundPct,
+                          uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
+    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    if (roundness < 0.0f) roundness = 0.0f;
+    if (roundness > 1.0f) roundness = 1.0f;
+    DrawRectangleRounded(rec, roundness, 12, c);
+}
+
+void XT_DrawRoundedRectLinesFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
+                               uintptr_t roundPct, uintptr_t lineThick,
+                               uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
+    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    if (roundness < 0.0f) roundness = 0.0f;
+    if (roundness > 1.0f) roundness = 1.0f;
+    float thick = (float)XT_TO_INT(lineThick);
+    if (thick < 1.0f) thick = 1.0f;
+    DrawRectangleRoundedLinesEx(rec, roundness, 12, thick, c);
+}
+
+// ---- 千分定点坐标(×1000 → float):亚像素平滑绘制,微交互/动画专用 ----
+
 void XT_DrawCircle(uintptr_t cx, uintptr_t cy, uintptr_t radius,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
@@ -514,6 +563,18 @@ void XT_DrawTextureQuad(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t w,
                   (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
     DrawTexturePro(*p, (Rectangle){0, 0, (float)p->width, (float)p->height},
                    (Rectangle){(float)XT_TO_INT(x), (float)XT_TO_INT(y), (float)XT_TO_INT(w), (float)XT_TO_INT(h)},
+                   (Vector2){0, 0}, 0.0f, tint);
+}
+
+// 纹理目标矩形千分定点版(UI 渐变背景随微交互几何移动用)
+void XT_DrawTextureQuadFP(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
+                          uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
+    Texture2D* p = xt_get_tex(texPtr);
+    if (!p) return;
+    Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
+                  (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
+    DrawTexturePro(*p, (Rectangle){0, 0, (float)p->width, (float)p->height},
+                   (Rectangle){xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)},
                    (Vector2){0, 0}, 0.0f, tint);
 }
 
@@ -899,6 +960,10 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal);
 void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
                          uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
                          uintptr_t spacing);
+void XT_FontGDI_DrawTextFP(uintptr_t handle, uintptr_t text, uintptr_t x1000, uintptr_t y1000,
+                           uintptr_t scale1000,
+                           uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
+                           uintptr_t spacing);
 uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSize, uintptr_t spacing);
 void XT_FontGDI_Unload(uintptr_t handle);
 #endif
@@ -931,6 +996,28 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
                    (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
         Vector2 pos = {(float)XT_TO_INT(x), (float)XT_TO_INT(y)};
         DrawTextEx(*p, xt_get_cstr(text), pos, (float)XT_TO_INT(fontSize),
+                   (float)XT_TO_INT(spacing), c);
+    }
+}
+
+// 千分定点坐标版文字绘制(亚像素;UI 微交互动画用。scale1000: 1000=原倍,GDI 走图集 GPU 缩放)
+void XT_DrawTextExFP(uintptr_t fontHandle, uintptr_t text, uintptr_t x1000, uintptr_t y1000,
+                     uintptr_t scale1000,
+                     uintptr_t fontSize, uintptr_t spacing,
+                     uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+#ifdef _WIN32
+    if (XT_TO_INT(fontHandle) >= 100) {   // GDI 字体(系统级光栅化)
+        XT_FontGDI_DrawTextFP(fontHandle, text, x1000, y1000, scale1000, fontSize, r, g, b, a, spacing);
+        return;
+    }
+#endif
+    Font* p = xt_get_font(fontHandle);
+    if (p) {
+        Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
+                   (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+        Vector2 pos = {(float)XT_TO_INT(x1000) / 1000.0f, (float)XT_TO_INT(y1000) / 1000.0f};
+        float fsz = (float)XT_TO_INT(fontSize) * ((float)XT_TO_INT(scale1000) / 1000.0f);
+        DrawTextEx(*p, xt_get_cstr(text), pos, fsz,
                    (float)XT_TO_INT(spacing), c);
     }
 }
@@ -1145,16 +1232,17 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
     return XT_FROM_INT(100 + idx);
 }
 
-/* 绘制文本(GDI 路径):逐码点缓存查询,缺失批量入图集后一次上传,再逐字绘 */
-void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
-                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
-                         uintptr_t spacing) {
+/* GDI 文本绘制实现(float 坐标 + 整体缩放;亚像素平滑支撑微交互动画。
+   缩放走图集字形 GPU 拉伸(双线性),不换字号重光栅化——重光栅化 hinting 变化会"变形") */
+static void xt_gdi_draw_impl(uintptr_t handle, uintptr_t text, float fx, float fy, float scale,
+                             uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
+                             uintptr_t spacing) {
     int64_t h64 = XT_TO_INT(handle);
     int idx = (int)(h64 - 100);
     if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return;
     XTGdiFont* f = &xt_gdi_fonts[idx];
     if (!f->used) return;
-    int sp = (int)XT_TO_INT(spacing);   // 字距:加在每字符步进上(绘制侧,末字符多出的间距不可见)
+    int sp = (int)XT_TO_INT(spacing);   // 字距:相邻字符之间(首字符前不加)
     const char* s = xt_get_cstr(text);
     int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
     /* 第一遍:确保全部码点已栅格化(新字形置 dirty) */
@@ -1177,11 +1265,12 @@ void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_
         UpdateTexture(f->atlasTex, (const unsigned char*)f->atlasImg.data);
         f->dirty = 0;
     }
-    /* 第二遍:绘制 */
+    /* 第二遍:绘制(浮点笔位 × 整体缩放,亚像素) */
     Color tint = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
                   (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    int penX = (int)XT_TO_INT(x);
-    int baseTop = (int)XT_TO_INT(y);
+    float penX = fx;
+    float baseTop = fy;
+    float spf = (float)sp * scale;
     int ascent = f->ascents[sizeIdx];
     int first = 1;
     const char* p = s;
@@ -1190,19 +1279,42 @@ void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_
         p += adv;
         /* 字距加在相邻字符之间(首字符前不加),
            与 Measure 的"每字符一个后置间距槽"严格对齐——选区/光标据此计算才不偏 */
-        if (!first) penX += sp;
+        if (!first) penX += spf;
         first = 0;
-        if (cp < 32) { if (cp == ' ') penX += f->sizes[sizeIdx] / 3 + 1; continue; }
+        if (cp < 32) { if (cp == ' ') penX += (float)(f->sizes[sizeIdx] / 3 + 1) * scale; continue; }
         XTGdiGlyph* gl = xt_gdi_glyph_get(f, cp, sizeIdx);
-        if (!gl) { penX += f->sizes[sizeIdx] / 2; continue; }
+        if (!gl) { penX += (float)(f->sizes[sizeIdx] / 2) * scale; continue; }
         if (gl->w > 0 && gl->h > 0) {
             Rectangle src = {(float)gl->ax, (float)gl->ay, (float)gl->w, (float)gl->h};
-            /* 基线换算:字形顶 = 行顶 + ascent - origin.y */
-            Vector2 dst = {(float)(penX + gl->ox), (float)(baseTop + ascent - gl->oy)};
-            DrawTextureRec(f->atlasTex, src, dst, tint);
+            if (scale == 1.0f) {
+                /* 基线换算:字形顶 = 行顶 + ascent - origin.y */
+                Vector2 dst = {penX + (float)gl->ox, baseTop + (float)(ascent - gl->oy)};
+                DrawTextureRec(f->atlasTex, src, dst, tint);
+            } else {
+                Rectangle dstR = {penX + (float)gl->ox * scale,
+                                  baseTop + (float)(ascent - gl->oy) * scale,
+                                  (float)gl->w * scale, (float)gl->h * scale};
+                DrawTexturePro(f->atlasTex, src, dstR, (Vector2){0, 0}, 0.0f, tint);
+            }
         }
-        penX += gl->adv > 0 ? gl->adv : adv * f->sizes[sizeIdx] / 3;
+        penX += (float)(gl->adv > 0 ? gl->adv : adv * f->sizes[sizeIdx] / 3) * scale;
     }
+}
+
+/* 绘制文本(GDI 路径):逐码点缓存查询,缺失批量入图集后一次上传,再逐字绘 */
+void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
+                         uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
+                         uintptr_t spacing) {
+    xt_gdi_draw_impl(handle, text, (float)XT_TO_INT(x), (float)XT_TO_INT(y), 1.0f, fontSize, r, g, b, a, spacing);
+}
+
+/* 千分定点坐标版(亚像素;微交互动画用;scale1000: 1000=原倍,字形图集 GPU 缩放不重光栅化) */
+void XT_FontGDI_DrawTextFP(uintptr_t handle, uintptr_t text, uintptr_t x1000, uintptr_t y1000,
+                           uintptr_t scale1000,
+                           uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
+                           uintptr_t spacing) {
+    xt_gdi_draw_impl(handle, text, (float)XT_TO_INT(x1000) / 1000.0f, (float)XT_TO_INT(y1000) / 1000.0f,
+                     (float)XT_TO_INT(scale1000) / 1000.0f, fontSize, r, g, b, a, spacing);
 }
 
 /* 测量文本宽度(GDI 精确度量,GetTextExtentPoint32W;字距按"每字符一个后置间距槽"计 = spacing×字符数,

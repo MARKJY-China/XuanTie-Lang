@@ -91,6 +91,12 @@
 外 函 XT_DrawTextureQuad(texPtr: 整, x: 整, y: 整, w: 整, h: 整, tr: 整, tg: 整, tb: 整, ta: 整): 空
 外 函 XT_LoadTextureSVG(filename: 字, w: 整, h: 整): 整
 外 函 XT_GenGradientTexture(w: 整, h: 整, r1: 整, g1: 整, b1: 整, a1: 整, r2: 整, g2: 整, b2: 整, a2: 整, dir: 整, radius: 整, feather: 整): 整
+外 函 XT_DrawRectFP(x: 整, y: 整, w: 整, h: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawRectLinesFP(x: 整, y: 整, w: 整, h: 整, lineThick: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawRoundedRectFP(x: 整, y: 整, w: 整, h: 整, roundPct: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawRoundedRectLinesFP(x: 整, y: 整, w: 整, h: 整, roundPct: 整, lineThick: 整, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawTextureQuadFP(texPtr: 整, x: 整, y: 整, w: 整, h: 整, tr: 整, tg: 整, tb: 整, ta: 整): 空
+外 函 XT_DrawTextExFP(fontPtr: 整, text: 字, x: 整, y: 整, scale1000: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
 
 // ============================================================
 // 输入
@@ -402,6 +408,26 @@
 // 桥内带 8 槽参数缓存,每帧同参调用不重复生成;纯色渐变(色1=色2)即圆角羽化纯色块。
 公 函 生成渐变纹理(宽, 高, r1, g1, b1, a1, r2, g2, b2, a2, 方向, 圆角, 羽化) {
     返 XT_GenGradientTexture(宽, 高, r1, g1, b1, a1, r2, g2, b2, a2, 方向, 圆角, 羽化)
+}
+
+// ---- 千分定点绘制(坐标 ×1000 定点整数,桥内转 float 亚像素渲染;微交互/动画用)----
+公 函 绘矩形精(x千, y千, 宽千, 高千, r, g, b, a) {
+    XT_DrawRectFP(x千, y千, 宽千, 高千, r, g, b, a)
+}
+公 函 绘矩形线精(x千, y千, 宽千, 高千, 线宽, r, g, b, a) {
+    XT_DrawRectLinesFP(x千, y千, 宽千, 高千, 线宽, r, g, b, a)
+}
+公 函 绘圆角矩形精(x千, y千, 宽千, 高千, 圆角百分, r, g, b, a) {
+    XT_DrawRoundedRectFP(x千, y千, 宽千, 高千, 圆角百分, r, g, b, a)
+}
+公 函 绘圆角矩形线精(x千, y千, 宽千, 高千, 圆角百分, 线宽, r, g, b, a) {
+    XT_DrawRoundedRectLinesFP(x千, y千, 宽千, 高千, 圆角百分, 线宽, r, g, b, a)
+}
+公 函 绘纹理区精(纹理句柄, x千, y千, 宽千, 高千, tr, tg, tb, ta) {
+    XT_DrawTextureQuadFP(纹理句柄, x千, y千, 宽千, 高千, tr, tg, tb, ta)
+}
+公 函 绘字体文字精(字体句柄, 文本, x千, y千, 缩放千, 字号, 间距, r, g, b, a) {
+    XT_DrawTextExFP(字体句柄, 文本, x千, y千, 缩放千, 字号, 间距, r, g, b, a)
 }
 
 // 按键是否按下
