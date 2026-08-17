@@ -1319,11 +1319,51 @@ static int xt_is_real_ptr(XTValue val) {
 /**
  * @brief 参数类型守卫失败:注解标量参数收到非标量值(明确的编程错误,显式退出)
  */
+// --- 尝试/捕捉 异常机制(轮询式) ---
+// 深度记账 + 挂起标志:尝试块内每条语句后由编译器发射一次 xt_exc_poll 轮询,命中即跳捕捉块。
+// 无 setjmp/longjmp(TDM 工具链对包装在运行时函数里的 setjmp 会静默失效/崩溃,实测)。
+// 已知取舍:故障语句的值未用即被轮询截走,无资源风险;多线程/异步块内禁用(进程级标志)。
+// 无活动尝试块时,故障点保持既有行为(返 0/报错退出),两语义并存。
+static int xt_exc_depth = 0;
+static int xt_exc_pending = 0;
+static const char* xt_exc_msg = NULL;
+
+int xt_exc_active(void) { return xt_exc_depth > 0; }
+
+/* 尝试入口:仅深度记账 */
+void xt_exc_begin(void) { xt_exc_depth++; }
+
+/* 尝试块正常出口/捕捉块入口:深度回退 */
+void xt_exc_end(void) { if (xt_exc_depth > 0) xt_exc_depth--; }
+
+/* 语句级轮询:本语句内是否有运行时故障被抛出 */
+int xt_exc_poll(void) { return xt_exc_pending; }
+
+/* 捕捉块入口清挂起标志 */
+void xt_exc_clear(void) { xt_exc_pending = 0; }
+
+/* 运行时故障抛异常(调用方须先查 xt_exc_active);仅置标志,由轮询截走 */
+void xt_exc_raise(const char* msg) {
+    if (xt_exc_depth <= 0) return;
+    xt_exc_msg = msg;
+    xt_exc_pending = 1;
+}
+
+/* 捕捉块读取本次异常消息(装箱字符串对象) */
+XTValue xt_exc_message(void) {
+    return (XTValue)xt_string_new(xt_exc_msg ? xt_exc_msg : "未知异常");
+}
+
 void xt_param_type_error(XTValue type_val) {
     const char* t = "?";
     if (xt_is_real_ptr(type_val)) {
         XTString* s = (XTString*)type_val;
         if (s->data) t = s->data;
+    }
+    // 活动尝试块内:转为可捕捉异常而非直接终止进程
+    if (xt_exc_active()) {
+        xt_exc_raise("参数类型不匹配");
+        return;
     }
     fprintf(stderr, "运行时错误: 参数类型不匹配——形参注解为 '%s',但传入的是其他类型(如字符串/对象)\n", t);
     fprintf(stderr, "  提示: 请检查调用处实参类型;若确需混用,去掉形参的类型注解或先显式转换(整()/字())。\n");
@@ -2281,6 +2321,36 @@ void xt_dict_remove(XTValue dict_val, XTValue key) {
 
 int xt_eq(XTValue a, XTValue b) {
     return xt_compare(a, b) == 0;
+}
+
+/* 类型判断(`是` 中缀/类型分支的运行时支撑):类型名兼容 GSC 别名(整/整数、字/字符串…)。
+   未知名称返 0(假),绝不臆断。 */
+int xt_is_type(XTValue v, XTValue name) {
+    if (!xt_is_real_ptr(name) || ((XTObject*)name)->type_id != XT_TYPE_STRING) return 0;
+    const char* s = ((XTString*)name)->data;
+    if (!s) return 0;
+    if (!strcmp(s, "整") || !strcmp(s, "整数")) {
+        return XT_IS_INT(v) || (xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_INT);
+    }
+    if (!strcmp(s, "小数") || !strcmp(s, "浮点")) {
+        return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_FLOAT;
+    }
+    if (!strcmp(s, "字") || !strcmp(s, "字符串")) {
+        return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_STRING;
+    }
+    if (!strcmp(s, "布尔") || !strcmp(s, "逻辑")) {
+        return v == XT_TRUE || v == XT_FALSE;
+    }
+    if (!strcmp(s, "数组")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_ARRAY;
+    if (!strcmp(s, "字典")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_DICT;
+    if (!strcmp(s, "结果")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_RESULT;
+    if (!strcmp(s, "实例")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_INSTANCE;
+    if (!strcmp(s, "字节")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_BYTES;
+    if (!strcmp(s, "任务")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_TASK;
+    if (!strcmp(s, "道") || !strcmp(s, "通道")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_CHANNEL;
+    if (!strcmp(s, "函数")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_FUNCTION;
+    if (!strcmp(s, "空")) return v == XT_NULL;
+    return 0;
 }
 
 // --- 文件 I/O 系统原语 ---
@@ -3689,18 +3759,24 @@ XTValue xt_mul(XTValue a, XTValue b) {
 }
 
 XTValue xt_div(XTValue a, XTValue b) {
-    // 浮点分派(除零与整数路径同约定:返 0.0)
+    // 浮点分派(除零与整数路径同约定:无尝试块时返 0.0;有活动尝试块则抛可捕捉异常)
     {
         double _da, _db;
         int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
         int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
         if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
-            if (_db == 0.0) return (XTValue)xt_float_new(0.0);
+            if (_db == 0.0) {
+                if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
+                return (XTValue)xt_float_new(0.0);
+            }
             return (XTValue)xt_float_new(_da / _db);
         }
     }
     int64_t vb = xt_to_int(b);
-    if (vb == 0) return XT_FROM_INT(0);
+    if (vb == 0) {
+        if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
+        return XT_FROM_INT(0);
+    }
     return XT_FROM_INT(xt_to_int(a) / vb);
 }
 
@@ -3710,12 +3786,18 @@ XTValue xt_mod(XTValue a, XTValue b) {
         int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
         int _bf = XT_IS_REAL_PTR(b) && ((XTObject*)b)->type_id == XT_TYPE_FLOAT;
         if ((_af || _bf) && _xt_as_double(a, &_da) && _xt_as_double(b, &_db)) {
-            if (_db == 0.0) return (XTValue)xt_float_new(0.0);
+            if (_db == 0.0) {
+                if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
+                return (XTValue)xt_float_new(0.0);
+            }
             return (XTValue)xt_float_new(fmod(_da, _db));
         }
     }
     int64_t vb = xt_to_int(b);
-    if (vb == 0) return XT_FROM_INT(0);
+    if (vb == 0) {
+        if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
+        return XT_FROM_INT(0);
+    }
     return XT_FROM_INT(xt_to_int(a) % vb);
 }
 

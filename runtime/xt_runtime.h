@@ -392,6 +392,22 @@ int64_t xt_to_int(XTValue val);
 double xt_f64_of(XTValue val);
 /// 浮点负号(前缀 "-" 的浮点落点)
 XTValue xt_fneg(XTValue v);
+
+// --- 尝试/捕捉 与类型判断 ---
+/// 尝试入口(深度记账;轮询式捕捉,无 setjmp)
+void xt_exc_begin(void);
+/// 尝试/捕捉块出口(深度回退)
+void xt_exc_end(void);
+/// 是否有活动尝试块
+int xt_exc_active(void);
+/// 语句级轮询:本语句内是否有运行时故障被抛出
+int xt_exc_poll(void);
+/// 捕捉块入口清挂起标志
+void xt_exc_clear(void);
+/// 读取本次异常消息(装箱字符串)
+XTValue xt_exc_message(void);
+/// 类型判断(是 中缀):v 是否为 name 所指类型(兼容 GSC 类型别名)
+int xt_is_type(XTValue v, XTValue name);
 /// 显式转换为整数对象或标记指针
 XTValue xt_convert_to_int(XTValue val);
 /// 显式转换为浮点数对象
