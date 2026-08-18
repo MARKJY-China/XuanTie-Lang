@@ -268,6 +268,12 @@ void XT_EndDrawing(void) {
     EndDrawing();
 }
 
+/* 泵输入事件(不交换缓冲):正常渲染帧由 EndDrawing 内部自动调用;
+   按需重绘的空闲轮询周期不画帧,靠它保持事件泵活着 */
+void XT_PollInputEvents(void) {
+    PollInputEvents();
+}
+
 void XT_ClearBackground(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {
         (unsigned char)XT_TO_INT(r),
