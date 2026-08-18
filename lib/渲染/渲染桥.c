@@ -274,6 +274,16 @@ void XT_PollInputEvents(void) {
     PollInputEvents();
 }
 
+/* 设置鼠标样式(raylib 标准光标枚举:0默认 1箭头 2I形 3十字 4手型 …);
+   桥侧记忆当前值,同值重复调用直接返回,避免每帧 glfw 无谓重建/切换 */
+void XT_SetMouseCursor(uintptr_t c) {
+    static int last = -1;
+    int v = (int)XT_TO_INT(c);
+    if (v == last) return;
+    last = v;
+    SetMouseCursor(v);
+}
+
 void XT_ClearBackground(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {
         (unsigned char)XT_TO_INT(r),
@@ -1500,8 +1510,37 @@ uintptr_t XT_IME_GetComp(void) {
     u8[n] = 0;
     return (uintptr_t)xt_string_new(u8);
 }
+
+/* ---- IME 启用/禁用(输入栏焦点开关) ----
+   无输入栏焦点时断开窗口的 IME 上下文:组合与候选窗整体不再产生
+   (此前失焦打字候选窗失去定位点,落在屏幕右下角);获焦时恢复保存的上下文。幂等。 */
+extern __declspec(dllimport) XT_HIMC WINAPI ImmAssociateContextEx(XT_HWND, XT_HIMC, unsigned long);
+
+static XT_HIMC xt_ime_saved_himc = NULL;
+static int xt_ime_enabled = 1;
+
+uintptr_t XT_IME_Enable(uintptr_t on) {
+    XT_HWND hwnd = (XT_HWND)GetWindowHandle();
+    if (!hwnd) return XT_FROM_INT(0);
+    int want = XT_TO_INT(on) ? 1 : 0;
+    if (want == xt_ime_enabled) return XT_FROM_INT(1);
+    if (want) {
+        if (xt_ime_saved_himc) ImmAssociateContextEx(hwnd, xt_ime_saved_himc, 0);
+        xt_ime_enabled = 1;
+    } else {
+        XT_HIMC himc = ImmGetContext(hwnd);
+        if (himc) { xt_ime_saved_himc = himc; ImmReleaseContext(hwnd, himc); }
+        ImmAssociateContextEx(hwnd, NULL, 0);
+        xt_ime_enabled = 0;
+        // 禁用瞬间可能有进行中的组合:丢弃内联组合串(等价于组合取消,不上屏)
+        xt_ime_comp_len = 0;
+        xt_ime_comp[0] = 0;
+    }
+    return XT_FROM_INT(1);
+}
 #else
 uintptr_t XT_IME_Hook(void) { return XT_FROM_INT(0); }
 uintptr_t XT_IME_GetComp(void) { return (uintptr_t)xt_string_new(""); }
+uintptr_t XT_IME_Enable(uintptr_t on) { (void)on; return XT_FROM_INT(0); }
 void XT_SetIMEPos(uintptr_t x, uintptr_t y) { (void)x; (void)y; }
 #endif

@@ -38,6 +38,7 @@
 外 函 XT_BeginDrawing(): 空
 外 函 XT_EndDrawing(): 空
 外 函 XT_PollInputEvents(): 空
+外 函 XT_SetMouseCursor(c: 整): 空
 外 函 XT_ClearBackground(r: 整, g: 整, b: 整, a: 整): 空
 
 // ============================================================
@@ -76,6 +77,7 @@
 外 函 XT_SetIMEPos(x: 整, y: 整): 空
 外 函 XT_IME_Hook(): 整
 外 函 XT_IME_GetComp(): 字
+外 函 XT_IME_Enable(on: 整): 整
 外 函 XT_UnloadFont(fontPtr: 整): 空
 外 函 XT_DrawTextEx(fontPtr: 整, text: 字, x: 整, y: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_MeasureTextEx(fontPtr: 整, text: 字, fontSize: 整, spacing: 整): 整
@@ -224,6 +226,11 @@
     XT_PollInputEvents()
 }
 
+// 设置鼠标样式(UI 库悬浮输入栏自动变 I 形;手写循环可用 鼠标I形 等常量)
+公 函 设鼠标样式(样式) {
+    XT_SetMouseCursor(样式)
+}
+
 // 用 RGBA 颜色清屏
 公 函 清背景(r, g, b, a) {
     XT_ClearBackground(r, g, b, a)
@@ -350,6 +357,12 @@
 // 当前组合中的拼音串(无组合时返空串;输入栏自绘用)
 公 函 取组合串() {
     返 XT_IME_GetComp()
+}
+
+// IME 组合启用/禁用:无输入栏焦点时禁用(组合与候选窗整体不产生);
+// UI 库每帧按焦点自动调用,手写循环一般无需调用
+公 函 设输入法启用(开) {
+    若 开 { XT_IME_Enable(1) } 否 { XT_IME_Enable(0) }
 }
 
 // 加载字体并依据参考文本精准提取所需字符码点（缺字无忧，纹理精简）
@@ -612,3 +625,10 @@
 公 常 鼠左键 = 0
 公 常 鼠右键 = 1
 公 常 鼠中键 = 2
+
+// 鼠标样式(设鼠标样式 用,与 raylib 标准光标枚举同值)
+公 常 鼠标默认 = 0
+公 常 鼠标箭头 = 1
+公 常 鼠标I形 = 2
+公 常 鼠标十字 = 3
+公 常 鼠标手型 = 4
