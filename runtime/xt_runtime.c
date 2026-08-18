@@ -351,6 +351,53 @@ void xt_scheduler_run() {
         }
     }
 }
+
+// 非阻塞单步泵:给「主线程长期自有循环」(如 UI 帧循环)一个驱动 fiber 的入口——
+// scheduler_run 全静止才返回,主线程进 UI 主循环后永不调用它,fiber 将整体饿死(实测:
+// 窗口程序里 fiber 时.睡 永不触发,纯 60fps 循环同病)。本函数跑一拍即返:
+// 同一单驱动守卫(他处正在驱动则直接返回,由对方继续驱动);
+// timer_tick + socket 就绪轮询 + 逐一出队就绪 fiber(上限 64 防自让出死循环);
+// 末尾 WAITING 重试扫(丢失唤醒兜底,与 scheduler_run 同策略,幂等;定时挂起者状态为
+// SLEEPING 非 WAITING,天然不受扫描影响)。
+void xt_scheduler_step() {
+    if (!g_scheduler) return;
+    SCHED_LOCK();
+    if (g_scheduler->running) { SCHED_UNLOCK(); return; }
+    g_scheduler->running = 1;
+    SCHED_UNLOCK();
+    g_scheduler->now_us = _sched_now_us();
+    xt_scheduler_timer_tick(g_scheduler->now_us);
+    xt_net_sched_poll();
+    for (int i = 0; i < 64; i++) {
+        XTFiber* f = xt_scheduler_dequeue();
+        if (!f) break;
+        f->status = XT_FIBER_RUNNING;
+        g_scheduler->current = f;
+        int result = f->poll(f->state);
+        g_scheduler->current = NULL;
+        if (result != 0) {
+            f->status = XT_FIBER_DONE;
+            xt_scheduler_wake_task(f);
+            xt_scheduler_wake_task((void*)(uintptr_t)(f - g_scheduler->fibers + 1));
+        } else if (f->status == XT_FIBER_RUNNING) {
+            f->status = XT_FIBER_READY;
+            xt_scheduler_enqueue(f);
+        }
+    }
+    // 丢失唤醒兜底:挂起路径存在「任务已完成却无人唤醒」的窗口;重试幂等,
+    // 未就绪者 poll 时会再次 park,已入队者下一拍被驱动。
+    SCHED_LOCK();
+    for (int i = 0; i < g_scheduler->fiber_count; i++) {
+        XTFiber* wf = &g_scheduler->fibers[i];
+        if (wf->status == XT_FIBER_WAITING) {
+            wf->status = XT_FIBER_READY;
+            wf->wait_target = NULL;
+            _sched_enqueue_nolock(wf);
+        }
+    }
+    g_scheduler->running = 0;
+    SCHED_UNLOCK();
+}
 void xt_scheduler_yield() {
     SCHED_LOCK();
     if (g_scheduler->current) { g_scheduler->current->status = XT_FIBER_READY; _sched_enqueue_nolock(g_scheduler->current); }

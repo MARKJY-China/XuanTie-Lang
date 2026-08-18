@@ -76,9 +76,11 @@ for L in 数组 HTTP UI 渲染; do
 done
 clang -target x86_64-w64-windows-gnu -O2 -c $ROOT/lib/渲染/渲染桥.c -o $PKG/lib/渲染/渲染桥.o -I $ROOT/lib/渲染
 
-# ── 5. 文档与示例:GUIDE 仅收录手册(参考手册首页 + 01~12 章节),内部笔记/清单不入包 ──
+# ── 5. 文档与示例:GUIDE 仅收录手册(首页 + 手册/章节 + 关键字/速查 + 01~12 指南),内部笔记/清单不入包 ──
 cp $ROOT/GUIDE/玄铁语言参考手册.md $PKG/GUIDE/
 cp $ROOT/GUIDE/[0-9]*.md $PKG/GUIDE/
+cp -r $ROOT/GUIDE/手册 $PKG/GUIDE/
+cp -r $ROOT/GUIDE/关键字 $PKG/GUIDE/
 find $ROOT/examples -maxdepth 1 -name "*.xt" -exec cp {} $PKG/examples/ \;
 for D in 斐波那契 数学 位运算符 UI界面; do
   mkdir -p $PKG/examples/$D

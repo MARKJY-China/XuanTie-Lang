@@ -51,6 +51,7 @@ extern XTScheduler* g_scheduler;
 void      xt_scheduler_init();
 XTFiber*  xt_scheduler_spawn(void* state, int (*poll)(void*));
 void      xt_scheduler_run();       // 主事件循环
+void      xt_scheduler_step();      // 非阻塞单步泵(UI 帧循环等主线程自有循环驱动 fiber 用)
 void      xt_scheduler_yield();     // 当前 fiber 让出，重新入队
 void      xt_scheduler_sleep_us(int64_t us); // 当前 fiber 睡眠
 void      xt_scheduler_wait_task(void* task); // 当前 fiber 等待任务
