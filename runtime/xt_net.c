@@ -35,6 +35,8 @@ typedef int xt_sock_t;
 // 前向声明
 static int resolve_host(const char* host, struct sockaddr_in* addr);
 static xt_sock_t create_connection(const char* host, int port);
+static int xt_region_icontains(const char* hay, size_t haylen, const char* needle);
+static char* xt_http_decode_chunked(const char* src, size_t len, size_t* outlen);
 // ============================================================
 // 平台初始化
 // ============================================================
@@ -182,8 +184,20 @@ void* xt_net_http_get(const char* url) {
     if (buf.len == 0) { free(buf.data); char* e = (char*)malloc(256); snprintf(e, 256, "响应为空"); return e; }
 
     buf_add(&buf, "", 1);
-    char* body = strstr(buf.data, "\r\n\r\n");
-    if (body) { body += 4; char* r = strdup(body); free(buf.data); return r; }
+    char* hdrEnd = strstr(buf.data, "\r\n\r\n");
+    if (hdrEnd) {
+        char* bodyStart = hdrEnd + 4;
+        // chunked 自动解码(与双参形态一致):大响应(>2KB)服务端走 chunked,
+        // 裸返回会把块尺寸行吃进下游 JSON 解析(实测铁铺拉取索引崩溃/卡死)
+        if (xt_region_icontains(buf.data, (size_t)(hdrEnd - buf.data), "chunked") &&
+            xt_region_icontains(buf.data, (size_t)(hdrEnd - buf.data), "transfer-encoding")) {
+            size_t rawLen = (size_t)(buf.data + buf.len - 1 - bodyStart);  // -1: 排除追加的 NUL
+            size_t decLen = 0;
+            char* dec = xt_http_decode_chunked(bodyStart, rawLen, &decLen);
+            if (dec) { free(buf.data); return dec; }
+        }
+        char* r = strdup(bodyStart); free(buf.data); return r;
+    }
     return buf.data;
 }
 
