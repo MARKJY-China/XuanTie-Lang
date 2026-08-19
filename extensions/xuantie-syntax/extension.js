@@ -407,57 +407,119 @@ function activate(context) {
                     return pathItems;
                 }
 
-                // ---- UI 控件选项补全(位置感知) ----
+                // ---- UI 控件选项补全(位置感知, v2.3.0) ----
                 // 光标位于 UI.控件({...}) 的选项字典内时,按该控件给出其拥有的参数;
-                // 不在选项上下文则不给(不会把别的控件的参数塞进来)
+                // 不在选项上下文则不给(不会把别的控件的参数塞进来)。
+                // 闭包体(函() { ... })内、注释/字符串里一律不给。
                 {
+                    // 通用键(对标 UI v1.5.1,与 GUIDE/UI/选项键/ 同步维护)
+                    const 通用键 = ["宽", "高", "x", "y", "弹性", "主轴对齐", "叉轴对齐", "间距", "内边距", "外边距", "圆角", "边框色", "边框宽", "字号", "字色", "颜色", "字距", "底色", "底色2", "渐变向", "羽化", "阴影", "不透明度", "平移x", "平移y", "可视", "禁用"];
+                    const 三态色 = ["悬底色", "按底色", "禁底色", "悬字色", "按字色", "禁字色", "悬边色", "按边色", "禁边色"];
+                    const 控件表 = {
+                        "按钮": ["悬浮", "按下", "禁用", "点击", "触发", "连发间隔", "首按延迟", "悬浮上浮", "按下缩放"],
+                        "输入栏": ["占位", "占位色", "只读", "提交", "焦框色", "焦框宽", "框色", "左图标", "右图标", "图标尺寸", "图标距", "图标色", "右图标点击"],
+                        "文本": [],
+                        "矩形": [],
+                        "行": ["裁剪"], "列": ["裁剪"], "叠": ["裁剪"], "绝对": ["裁剪"], "容器": ["裁剪"],
+                        "空白": [], "弹性": [],
+                        "滚动容器": ["滚动条", "条宽", "轨道色", "拇指色", "拇指拖色", "裁剪"],
+                        "图片": ["图标色"],
+                        "应用": ["宽", "高", "标题", "字体", "字库字号", "按需重绘"]
+                    };
                     const textBefore = document.getText(new vscode.Range(new vscode.Position(0, 0), position));
-                    const callRe = /UI\.(按钮|输入栏|文本|矩形|行|列|叠|绝对|容器|空白|弹性)\s*\(/g;
-                    let cm, lastCall = null;
-                    while ((cm = callRe.exec(textBefore)) !== null) { lastCall = cm; }
-                    if (lastCall) {
-                        // 从该调用点扫描配平:栈顶是 { 说明光标在选项字典内
-                        const stack = [];
-                        for (let i = lastCall.index; i < textBefore.length; i++) {
-                            const ch = textBefore[i];
-                            if (ch === '"' || ch === "'") {
+                    const 控件Re = /UI\.(按钮|输入栏|文本|矩形|行|列|叠|绝对|容器|空白|弹性|滚动容器|图片|应用)\s*$/;
+                    // 全文一次扫描:每个 ( 打控件标签,开括号带位置入栈(字符串/行注释/块注释感知)。
+                    // 光标处的封闭 UI 调用 = 自栈顶向下第一个带标签的 (——
+                    // 这样 应用(状态, 函(s) { ...UI.按钮(...)... }, {选项}) 深层嵌套也能认回真正的外层调用
+                    const opens = [];
+                    let inLineComment = false, inBlockComment = false;
+                    for (let i = 0; i < textBefore.length; i++) {
+                        const ch = textBefore[i], nx = textBefore[i + 1];
+                        if (inLineComment) { if (ch === '\n') inLineComment = false; continue; }
+                        if (inBlockComment) { if (ch === '*' && nx === '/') { inBlockComment = false; i++; } continue; }
+                        if (ch === '/' && nx === '/') { inLineComment = true; i++; continue; }
+                        if (ch === '/' && nx === '*') { inBlockComment = true; i++; continue; }
+                        if (ch === '"' || ch === "'") {
+                            i++;
+                            while (i < textBefore.length && textBefore[i] !== ch) {
+                                if (textBefore[i] === '\\') i++;
                                 i++;
-                                while (i < textBefore.length && textBefore[i] !== ch) {
-                                    if (textBefore[i] === '\\') i++;
-                                    i++;
-                                }
-                                continue;
                             }
-                            if (ch === '(' || ch === '{') stack.push(ch);
-                            else if (ch === ')' || ch === '}') stack.pop();
+                            continue;
                         }
-                        if (stack.length >= 2 && stack[stack.length - 1] === '{') {
-                            // 状态子字典(悬浮/按下/禁用)内:只给状态覆写三件套
-                            const stateTail = textBefore.match(/(悬浮|按下|禁用)\s*:\s*\{[^{}]*$/);
-                            const 通用 = ["宽", "高", "x", "y", "弹性", "主轴对齐", "叉轴对齐", "间距", "内边距", "外边距", "圆角", "边框色", "边框宽", "字号", "字色", "颜色", "字距", "底色", "底色2", "渐变向", "羽化", "阴影", "可视", "禁用"];
-                            const 状态色 = ["悬底色", "按底色", "禁底色", "悬字色", "按字色", "禁字色", "悬边色", "按边色", "禁边色"];
-                            const 控件参数 = {
-                                "按钮": ["悬浮", "按下", "禁用", "点击", "触发", "连发间隔", "首按延迟", "悬浮上浮", "按下缩放"],
-                                "输入栏": ["占位", "占位色", "只读", "提交", "焦框色", "焦框宽", "框色", "左图标", "右图标", "图标尺寸", "图标距", "图标色", "右图标点击"],
-                                "文本": [],
-                                "矩形": [],
-                                "行": [], "列": [], "叠": [], "绝对": [], "容器": [], "空白": [], "弹性": []
-                            };
-                            let keys;
-                            if (stateTail) {
-                                keys = ["底色", "字色", "边色"];
-                            } else {
-                                keys = 控件参数[lastCall[1]].concat(状态色, 通用);
+                        if (ch === '(' || ch === '{') {
+                            let tag = null;
+                            if (ch === '(') {
+                                const pre = textBefore.slice(Math.max(0, i - 16), i);
+                                const m = pre.match(控件Re);
+                                if (m) tag = m[1];
                             }
-                            return keys.map(k => {
-                                const item = new vscode.CompletionItem(k, vscode.CompletionItemKind.Field);
-                                item.insertText = k + ": ";
-                                item.detail = "UI." + lastCall[1] + " 选项";
-                                return item;
-                            });
+                            opens.push({ ch, idx: i, tag });
+                        }
+                        else if (ch === ')' || ch === '}') opens.pop();
+                    }
+                    const top = opens[opens.length - 1];
+                    if (opens.length >= 2 && top && top.ch === '{') {
+                        // 封闭调用:自栈顶向下找最近的 UI 控件 (
+                        let 控件名 = null;
+                        for (let i = opens.length - 1; i >= 0; i--) {
+                            if (opens[i].tag) { 控件名 = opens[i].tag; break; }
+                        }
+                        // 闭包排除:当前 { 紧跟在 函(...) 之后 → 是闭包体,不是选项字典
+                        const preBrace = textBefore.slice(Math.max(0, top.idx - 24), top.idx);
+                        const isClosure = /函\s*\([^()]*\)\s*$/.test(preBrace);
+                        if (控件名 && !isClosure) {
+                                // 当前字典层的语义归属(取 { 前的键名)
+                                const 状态层 = /(悬浮|按下|禁用)\s*:\s*$/.test(preBrace);
+                                const 阴影层 = /阴影\s*:\s*$/.test(preBrace);
+                                let keys;
+                                if (阴影层) {
+                                    keys = ["颜色", "模糊", "x", "y"];
+                                } else if (状态层) {
+                                    // 状态子字典(v1.5.0 任意键语义):颜色子键 + 全量
+                                    keys = ["底色", "字色", "边色"].concat(控件表[控件名], 三态色, 通用键);
+                                } else if (控件名 === "应用") {
+                                    keys = 控件表["应用"];
+                                } else {
+                                    keys = 控件表[控件名].concat(三态色, 通用键);
+                                }
+                                // 去重:同层已写过的键不再候选(只取当前字典直接层的键)
+                                const have = new Set();
+                                let d = 0;
+                                inLineComment = false; inBlockComment = false;
+                                for (let i = top.idx + 1; i < textBefore.length; i++) {
+                                    const ch = textBefore[i], nx = textBefore[i + 1];
+                                    if (inLineComment) { if (ch === '\n') inLineComment = false; continue; }
+                                    if (inBlockComment) { if (ch === '*' && nx === '/') { inBlockComment = false; i++; } continue; }
+                                    if (ch === '/' && nx === '/') { inLineComment = true; i++; continue; }
+                                    if (ch === '/' && nx === '*') { inBlockComment = true; i++; continue; }
+                                    if (ch === '"' || ch === "'") {
+                                        i++;
+                                        while (i < textBefore.length && textBefore[i] !== ch) {
+                                            if (textBefore[i] === '\\') i++;
+                                            i++;
+                                        }
+                                        continue;
+                                    }
+                                    if (ch === '{') { d++; continue; }
+                                    if (ch === '}') { if (d === 0) break; d--; continue; }
+                                    if (d === 0 && /[一-龥A-Za-z_]/.test(ch)) {
+                                        const m = textBefore.slice(i).match(/^([一-龥A-Za-z_][一-龥\w]*)\s*:/);
+                                        if (m) { have.add(m[1]); i += m[1].length; }
+                                    }
+                                }
+                                keys = keys.filter(k => !have.has(k));
+                                return keys.map(k => {
+                                    const item = new vscode.CompletionItem(k, vscode.CompletionItemKind.Field);
+                                    item.insertText = k + ": ";
+                                    // 拼音过滤文本:打 zihao 也能筛出 字号(中文标签默认筛不中拼音)
+                                    item.filterText = withPinyinFilter(k);
+                                    item.detail = "UI." + 控件名 + " 选项";
+                                    return item;
+                                });
+                            }
                         }
                     }
-                }
 
                 // LSP 在线时,关键字/符号/成员补全全部由 xt_lsp 提供(带括号片段),
                 // 本脚本 provider 让位,仅保留上方的 引"路径" 补全(避免同名候选截胡 LSP 项)
