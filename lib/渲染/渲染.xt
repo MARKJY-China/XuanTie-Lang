@@ -39,6 +39,12 @@
 外 函 XT_EndDrawing(): 空
 外 函 XT_PollInputEvents(): 空
 外 函 XT_SetMouseCursor(c: 整): 空
+外 函 XT_WindowMinimize(): 空
+外 函 XT_WindowMaximize(): 空
+外 函 XT_WindowRestore(): 空
+外 函 XT_WindowIsMaximized(): 整
+外 函 XT_WindowClose(): 空
+外 函 XT_WindowDrag(): 空
 外 函 XT_ClearBackground(r: 整, g: 整, b: 整, a: 整): 空
 
 // ============================================================
@@ -230,6 +236,26 @@
 公 函 设鼠标样式(样式) {
     XT_SetMouseCursor(样式)
 }
+
+// ---- 窗口控制三件套(无边框自绘标题栏用) ----
+// 最小化到任务栏(可调整窗口)
+公 函 最小化窗口() { XT_WindowMinimize() }
+
+// 最大化(可调整窗口;已最大化时 raylib 内部幂等)
+公 函 最大化窗口() { XT_WindowMaximize() }
+
+// 从最小化/最大化还原
+公 函 还原窗口() { XT_WindowRestore() }
+
+// 当前是否最大化(最大化/窗口化切换钮据此换图标)
+公 函 窗口最大化了?() { 返 XT_WindowIsMaximized() == 1 }
+
+// 请求关闭窗口(优雅关闭:投递 WM_CLOSE,主循环下一轮按正常路径退出——不帧中销毁上下文)
+公 函 请求关闭窗口() { XT_WindowClose() }
+
+// 标题栏拖拽移动(无边框自绘标题栏用):在自绘标题栏的 触发:"按下" 回调里调用,
+// Windows 模态移动循环接管,手感与原生标题栏拖拽一致
+公 函 拖拽窗口() { XT_WindowDrag() }
 
 // 用 RGBA 颜色清屏
 公 函 清背景(r, g, b, a) {

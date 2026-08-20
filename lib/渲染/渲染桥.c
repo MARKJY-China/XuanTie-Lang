@@ -284,6 +284,106 @@ void XT_SetMouseCursor(uintptr_t c) {
     SetMouseCursor(v);
 }
 
+/* ---- 窗口控制三件套(无边框自绘标题栏用) ---- */
+#ifdef _WIN32
+extern __declspec(dllimport) int WINAPI PostMessageW(void*, unsigned int, uintptr_t, intptr_t);
+extern __declspec(dllimport) int WINAPI ShowWindow(void*, int);
+typedef struct { long left, top, right, bottom; } XT_RECT2;
+extern __declspec(dllimport) int WINAPI SetWindowPos(void*, void*, int, int, int, int, unsigned int);
+extern __declspec(dllimport) int WINAPI GetWindowRect(void*, XT_RECT2*);
+extern __declspec(dllimport) int WINAPI SystemParametersInfoW(unsigned int, unsigned int, void*, unsigned int);
+extern __declspec(dllimport) void WINAPI Sleep(unsigned long);
+#endif
+
+uintptr_t XT_WindowMinimize(void) {
+    MinimizeWindow();
+    return XT_FROM_INT(1);
+}
+
+/* 工作区最大化(留出任务栏):无边框窗是 WS_POPUP,SW_MAXIMIZE 对它按 Windows 规则
+   盖满全屏含任务栏(实测与用户预期"最大化≠全屏"冲突);改为 SPI_GETWORKAREA 取工作区
+   矩形 + SetWindowPos。最大化前存原始矩形供还原;状态桥内跟踪(raylib IsWindowMaximized
+   只认 SW_MAXIMIZE,手动 SetWindowPos 它不认) */
+static XT_RECT2 xt_maxsave = {0, 0, 0, 0};
+static int xt_maxed = 0;
+
+uintptr_t XT_WindowMaximize(void) {
+#ifdef _WIN32
+    void* hwnd = GetWindowHandle();
+    if (!hwnd) return XT_FROM_INT(0);
+    if (!xt_maxed) { GetWindowRect(hwnd, &xt_maxsave); xt_maxed = 1; }
+    XT_RECT2 wa;
+    SystemParametersInfoW(0x0030 /* SPI_GETWORKAREA */, 0, &wa, 0);
+    SetWindowPos(hwnd, 0, wa.left, wa.top, wa.right - wa.left, wa.bottom - wa.top, 0x0010 /* SWP_NOACTIVATE */);
+    return XT_FROM_INT(1);
+#else
+    MaximizeWindow();
+    return XT_FROM_INT(1);
+#endif
+}
+
+uintptr_t XT_WindowRestore(void) {
+#ifdef _WIN32
+    void* hwnd = GetWindowHandle();
+    if (!hwnd) return XT_FROM_INT(0);
+    if (xt_maxed) {
+        SetWindowPos(hwnd, 0, xt_maxsave.left, xt_maxsave.top,
+                     xt_maxsave.right - xt_maxsave.left, xt_maxsave.bottom - xt_maxsave.top, 0x0010);
+        xt_maxed = 0;
+    }
+    return XT_FROM_INT(1);
+#else
+    RestoreWindow();
+    return XT_FROM_INT(1);
+#endif
+}
+
+uintptr_t XT_WindowIsMaximized(void) {
+#ifdef _WIN32
+    return XT_FROM_INT(xt_maxed);
+#else
+    return XT_FROM_INT(IsWindowMaximized() ? 1 : 0);
+#endif
+}
+
+/* 优雅关闭:不直接 CloseWindow(帧中销毁上下文,后续绘制即崩),
+   Windows 下投递 WM_CLOSE,GLFW 转成 shouldClose,主循环下一轮按正常路径退出;
+   非 Windows 平台退回 CloseWindow(帧末调用方为界) */
+void XT_WindowClose(void) {
+#ifdef _WIN32
+    void* hwnd = GetWindowHandle();
+    if (hwnd) PostMessageW(hwnd, 0x0010 /* WM_CLOSE */, 0, 0);
+#else
+    CloseWindow();
+#endif
+}
+
+/* 标题栏拖拽移动(无边框自绘标题栏用):按下沿调用,桥内跟踪循环,松手才返回。
+   移动器用 raylib SetWindowPosition(实测无残影——Win32 SetWindowPos 绕开 GLFW
+   的呈现路径会留下满屏残影);光标增量与按住判定走 Win32 原生(GetCursorPos 实时、
+   GetAsyncKeyState),不读 raylib 输入态(其鼠标态比事件泵滞后一拍,初版拖拽起点
+   跳变十余像素即此所致);首步 SetWindowPosition(原位) 恒等,零跳变 */
+typedef struct { long x, y; } XT_POINT;
+extern __declspec(dllimport) int WINAPI GetCursorPos(XT_POINT*);
+extern __declspec(dllimport) short WINAPI GetAsyncKeyState(int);
+
+void XT_WindowDrag(void) {
+#ifdef _WIN32
+    void* hwnd = GetWindowHandle();
+    if (!hwnd) return;
+    Vector2 wp0 = GetWindowPosition();
+    XT_POINT cur;
+    GetCursorPos(&cur);
+    int sx0 = cur.x;
+    int sy0 = cur.y;
+    while (GetAsyncKeyState(0x01 /* VK_LBUTTON */) & 0x8000) {
+        GetCursorPos(&cur);
+        SetWindowPosition((int)wp0.x + (cur.x - sx0), (int)wp0.y + (cur.y - sy0));
+        Sleep(8);
+    }
+#endif
+}
+
 void XT_ClearBackground(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {
         (unsigned char)XT_TO_INT(r),
@@ -1067,7 +1167,6 @@ typedef unsigned short XT_WCHAR;
 typedef unsigned char XT_BYTE;
 typedef struct { short fract; short value; } XT_FIXED;
 typedef struct { XT_FIXED eM11, eM12, eM21, eM22; } XT_MAT2;
-typedef struct { long x, y; } XT_POINT;
 typedef struct {
     unsigned int gmBlackBoxX, gmBlackBoxY;
     XT_POINT gmptGlyphOrigin;
