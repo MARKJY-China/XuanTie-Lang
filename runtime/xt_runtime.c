@@ -3721,7 +3721,16 @@ static XTValue json_parse_value(const char** p) {
 }
 
 XTValue xt_json_deserialize(XTString* json_str) {
-    if (!json_str || json_str->length == 0) return XT_NULL;
+    if (!json_str) return XT_NULL;
+    // 非字符串输入(标记整数/布尔/空/结果/字典等)显式报错退出——原行为直接读 type/length/data
+    // 字段:对 结果 容器(如 文件.读 的返回值)解引用即段错误(0xC0000005),且 尝试/捕捉 无法兜住。
+    // 与 xt_member_missing/xt_index_bad 同规:「宁可报错退出也不静默跳过」。
+    if (!xt_is_real_ptr((XTValue)json_str) || ((XTObject*)json_str)->type_id != XT_TYPE_STRING) {
+        fprintf(stderr, "运行时错误: 解(JSON反序列化) 收到非字符串输入\n");
+        fprintf(stderr, "  提示: 解 只接受字符串;文件.读 等返回 结果 容器,请先 若 r.成功 { 解(r.值) } 再使用。\n");
+        exit(1);
+    }
+    if (json_str->length == 0) return XT_NULL;
     const char* p = json_str->data;
     return json_parse_value(&p);
 }
