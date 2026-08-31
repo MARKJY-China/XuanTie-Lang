@@ -1533,6 +1533,16 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				return rawRes, "raw_i64", ""
 			}
 		}
+		// 小数（浮点）返回值需要打包成 XTFloat 对象（玄铁运行时浮点装箱），
+		// 否则裸 double 被 xt_retain(i64) / ret i64 使用会产生 LLVM 类型错误
+		// （与 ensureI64 中 double → xt_float_new 的处理对齐）。
+		if declaredRetType == "double" {
+			packed := c.nextReg()
+			c.emit("  %s = call i8* @xt_float_new(double %s)", packed, reg)
+			ptrI64 := c.nextReg()
+			c.emit("  %s = ptrtoint i8* %s to i64", ptrI64, packed)
+			return ptrI64, "i64", ""
+		}
 		return reg, declaredRetType, ""
 	case *ast.NewExpression:
 		reg := c.nextReg()
