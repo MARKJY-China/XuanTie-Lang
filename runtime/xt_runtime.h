@@ -179,10 +179,17 @@ typedef pthread_cond_t  xt_chan_cond_t;
 #define XT_CHAN_COND_INIT(c)     pthread_cond_init(c, NULL)
 #define XT_CHAN_COND_DESTROY(c)  pthread_cond_destroy(c)
 #define XT_CHAN_COND_WAIT(c,m,ms) ({ \
-    struct timespec _ts; clock_gettime(CLOCK_REALTIME, &_ts); \
-    _ts.tv_sec += (ms)/1000; _ts.tv_nsec += ((ms)%1000)*1000000; \
-    if (_ts.tv_nsec >= 1000000000) { _ts.tv_sec++; _ts.tv_nsec -= 1000000000; } \
-    pthread_cond_timedwait(c, m, &_ts); })
+    int _r; \
+    if ((ms) < 0) { \
+        pthread_cond_wait(c, m); \
+        _r = 1; \
+    } else { \
+        struct timespec _ts; clock_gettime(CLOCK_REALTIME, &_ts); \
+        _ts.tv_sec += (ms)/1000; _ts.tv_nsec += ((ms)%1000)*1000000; \
+        if (_ts.tv_nsec >= 1000000000) { _ts.tv_sec++; _ts.tv_nsec -= 1000000000; } \
+        _r = (pthread_cond_timedwait(c, m, &_ts) == 0) ? 1 : 0; \
+    } \
+    _r; })
 #define XT_CHAN_COND_SIGNAL(c)   pthread_cond_signal(c)
 #define XT_CHAN_COND_BROADCAST(c) pthread_cond_broadcast(c)
 #endif
