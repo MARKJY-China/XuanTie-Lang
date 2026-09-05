@@ -1347,6 +1347,11 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			return resReg, "i64", ""
 		}
 		if e.Operator == "-" {
+			if rightType == "double" {
+				reg := c.nextReg()
+				c.emit("  %s = fneg double %s", reg, rightReg)
+				return reg, "double", ""
+			}
 			if rightType == "raw_i64" {
 				reg := c.nextReg()
 				c.emit("  %s = sub i64 0, %s", reg, rightReg)
@@ -2358,24 +2363,47 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			isArithmeticOrCompare = true
 		}
 		if isArithmeticOrCompare {
-			// P1: 整数算术快速路径
+			// P1: 算术快速路径
 			// 只有双方都是标量类型时，才直接使用 icmp/fcmp
 			if c.isScalarType(leftType) && c.isScalarType(rightType) {
-				lRaw := c.ensureRawI64(leftReg, leftType)
-				rRaw := c.ensureRawI64(rightReg, rightType)
-				op := c.mapOperator(e.Operator)
+				// P1a: 小数快速路径——任一方为 double 即按裸 double 运算(fmul/fadd/fcmp 系)。
+				// 旧实现把 double 一并送整数路径:ensureRawI64 兜底先 ensureI64 装箱(xt_float_new)
+				// 再 ashr 1 拆标记,装箱指针被当整数乘——`设 x = 3.14 * 2` 实测吐堆地址量级垃圾数;
+				// 经变量中转(装箱非标量类型)则落 P3 运行时助手,故两条路径一好一坏。
+				// %/位运算无浮点直译(mapOperatorDouble 返空)→落穿 P3。
+				if leftType == "double" || rightType == "double" {
+					if dop := c.mapOperatorDouble(e.Operator); dop != "" {
+						lD := c.ensureRawDouble(leftReg, leftType)
+						rD := c.ensureRawDouble(rightReg, rightType)
+						if strings.HasPrefix(dop, "fcmp") {
+							resI1 := c.nextReg()
+							c.emit("  %s = %s double %s, %s", resI1, dop, lD, rD)
+							res := c.nextReg()
+							c.emit("  %s = select i1 %s, i64 4, i64 2", res, resI1)
+							return res, "i64", ""
+						}
+						res := c.nextReg()
+						c.emit("  %s = %s double %s, %s", res, dop, lD, rD)
+						return res, "double", ""
+					}
+				} else {
+					// P1b: 整数算术快速路径(双方均无 double)
+					lRaw := c.ensureRawI64(leftReg, leftType)
+					rRaw := c.ensureRawI64(rightReg, rightType)
+					op := c.mapOperator(e.Operator)
 
-				if op != "" {
-					if strings.HasPrefix(op, "icmp") || strings.HasPrefix(op, "fcmp") {
-						resI1 := c.nextReg()
-						c.emit("  %s = %s i64 %s, %s", resI1, op, lRaw, rRaw)
-						res := c.nextReg()
-						c.emit("  %s = select i1 %s, i64 4, i64 2", res, resI1)
-						return res, "i64", ""
-					} else {
-						res := c.nextReg()
-						c.emit("  %s = %s i64 %s, %s", res, op, lRaw, rRaw)
-						return res, "raw_i64", ""
+					if op != "" {
+						if strings.HasPrefix(op, "icmp") || strings.HasPrefix(op, "fcmp") {
+							resI1 := c.nextReg()
+							c.emit("  %s = %s i64 %s, %s", resI1, op, lRaw, rRaw)
+							res := c.nextReg()
+							c.emit("  %s = select i1 %s, i64 4, i64 2", res, resI1)
+							return res, "i64", ""
+						} else {
+							res := c.nextReg()
+							c.emit("  %s = %s i64 %s, %s", res, op, lRaw, rRaw)
+							return res, "raw_i64", ""
+						}
 					}
 				}
 			}
@@ -2615,6 +2643,45 @@ func (c *LLVMCompiler) mapOperator(op string) string {
 	default:
 		return ""
 	}
+}
+
+// 浮点算子的 LLVM 直译指令;%/位运算无浮点直译返 ""(调用方落穿运行时助手)
+func (c *LLVMCompiler) mapOperatorDouble(op string) string {
+	switch op {
+	case "+", "加":
+		return "fadd"
+	case "-", "减":
+		return "fsub"
+	case "*", "乘":
+		return "fmul"
+	case "/", "除":
+		return "fdiv"
+	case "==", "相等":
+		return "fcmp oeq"
+	case "!=", "不等":
+		return "fcmp one"
+	case "<", "小于":
+		return "fcmp olt"
+	case ">", "大于":
+		return "fcmp ogt"
+	case "<=", "小于等于":
+		return "fcmp ole"
+	case ">=", "大于等于":
+		return "fcmp oge"
+	default:
+		return ""
+	}
+}
+
+// 标量寄存器转裸 double;double 直过,raw_i64/i1 先转裸整再 sitofp
+func (c *LLVMCompiler) ensureRawDouble(reg, typ string) string {
+	if typ == "double" {
+		return reg
+	}
+	raw := c.ensureRawI64(reg, typ)
+	newReg := c.nextReg()
+	c.emit("  %s = sitofp i64 %s to double", newReg, raw)
+	return newReg
 }
 
 func (c *LLVMCompiler) compileLogicalAnd(e *ast.InfixExpression) (string, string, string) {
