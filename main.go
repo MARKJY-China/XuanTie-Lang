@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"xuantie/ast"
 	"xuantie/compiler"
 	"xuantie/evaluator"
@@ -24,27 +23,6 @@ const (
 	colorRed   = "\033[31m"
 	colorBold  = "\033[1m"
 )
-
-func enableVirtualTerminalProcessing() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	const enableVirtualTerminalProcessingMode = 0x0004
-	var (
-		handle syscall.Handle
-		mode   uint32
-	)
-	handle = syscall.Handle(os.Stdout.Fd())
-	if err := syscall.GetConsoleMode(handle, &mode); err == nil {
-		mode |= enableVirtualTerminalProcessingMode
-		syscall.Syscall(syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleMode").Addr(), 2, uintptr(handle), uintptr(mode), 0)
-	}
-	handle = syscall.Handle(os.Stderr.Fd())
-	if err := syscall.GetConsoleMode(handle, &mode); err == nil {
-		mode |= enableVirtualTerminalProcessingMode
-		syscall.Syscall(syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleMode").Addr(), 2, uintptr(handle), uintptr(mode), 0)
-	}
-}
 
 func isPowerShell() bool {
 	return runtime.GOOS == "windows" || os.Getenv("PSModulePath") != ""

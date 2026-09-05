@@ -1533,6 +1533,10 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 				return rawRes, "raw_i64", ""
 			}
 		}
+		// 小数外函数的装箱不在此处:外函数声明层已统一 declare i64(C 桥 ABI 恒返
+		// uintptr_t 装箱值,如 渲染桥.c 的 XT_GetFrameTime 返 xt_make_float(...)),
+		// 调用结果天然是装箱 XTFloat,调用点不得再 xt_float_new 二次装箱——旧方案
+		// (declare double+此处装箱)按 XMM0 读 uintptr_t 返回值,寄存器错位。
 		return reg, declaredRetType, ""
 	case *ast.NewExpression:
 		reg := c.nextReg()

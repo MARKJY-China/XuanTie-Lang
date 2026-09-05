@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/parser"
@@ -1298,11 +1299,26 @@ func (c *GoCompiler) memberCallExpressionCode(e *ast.MemberCallExpression, isAss
 	return fmt.Sprintf("getAttr(%s, %q)", c.expressionCode(e.Object, isAssignment), e.Member.Value)
 }
 
-// gi: 玄铁标识符 → 合法 Go 标识符。玄铁谓词命名惯例以 ? 结尾(含?/存在?/窗口应关闭?),
-// Go 标识符不允许 ?,统一映射 ? → _q;定义点与引用点均过 gi,内部一致性保持。
-// 字符串键位——方法表/属性名/类型名/堆栈显示/FFI 符号名——一律保持原名,不影响运行时契约。
+// gi: 玄铁标识符 → 合法 Go 标识符。玄铁标识符可含中文与 ?(谓词命名惯例 含?/存在?),
+// Go 标识符仅允许 Unicode 字母/数字/下划线:? 转义为 _q,其余非法字符按 _<十六进制码点>
+// 转义;定义点与引用点均过 gi,内部一致性保持。字符串键位——方法表/属性名/类型名/堆栈
+// 显示/FFI 符号名——一律保持原名,不影响运行时字符串契约。
 func gi(name string) string {
-	return strings.ReplaceAll(name, "?", "_q")
+	if name == "" {
+		return name
+	}
+	var b strings.Builder
+	for i, r := range name {
+		switch {
+		case r == '_' || unicode.IsLetter(r) || (i > 0 && unicode.IsDigit(r)):
+			b.WriteRune(r)
+		case r == '?':
+			b.WriteString("_q")
+		default:
+			b.WriteString(fmt.Sprintf("_%x", r))
+		}
+	}
+	return b.String()
 }
 
 func isBarePackageName(path string) bool {
