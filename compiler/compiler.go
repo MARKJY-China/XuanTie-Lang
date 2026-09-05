@@ -856,30 +856,30 @@ func (c *GoCompiler) writeStatementsWithDeclarations(stmts []ast.Statement, inde
 	// 收集块内声明以支持前向引用和局部变量
 	for _, stmt := range stmts {
 		if vs, ok := stmt.(*ast.VarStatement); ok {
-			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, vs.Name.Value))
-			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, vs.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, gi(vs.Name.Value)))
+			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(vs.Name.Value)))
 		}
 		if fs, ok := stmt.(*ast.FunctionStatement); ok {
-			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, fs.Name.Value))
-			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, fs.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, gi(fs.Name.Value)))
+			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(fs.Name.Value)))
 		}
 		if ts, ok := stmt.(*ast.TypeDefinitionStatement); ok {
-			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, ts.Name.Value))
-			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, ts.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, gi(ts.Name.Value)))
+			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(ts.Name.Value)))
 		}
 		if is, ok := stmt.(*ast.InterfaceStatement); ok {
-			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, is.Name.Value))
-			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, is.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, gi(is.Name.Value)))
+			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(is.Name.Value)))
 		}
 		if efs, ok := stmt.(*ast.ExternalFunctionStatement); ok {
-			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, efs.Name.Value))
-			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, efs.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, gi(efs.Name.Value)))
+			c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(efs.Name.Value)))
 		}
 		// 收集引用别名
 		if es, ok := stmt.(*ast.ExpressionStatement); ok {
 			if ie, ok := es.Expression.(*ast.ImportExpression); ok && ie.Alias != nil {
-				c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, ie.Alias.Value))
-				c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, ie.Alias.Value))
+				c.output.WriteString(fmt.Sprintf("%svar %s interface{}\n", indentStr, gi(ie.Alias.Value)))
+				c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(ie.Alias.Value)))
 			}
 		}
 	}
@@ -893,12 +893,12 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	indentStr := strings.Repeat("\t", indent)
 	switch s := stmt.(type) {
 	case *ast.VarStatement:
-		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name.Value, c.expressionCode(s.Value, true)))
+		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, gi(s.Name.Value), c.expressionCode(s.Value, true)))
 		if s.DataType != "" {
-			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, %s, %q, nil)\n", indentStr, s.DataType, s.Name.Value, "变量 "+s.Name.Value))
+			c.output.WriteString(fmt.Sprintf("%scheckTypeRuntime(%q, %s, %q, nil)\n", indentStr, s.DataType, gi(s.Name.Value), "变量 "+s.Name.Value))
 		}
 	case *ast.AssignStatement:
-		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, s.Name, c.expressionCode(s.Value, true)))
+		c.output.WriteString(fmt.Sprintf("%s%s = %s\n", indentStr, gi(s.Name), c.expressionCode(s.Value, true)))
 	case *ast.MemberAssignStatement:
 		c.output.WriteString(fmt.Sprintf("%ssetAttr(%s, %q, %s)\n", indentStr, c.expressionCode(s.Object, true), s.Member.Value, c.expressionCode(s.Value, true)))
 	case *ast.PrintStatement:
@@ -927,10 +927,10 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		// 基础遍历实现
 		c.output.WriteString(fmt.Sprintf("%sfor _, _p := range toIterator(%s) {\n", indentStr, c.expressionCode(s.Iterable, false)))
 		if len(s.Variables) == 1 {
-			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.V\n", indentStr, s.Variables[0].Value))
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.V\n", indentStr, gi(s.Variables[0].Value)))
 		} else if len(s.Variables) >= 2 {
-			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.K\n", indentStr, s.Variables[0].Value))
-			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.V\n", indentStr, s.Variables[1].Value))
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.K\n", indentStr, gi(s.Variables[0].Value)))
+			c.output.WriteString(fmt.Sprintf("%s\tvar %s interface{} = _p.V\n", indentStr, gi(s.Variables[1].Value)))
 		}
 		c.writeStatementsWithDeclarations(s.Block, indent+1)
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
@@ -939,8 +939,8 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 	case *ast.ContinueStatement:
 		c.output.WriteString(fmt.Sprintf("%scontinue\n", indentStr))
 	case *ast.ExternalFunctionStatement:
-		// 外部函数声明，生成一个 FFI 占位符
-		c.output.WriteString(fmt.Sprintf("%s%s = &FFIFunction{Name: %q}\n", indentStr, s.Name.Value, s.Name.Value))
+		// 外部函数声明，生成一个 FFI 占位符(Go 变量名走 gi;FFI 符号名保持原样供运行时按名解析)
+		c.output.WriteString(fmt.Sprintf("%s%s = &FFIFunction{Name: %q}\n", indentStr, gi(s.Name.Value), s.Name.Value))
 	case *ast.TryCatchStatement:
 		c.output.WriteString(fmt.Sprintf("%sfunc() {\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s\tdefer func() {\n", indentStr))
@@ -951,8 +951,8 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s\t\t\t\tfor i := len(xtStack) - 1; i >= 0; i-- { msg += \"\\n  于 \" + xtStack[i] }\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s\t\t\t}\n", indentStr))
 		if s.CatchVar != nil {
-			c.output.WriteString(fmt.Sprintf("%s\t\t\tvar %s interface{} = msg\n", indentStr, s.CatchVar.Value))
-			c.output.WriteString(fmt.Sprintf("%s\t\t\t_ = %s\n", indentStr, s.CatchVar.Value))
+			c.output.WriteString(fmt.Sprintf("%s\t\t\tvar %s interface{} = msg\n", indentStr, gi(s.CatchVar.Value)))
+			c.output.WriteString(fmt.Sprintf("%s\t\t\t_ = %s\n", indentStr, gi(s.CatchVar.Value)))
 		}
 		c.writeStatementsWithDeclarations(s.CatchBlock, indent+3)
 		c.output.WriteString(fmt.Sprintf("%s\t\t}\n", indentStr))
@@ -961,16 +961,16 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s}()\n", indentStr))
 	case *ast.FunctionStatement:
 		c.functions[s.Name.Value] = s
-		c.output.WriteString(fmt.Sprintf("%s%s = func(args []interface{}, typeArgs map[string]string) interface{} {\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%s%s = func(args []interface{}, typeArgs map[string]string) interface{} {\n", indentStr, gi(s.Name.Value)))
 		c.output.WriteString(fmt.Sprintf("%s\txtStack = append(xtStack, %q + \" [行:%d]\")\n", indentStr, s.Name.Value, s.GetLine()))
 		c.output.WriteString(fmt.Sprintf("%s\t_res := func() interface{} {\n", indentStr))
 		// 绑定参数
 		for i, p := range s.Parameters {
-			c.output.WriteString(fmt.Sprintf("%s\t\tvar %s interface{}\n", indentStr, p.Name.Value))
-			c.output.WriteString(fmt.Sprintf("%s\t\tif len(args) > %d { %s = args[%d] }\n", indentStr, i, p.Name.Value, i))
+			c.output.WriteString(fmt.Sprintf("%s\t\tvar %s interface{}\n", indentStr, gi(p.Name.Value)))
+			c.output.WriteString(fmt.Sprintf("%s\t\tif len(args) > %d { %s = args[%d] }\n", indentStr, i, gi(p.Name.Value), i))
 			// 类型校验
 			if p.DataType != "" {
-				c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q, typeArgs)\n", indentStr, p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+				c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q, typeArgs)\n", indentStr, p.DataType, gi(p.Name.Value), "参数 "+p.Name.Value))
 			}
 		}
 
@@ -988,13 +988,13 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 		c.output.WriteString(fmt.Sprintf("%s\txtStack = xtStack[:len(xtStack)-1]\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s\treturn _res\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
-		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(s.Name.Value)))
 	case *ast.TypeDefinitionStatement:
 		c.classes[s.Name.Value] = s
-		c.output.WriteString(fmt.Sprintf("%s%s = func(args []interface{}, typeArgs map[string]string) map[string]interface{} {\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%s%s = func(args []interface{}, typeArgs map[string]string) map[string]interface{} {\n", indentStr, gi(s.Name.Value)))
 		if s.Parent != nil {
 			// 如果有父类，先调用父类构造逻辑
-			c.output.WriteString(fmt.Sprintf("%s\tres := %s([]interface{}{}, nil)\n", indentStr, s.Parent.Value))
+			c.output.WriteString(fmt.Sprintf("%s\tres := %s([]interface{}{}, nil)\n", indentStr, gi(s.Parent.Value)))
 		} else {
 			c.output.WriteString(fmt.Sprintf("%s\tres := make(map[string]interface{})\n", indentStr))
 			c.output.WriteString(fmt.Sprintf("%s\tres[\"__VIS__\"] = make(map[string]string)\n", indentStr))
@@ -1046,12 +1046,12 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 					for _, m := range cls.Block {
 						if vs, ok := m.(*ast.VarStatement); ok {
 							// 只有本类私有或祖先非私有才注入（简化版全注入）
-							c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, vs.Name.Value, vs.Name.Value))
-							c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, vs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, gi(vs.Name.Value), vs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, gi(vs.Name.Value)))
 						}
 						if fs, ok := m.(*ast.FunctionStatement); ok {
-							c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, fs.Name.Value, fs.Name.Value))
-							c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, fs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\t%s := res[%q]\n", indentStr, gi(fs.Name.Value), fs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\t_ = %s\n", indentStr, gi(fs.Name.Value)))
 						}
 					}
 				}
@@ -1060,10 +1060,10 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 
 				// 绑定参数
 				for i, p := range fnStmt.Parameters {
-					c.output.WriteString(fmt.Sprintf("%s\t\t%s := interface{}(nil)\n", indentStr, p.Name.Value))
-					c.output.WriteString(fmt.Sprintf("%s\t\tif len(m_args) > %d { %s = m_args[%d] }\n", indentStr, i, p.Name.Value, i))
+					c.output.WriteString(fmt.Sprintf("%s\t\t%s := interface{}(nil)\n", indentStr, gi(p.Name.Value)))
+					c.output.WriteString(fmt.Sprintf("%s\t\tif len(m_args) > %d { %s = m_args[%d] }\n", indentStr, i, gi(p.Name.Value), i))
 					if p.DataType != "" {
-						c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q, res[\"__TYPE_ARGS__\"].(map[string]string))\n", indentStr, p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+						c.output.WriteString(fmt.Sprintf("%s\t\tcheckTypeRuntime(%q, %s, %q, res[\"__TYPE_ARGS__\"].(map[string]string))\n", indentStr, p.DataType, gi(p.Name.Value), "参数 "+p.Name.Value))
 					}
 				}
 				c.typeArgsStack = append(c.typeArgsStack, "res[\"__TYPE_ARGS__\"].(map[string]string)")
@@ -1082,7 +1082,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 					}
 					for _, m := range cls.Block {
 						if vs, ok := m.(*ast.VarStatement); ok {
-							c.output.WriteString(fmt.Sprintf("%s\t\tres[%q] = %s\n", indentStr, vs.Name.Value, vs.Name.Value))
+							c.output.WriteString(fmt.Sprintf("%s\t\tres[%q] = %s\n", indentStr, vs.Name.Value, gi(vs.Name.Value)))
 						}
 					}
 				}
@@ -1099,7 +1099,7 @@ func (c *GoCompiler) writeStatement(stmt ast.Statement, indent int) {
 
 		c.output.WriteString(fmt.Sprintf("%sreturn res\n", indentStr))
 		c.output.WriteString(fmt.Sprintf("%s}\n", indentStr))
-		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, s.Name.Value))
+		c.output.WriteString(fmt.Sprintf("%s_ = %s\n", indentStr, gi(s.Name.Value)))
 	case *ast.InterfaceStatement:
 		methods := []string{}
 		for _, m := range s.Methods {
@@ -1144,7 +1144,7 @@ func (c *GoCompiler) expressionCode(exp ast.Expression, isAssignment bool) strin
 	case *ast.TypeLiteral:
 		return fmt.Sprintf("%q", e.Value)
 	case *ast.Identifier:
-		return e.Value
+		return gi(e.Value)
 	case *ast.PrefixExpression:
 		right := c.expressionCode(e.Right, isAssignment)
 		switch e.Operator {
@@ -1298,6 +1298,13 @@ func (c *GoCompiler) memberCallExpressionCode(e *ast.MemberCallExpression, isAss
 	return fmt.Sprintf("getAttr(%s, %q)", c.expressionCode(e.Object, isAssignment), e.Member.Value)
 }
 
+// gi: 玄铁标识符 → 合法 Go 标识符。玄铁谓词命名惯例以 ? 结尾(含?/存在?/窗口应关闭?),
+// Go 标识符不允许 ?,统一映射 ? → _q;定义点与引用点均过 gi,内部一致性保持。
+// 字符串键位——方法表/属性名/类型名/堆栈显示/FFI 符号名——一律保持原名,不影响运行时契约。
+func gi(name string) string {
+	return strings.ReplaceAll(name, "?", "_q")
+}
+
 func isBarePackageName(path string) bool {
 	if len(path) == 0 || path[0] == '.' {
 		return false
@@ -1412,14 +1419,18 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 			name = s.Name.Value
 		case *ast.InterfaceStatement:
 			name = s.Name.Value
+		case *ast.ExternalFunctionStatement:
+			// 模块级外函数(如 渲染.xt 的 XT_* 系列)也要预声明,否则模块函数体里
+			// 的占位符赋值落到未定义标识符(主程序预扫描有此项,此处曾漏)
+			name = s.Name.Value
 		case *ast.ExpressionStatement:
 			if ie, ok := s.Expression.(*ast.ImportExpression); ok && ie.Alias != nil {
 				name = ie.Alias.Value
 			}
 		}
 		if name != "" {
-			c.moduleCode.WriteString(fmt.Sprintf("\tvar %s interface{}\n", name))
-			c.moduleCode.WriteString(fmt.Sprintf("\t_ = %s\n", name))
+			c.moduleCode.WriteString(fmt.Sprintf("\tvar %s interface{}\n", gi(name)))
+			c.moduleCode.WriteString(fmt.Sprintf("\t_ = %s\n", gi(name)))
 		}
 	}
 
@@ -1484,7 +1495,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 
 		if name != "" {
 			if !hasPublic || visibility == token.TOKEN_PUBLIC {
-				c.moduleCode.WriteString(fmt.Sprintf("\texports[%q] = %s\n", name, name))
+				c.moduleCode.WriteString(fmt.Sprintf("\texports[%q] = %s\n", name, gi(name)))
 			}
 		}
 	}
@@ -1496,7 +1507,7 @@ func (c *GoCompiler) importExpressionCode(e *ast.ImportExpression, isAssignment 
 
 	code := fmt.Sprintf("%s()", funcName)
 	if e.Alias != nil {
-		code = fmt.Sprintf("(func() map[string]interface{} { %s = %s; return %s })()", e.Alias.Value, code, code)
+		code = fmt.Sprintf("(func() map[string]interface{} { %s = %s; return %s })()", gi(e.Alias.Value), code, code)
 	}
 	return code
 }
@@ -1507,10 +1518,10 @@ func (c *GoCompiler) functionLiteralCode(e *ast.FunctionLiteral, isAssignment bo
 	out.WriteString(fmt.Sprintf("\t\txtStack = append(xtStack, \"匿名函数 [行:%d]\")\n", e.GetLine()))
 	out.WriteString("\t\t_res := func() interface{} {\n")
 	for i, p := range e.Parameters {
-		out.WriteString(fmt.Sprintf("\t\t\t%s := args[%d]\n", p.Name.Value, i))
-		out.WriteString(fmt.Sprintf("\t\t\t_ = %s\n", p.Name.Value))
+		out.WriteString(fmt.Sprintf("\t\t\t%s := args[%d]\n", gi(p.Name.Value), i))
+		out.WriteString(fmt.Sprintf("\t\t\t_ = %s\n", gi(p.Name.Value)))
 		if p.DataType != "" {
-			out.WriteString(fmt.Sprintf("\t\t\tcheckTypeRuntime(%q, %s, %q, typeArgs)\n", p.DataType, p.Name.Value, "参数 "+p.Name.Value))
+			out.WriteString(fmt.Sprintf("\t\t\tcheckTypeRuntime(%q, %s, %q, typeArgs)\n", p.DataType, gi(p.Name.Value), "参数 "+p.Name.Value))
 		}
 	}
 	c.returnTypeStack = append(c.returnTypeStack, e.ReturnType)

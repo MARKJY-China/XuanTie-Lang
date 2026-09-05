@@ -182,7 +182,9 @@ typedef pthread_cond_t  xt_chan_cond_t;
     struct timespec _ts; clock_gettime(CLOCK_REALTIME, &_ts); \
     _ts.tv_sec += (ms)/1000; _ts.tv_nsec += ((ms)%1000)*1000000; \
     if (_ts.tv_nsec >= 1000000000) { _ts.tv_sec++; _ts.tv_nsec -= 1000000000; } \
-    pthread_cond_timedwait(c, m, &_ts); })
+    /* 返回语义与 Windows 版对齐:成功被唤醒=真值,超时=0(调用处以 !WAIT 判超时; \
+       pthread_cond_timedwait 成功返 0/超时返错误码,方向相反,曾在此处反转) */ \
+    pthread_cond_timedwait(c, m, &_ts) == 0; })
 #define XT_CHAN_COND_SIGNAL(c)   pthread_cond_signal(c)
 #define XT_CHAN_COND_BROADCAST(c) pthread_cond_broadcast(c)
 #endif

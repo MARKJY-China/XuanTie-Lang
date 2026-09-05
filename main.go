@@ -255,7 +255,8 @@ func main() {
 		tlsC := filepath.Join(runtimeDir, "xt_tls.c")
 		gccArgs := []string{objFile, rtC, threadpoolC, netC, tlsC, "-o", outputName, "-lshell32", "-lws2_32", "-lsecur32"}
 		if useRender {
-			gccArgs = append(gccArgs, bridgeObj, raylibA, "-lopengl32", "-lgdi32", "-lwinmm")
+			// -limm32:渲染桥 v1.2.x IME 内联组合用 Imm* 系 API,缺它 IMM 符号全部未解析
+			gccArgs = append(gccArgs, bridgeObj, raylibA, "-lopengl32", "-lgdi32", "-lwinmm", "-limm32")
 		}
 		gccCmd := exec.Command(gccExe, gccArgs...)
 		out, err := gccCmd.CombinedOutput()

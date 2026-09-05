@@ -3270,7 +3270,12 @@ func (c *LLVMCompiler) compileExternalFunctionStatement(s *ast.ExternalFunctionS
 	case "整", "整数":
 		retType = "i64"
 	case "小数":
-		retType = "double"
+		// C 桥 ABI:浮点外函一律返回装箱 XTValue(uintptr_t,如 渲染桥.c 的
+		// XT_GetFrameTime 返回 xt_make_float(...)),声明必须 i64。旧实现按注解生
+		// declare double,调用结果又被当 XTValue 去 retain → "defined with type
+		// 'double' but expected 'i64'"(Issue#7);且即便过了类型检查,double 走
+		// XMM0、uintptr_t 走 RAX,寄存器读错。与自举版行为对齐。
+		retType = "i64"
 	case "布尔", "逻辑":
 		retType = "i1"
 	case "字", "字符串":

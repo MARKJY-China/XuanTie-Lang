@@ -31,6 +31,10 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 #include <fcntl.h>
 #endif
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>   // xt_self_path 的 macOS 分支用 _NSGetExecutablePath
+#endif
+
 // --- 前置内部函数声明 ---
 static void print_pool_stats();
 static int xt_is_real_ptr(XTValue val);
@@ -528,12 +532,25 @@ XTValue xt_self_path() {
     XTValue r = (XTValue)xt_string_new(u8);
     free(u8);
     return r;
-#else
+#elif defined(__APPLE__)
+    // macOS 无 /proc 文件系统,readlink("/proc/self/exe") 恒失败;_NSGetExecutablePath 可得路径
+    // (可能为相对路径,realpath 归一;缓冲不足时 size 回带所需字节数,>4096 视为失败)
+    {
+        char buf[4096];
+        uint32_t size = sizeof(buf);
+        if (_NSGetExecutablePath(buf, &size) != 0) return (XTValue)xt_string_new("");
+        char real[4096];
+        if (realpath(buf, real) == NULL) return (XTValue)xt_string_new("");
+        return (XTValue)xt_string_new(real);
+    }
+#elif defined(__linux__)
     char buf[4096];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
     if (n <= 0) return (XTValue)xt_string_new("");
     buf[n] = '\0';
     return (XTValue)xt_string_new(buf);
+#else
+#error "xt_self_path: 未支持的平台(仅 Windows/macOS/Linux)"
 #endif
 }
 
@@ -2744,7 +2761,8 @@ XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms) {
             if (c->size > 0) break;
             // 泵完仍无数据:后续数据只能来自线程池任务,落入普通条件变量阻塞
         }
-        DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
+        /* 0xFFFFFFFF 即 Windows INFINITE;POSIX 分支无无限等待,大超时过后 while 重判 */
+        uint32_t wait_ms = (timeout_ms < 0) ? 0xFFFFFFFFu : (uint32_t)timeout_ms;
         if (!XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms)) {
             // timeout
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
@@ -2776,7 +2794,8 @@ int xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms) {
             XT_CHAN_MUTEX_LOCK(&c->mu);
             if (c->size < c->capacity) break;
         }
-        DWORD wait_ms = (timeout_ms < 0) ? INFINITE : (DWORD)timeout_ms;
+        /* 0xFFFFFFFF 即 Windows INFINITE;POSIX 分支无无限等待,大超时过后 while 重判 */
+        uint32_t wait_ms = (timeout_ms < 0) ? 0xFFFFFFFFu : (uint32_t)timeout_ms;
         if (!XT_CHAN_COND_WAIT(&c->send_cv, &c->mu, wait_ms)) {
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
             return 0;
@@ -2839,7 +2858,7 @@ int xt_channel_select(XTValue* channels, int count, int timeout_ms) {
             XTChannel* c = (XTChannel*)channels[i];
             XT_CHAN_MUTEX_LOCK(&c->mu);
             if (c->size > 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); break; }
-            DWORD wait_ms = (timeout_ms < 0) ? 100 : (DWORD)(timeout_ms < 100 ? timeout_ms : 100);
+            uint32_t wait_ms = (timeout_ms < 0) ? 100 : (uint32_t)(timeout_ms < 100 ? timeout_ms : 100);
             XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms);
             int had_data = (c->size > 0);
             XT_CHAN_MUTEX_UNLOCK(&c->mu);

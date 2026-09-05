@@ -350,8 +350,11 @@
             终 1
         }
         示("检查完成: 未发现问题")
+        // destroy 后必须硬退出:arena 扩容链缓冲已 free(页面解约),主函数 返空 的作用域退出
+        // 会例行 release arena 内对象,xt_check_obj 在 immortal 检查前即读对象头 → 读已解约页
+        // → 0xC0000005(Issue#5,实测);正常编译路径同款 destroy+终0 由此不崩
         xt_arena_destroy(池)
-        返 空
+        终 0
     }
 
     // 输出结果
