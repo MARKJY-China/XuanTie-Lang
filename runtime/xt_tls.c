@@ -328,4 +328,19 @@ void xt_tls_close(void* ctx) {
     free(c);
 }
 
-#endif // _WIN32
+#else
+// 非 Windows 平台：暂不支持 HTTPS/TLS（Schannel/SSPI 为 Windows 专用）。
+// 与 evaluator/ffi_other.go 的平台隔离模式一致——提供明确的"暂不支持"存根，
+// 使 macOS/Linux 上整套运行时可完整编译链接，HTTPS 请求运行时返回错误而非崩溃。
+#include <stdint.h>
+#include <stddef.h>
+
+int xt_tls_handshake(uintptr_t sock_v, const char* hostname, void** ctx_out) {
+    (void)sock_v; (void)hostname;
+    if (ctx_out) *ctx_out = NULL;
+    return -1;  // 调用方（xt_net.c）收到失败后返回"TLS 握手失败"错误
+}
+int xt_tls_send(void* ctx, const char* data, int len) { (void)ctx; (void)data; (void)len; return -1; }
+int xt_tls_recv(void* ctx, char* out, int cap) { (void)ctx; (void)out; (void)cap; return -1; }
+void xt_tls_close(void* ctx) { (void)ctx; }
+#endif

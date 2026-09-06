@@ -29,6 +29,8 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 #include <shellapi.h>
 #include <io.h>
 #include <fcntl.h>
+#else
+#include <unistd.h>  // readlink / usleep（非 Windows 必需）
 #endif
 
 #if defined(__APPLE__)
