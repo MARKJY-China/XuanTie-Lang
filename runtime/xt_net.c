@@ -29,8 +29,10 @@ typedef SOCKET xt_sock_t;
 #define xt_sock_close closesocket
 #else
 #include <sys/socket.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <strings.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -67,29 +69,95 @@ void xt_net_cleanup(void) {
 // ============================================================
 // DNS 解析
 // ============================================================
+// getaddrinfo 版(替代 gethostbyname):线程安全、AI_ADDRCONFIG 按本机协议栈裁剪、
+// 支持解析器按服务端口预筛。取结果链中首个 AF_INET。
 static int resolve_host(const char* host, struct sockaddr_in* addr) {
-    struct hostent* he = gethostbyname(host);
-    if (!he) return -1;
-    memset(addr, 0, sizeof(*addr));
-    addr->sin_family = AF_INET;
-    memcpy(&addr->sin_addr, he->h_addr, he->h_length);
-    return 0;
+    struct addrinfo hints, *res = NULL, *p;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
+    if (getaddrinfo(host, NULL, &hints, &res) != 0 || !res) return -1;
+    int ok = -1;
+    for (p = res; p; p = p->ai_next) {
+        if (p->ai_family == AF_INET) {
+            memcpy(addr, p->ai_addr, sizeof(struct sockaddr_in));
+            ok = 0;
+            break;
+        }
+    }
+    freeaddrinfo(res);
+    return ok;
 }
 
 // ============================================================
 // Socket 创建与连接
 // ============================================================
-static xt_sock_t create_connection(const char* host, int port) {
-    struct sockaddr_in addr;
-    if (resolve_host(host, &addr) != 0) return XT_INVALID_SOCK;
-    addr.sin_port = htons((unsigned short)port);
-
-    xt_sock_t sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == XT_INVALID_SOCK) return XT_INVALID_SOCK;
-    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
-        xt_sock_close(sock); return XT_INVALID_SOCK;
+// 非阻塞 connect + select 超时:成功后恢复阻塞态。
+// 阻塞 connect 在不可达地址上由系统超时兜底(Windows 默认 ~21s),单请求拖死整体。
+static xt_sock_t connect_addr_timeout(const struct sockaddr* sa, socklen_t salen, int timeout_ms) {
+    xt_sock_t s = socket(sa->sa_family, SOCK_STREAM, 0);
+    if (s == XT_INVALID_SOCK) return XT_INVALID_SOCK;
+#if defined(_WIN32)
+    u_long nb = 1;
+    ioctlsocket(s, FIONBIO, &nb);
+#else
+    int fl = fcntl(s, F_GETFL, 0);
+    fcntl(s, F_SETFL, fl | O_NONBLOCK);
+#endif
+    int rc = connect(s, sa, salen);
+    if (rc != 0) {
+#if defined(_WIN32)
+        if (WSAGetLastError() != WSAEWOULDBLOCK) { xt_sock_close(s); return XT_INVALID_SOCK; }
+#else
+        if (errno != EINPROGRESS) { xt_sock_close(s); return XT_INVALID_SOCK; }
+#endif
+        fd_set wset;
+        FD_ZERO(&wset);
+        FD_SET(s, &wset);
+        struct timeval tv;
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        if (select((int)s + 1, NULL, &wset, NULL, &tv) <= 0) { xt_sock_close(s); return XT_INVALID_SOCK; }
+        int soerr = 0;
+        socklen_t slen = sizeof(soerr);
+        if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&soerr, &slen) != 0 || soerr != 0) {
+            xt_sock_close(s);
+            return XT_INVALID_SOCK;
+        }
     }
-    return sock;
+#if defined(_WIN32)
+    u_long bk = 0;
+    ioctlsocket(s, FIONBIO, &bk);
+#else
+    fcntl(s, F_SETFL, fl);
+#endif
+    return s;
+}
+
+// 带连接超时 + 多 IP 故障转移:逐条尝试解析结果(大站多 A 记录,单点抖动自动换 IP)。
+static xt_sock_t create_connection_timeout(const char* host, int port, int timeout_ms) {
+    if (timeout_ms <= 0) timeout_ms = 10000;
+    struct addrinfo hints, *res = NULL, *p;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_ADDRCONFIG;
+    char portstr[8];
+    snprintf(portstr, sizeof(portstr), "%d", port);
+    if (getaddrinfo(host, portstr, &hints, &res) != 0 || !res) return XT_INVALID_SOCK;
+    xt_sock_t s = XT_INVALID_SOCK;
+    for (p = res; p; p = p->ai_next) {
+        ((struct sockaddr_in*)p->ai_addr)->sin_port = htons((unsigned short)port);
+        s = connect_addr_timeout(p->ai_addr, p->ai_addrlen, timeout_ms);
+        if (s != XT_INVALID_SOCK) break;
+    }
+    freeaddrinfo(res);
+    return s;
+}
+
+static xt_sock_t create_connection(const char* host, int port) {
+    return create_connection_timeout(host, port, 10000);
 }
 
 // ============================================================
@@ -127,7 +195,23 @@ static void buf_add(http_buf* b, const char* d, int n) {
     memcpy(b->data + b->len, d, n); b->len += n;
 }
 
-void* xt_net_http_get(const char* url) {
+
+static char* xt_strdup_or_empty(const char* s) {
+    char* r = (char*)malloc(16);
+    snprintf(r, 16, "%s", s ? s : "");
+    return r;
+}
+
+// 单次 GET(不跟随重定向):返回完整原始响应(含响应头,malloc 缓冲);
+// 失败返回 NULL 并经 err_out 给出错误串(malloc,调用方 free)。
+// status_out/location_out 可为 NULL;location 为 strdup 的 Location 头值(可为 NULL)。
+static char* http_fetch_raw(const char* url, int connect_ms, int io_ms,
+                            int* status_out, char** location_out, char** err_out, int* len_out) {
+    *err_out = NULL;
+    if (len_out) *len_out = 0;
+    if (status_out) *status_out = 0;
+    if (location_out) *location_out = NULL;
+
     int use_tls = 0;
     const char* p = NULL;
     if (url && strncmp(url, "http://", 7) == 0) {
@@ -139,7 +223,8 @@ void* xt_net_http_get(const char* url) {
     if (!p) {
         char* e = (char*)malloc(256);
         snprintf(e, 256, "不支持的协议: %s", url ? url : "(null)");
-        return e;
+        *err_out = e;
+        return NULL;
     }
 
     char host[256] = {0}; int port = use_tls ? 443 : 80; const char* path = "/";
@@ -154,9 +239,27 @@ void* xt_net_http_get(const char* url) {
     } else { size_t l = strlen(p); if (l >= 256) l = 255; memcpy(host, p, l); }
     if (slash) path = slash;
 
-    xt_sock_t sock = create_connection(host, port);
+    xt_sock_t sock = create_connection_timeout(host, port, connect_ms);
     if (sock == XT_INVALID_SOCK) {
-        char* e = (char*)malloc(256); snprintf(e, 256, "无法连接到 %s:%d", host, port); return e;
+        char* e = (char*)malloc(256);
+        snprintf(e, 256, "无法连接到 %s:%d", host, port);
+        *err_out = e;
+        return NULL;
+    }
+
+    // 收发超时(每次 recv/send 的静默上限;分块到达则每块重置)
+    if (io_ms > 0) {
+#if defined(_WIN32)
+        DWORD tv = (DWORD)io_ms;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&tv, sizeof(tv));
+#else
+        struct timeval tv;
+        tv.tv_sec = io_ms / 1000;
+        tv.tv_usec = (io_ms % 1000) * 1000;
+        setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
     }
 
     // HTTPS:先建立 TLS 会话(Schannel,系统原生,零外部依赖)
@@ -164,21 +267,36 @@ void* xt_net_http_get(const char* url) {
     if (use_tls) {
         if (xt_tls_handshake(sock, host, &tls) != 0) {
             xt_sock_close(sock);
-            char* e = (char*)malloc(256); snprintf(e, 256, "TLS 握手失败: %s:%d", host, port); return e;
+            char* e = (char*)malloc(256);
+            snprintf(e, 256, "TLS 握手失败: %s:%d", host, port);
+            *err_out = e;
+            return NULL;
         }
     }
 
     char req[1024];
-    snprintf(req, sizeof(req), "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
+    // 默认 UA:完整 Chrome 串(实测取舍——空 UA 被知乎/GitHub 等返回跳转壳或拒答;
+    // "compatible" 简式 UA 被百度返回 JS 级 https→http 跳板页,全串直取真页)。
+    // 双参形态可经 头.User-Agent 覆写。
+    snprintf(req, sizeof(req),
+             "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\nConnection: close\r\n\r\n",
+             path, host);
 
     if (use_tls) {
         if (xt_tls_send(tls, req, (int)strlen(req)) != 0) {
             xt_tls_close(tls); xt_sock_close(sock);
-            char* e = (char*)malloc(256); snprintf(e, 256, "发送请求失败"); return e;
+            char* e = (char*)malloc(256);
+            snprintf(e, 256, "发送请求失败");
+            *err_out = e;
+            return NULL;
         }
     } else {
         if (send(sock, req, (int)strlen(req), 0) <= 0) {
-            xt_sock_close(sock); char* e = (char*)malloc(256); snprintf(e, 256, "发送请求失败"); return e;
+            xt_sock_close(sock);
+            char* e = (char*)malloc(256);
+            snprintf(e, 256, "发送请求失败");
+            *err_out = e;
+            return NULL;
         }
     }
 
@@ -190,25 +308,121 @@ void* xt_net_http_get(const char* url) {
         while ((n = recv(sock, chunk, sizeof(chunk)-1, 0)) > 0) buf_add(&buf, chunk, n);
     }
     xt_sock_close(sock);
-    if (buf.len == 0) { free(buf.data); char* e = (char*)malloc(256); snprintf(e, 256, "响应为空"); return e; }
-
+    if (buf.len == 0) {
+        free(buf.data);
+        char* e = (char*)malloc(256);
+        snprintf(e, 256, "响应为空");
+        *err_out = e;
+        return NULL;
+    }
     buf_add(&buf, "", 1);
-    char* hdrEnd = strstr(buf.data, "\r\n\r\n");
+
+    // 状态码 + Location(重定向跟随用)
+    const char* sp1 = strchr(buf.data, ' ');
+    if (status_out && sp1) *status_out = atoi(sp1 + 1);
+    if (location_out) {
+        char* hdrEnd = strstr(buf.data, "\r\n\r\n");
+        size_t hdrLen = hdrEnd ? (size_t)(hdrEnd - buf.data) : (size_t)buf.len;
+        char* cur = strchr(buf.data, '\n');
+        if (cur) cur++;   // 跳过状态行末换行,对齐首条响应头
+        while (cur && (!hdrEnd || cur < hdrEnd)) {
+            char* eol = strstr(cur, "\r\n");
+            if (!eol || (hdrEnd && eol > hdrEnd)) break;
+            if ((size_t)(eol - cur) > 9 && (strncasecmp(cur, "location:", 9) == 0)) {
+                char* v = cur + 9;
+                while (*v == ' ' || *v == '\t') v++;
+                size_t vl = (size_t)(eol - v);
+                char* loc = (char*)malloc(vl + 1);
+                memcpy(loc, v, vl); loc[vl] = '\0';
+                *location_out = loc;
+                break;
+            }
+            cur = eol + 2;
+        }
+        (void)hdrLen;
+    }
+    if (len_out) *len_out = buf.len - 1;  // 排除追加的 NUL
+    return buf.data;  // 调用方 free
+}
+
+// Location 与基 URL 拼接:绝对 / 协议相对(//h/p) / 绝对路径(/p) / 相对路径
+static void http_join_location(const char* base, const char* loc, char* out, size_t outsz) {
+    if (strncmp(loc, "http://", 7) == 0 || strncmp(loc, "https://", 8) == 0) {
+        snprintf(out, outsz, "%s", loc);
+        return;
+    }
+    // 取基 URL 的 scheme://authority
+    const char* scheme = strncmp(base, "https://", 8) == 0 ? "https://" : "http://";
+    const char* auth = strstr(base, "://");
+    auth = auth ? auth + 3 : base;
+    const char* pathStart = strchr(auth, '/');
+    char root[900] = {0};
+    size_t rl = pathStart ? (size_t)(pathStart - auth) : strlen(auth);
+    if (rl >= sizeof(root)) rl = sizeof(root) - 1;
+    memcpy(root, auth, rl);
+    if (loc[0] == '/' && loc[1] == '/') {
+        snprintf(out, outsz, "%s%s", scheme, loc + 2);
+    } else if (loc[0] == '/') {
+        snprintf(out, outsz, "%s%s%s", scheme, root, loc);
+    } else {
+        // 相对路径:取基路径目录(不含末段)
+        const char* dirEnd = strrchr(pathStart ? pathStart : "/", '/');
+        char dir[512] = "/";
+        if (dirEnd && dirEnd > (pathStart ? pathStart : base)) {
+            size_t dl = (size_t)(dirEnd - pathStart);
+            if (dl >= sizeof(dir)) dl = sizeof(dir) - 1;
+            memcpy(dir, pathStart, dl); dir[dl] = '\0';
+        }
+        snprintf(out, outsz, "%s%s%s%s", scheme, root, dir, loc);
+    }
+}
+
+// 单参 GET:跟随重定向(≤5 跳;301/302/303/307/308),返回最终响应体(处理 chunked)。
+// 失败返回错误串(malloc)——与历史行为一致(调用方 xt_http_request 以字符串前缀判错)。
+void* xt_net_http_get(const char* url) {
+    char current[2048];
+    snprintf(current, sizeof(current), "%s", url ? url : "");
+    char* raw = NULL;
+    char* err = NULL;
+    char* loc = NULL;
+    int status = 0;
+    int hop;
+    int rawLen = 0;
+    for (hop = 0; hop < 6; hop++) {   // 1 次直连 + 至多 5 跳
+        free(err);
+        free(loc);
+        rawLen = 0;
+        raw = http_fetch_raw(current, 10000, 30000, &status, &loc, &err, &rawLen);
+        if (!raw) return err ? (void*)err : (void*)xt_strdup_or_empty("请求失败");
+        if (status >= 301 && status <= 308 && status != 304 && loc && loc[0]) {
+            char next[2048];
+            http_join_location(current, loc, next, sizeof(next));
+            snprintf(current, sizeof(current), "%s", next);
+            free(raw);
+            continue;
+        }
+        break;
+    }
+    free(loc);
+    if (!raw) return (void*)xt_strdup_or_empty("请求失败");
+
+    char* hdrEnd = strstr(raw, "\r\n\r\n");
     if (hdrEnd) {
         char* bodyStart = hdrEnd + 4;
         // chunked 自动解码(与双参形态一致):大响应(>2KB)服务端走 chunked,
         // 裸返回会把块尺寸行吃进下游 JSON 解析(实测铁铺拉取索引崩溃/卡死)
-        if (xt_region_icontains(buf.data, (size_t)(hdrEnd - buf.data), "chunked") &&
-            xt_region_icontains(buf.data, (size_t)(hdrEnd - buf.data), "transfer-encoding")) {
-            size_t rawLen = (size_t)(buf.data + buf.len - 1 - bodyStart);  // -1: 排除追加的 NUL
+        if (xt_region_icontains(raw, (size_t)(hdrEnd - raw), "chunked") &&
+            xt_region_icontains(raw, (size_t)(hdrEnd - raw), "transfer-encoding")) {
+            size_t bodyLen = (size_t)rawLen - (size_t)(bodyStart - raw);
             size_t decLen = 0;
-            char* dec = xt_http_decode_chunked(bodyStart, rawLen, &decLen);
-            if (dec) { free(buf.data); return dec; }
+            char* dec = xt_http_decode_chunked(bodyStart, bodyLen, &decLen);
+            if (dec) { free(raw); return dec; }
         }
-        char* r = strdup(bodyStart); free(buf.data); return r;
+        char* r = strdup(bodyStart); free(raw); return r;
     }
-    return buf.data;
+    return raw;
 }
+
 
 // ============================================================
 // 增强 HTTP 客户端:求(url, 选项) 双参形态
