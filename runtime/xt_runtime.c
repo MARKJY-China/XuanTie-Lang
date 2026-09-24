@@ -2763,8 +2763,8 @@ XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms) {
             if (c->size > 0) break;
             // 泵完仍无数据:后续数据只能来自线程池任务,落入普通条件变量阻塞
         }
-        /* 0xFFFFFFFF 即 Windows INFINITE;POSIX 分支无无限等待,大超时过后 while 重判 */
-        uint32_t wait_ms = (timeout_ms < 0) ? 0xFFFFFFFFu : (uint32_t)timeout_ms;
+        /* -1 = 无限等待:Windows 侧经模转换为 INFINITE,POSIX 侧宏内走 pthread_cond_wait */
+        long wait_ms = (timeout_ms < 0) ? -1 : (long)timeout_ms;
         if (!XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms)) {
             // timeout
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
@@ -2796,8 +2796,8 @@ int xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms) {
             XT_CHAN_MUTEX_LOCK(&c->mu);
             if (c->size < c->capacity) break;
         }
-        /* 0xFFFFFFFF 即 Windows INFINITE;POSIX 分支无无限等待,大超时过后 while 重判 */
-        uint32_t wait_ms = (timeout_ms < 0) ? 0xFFFFFFFFu : (uint32_t)timeout_ms;
+        /* -1 = 无限等待:Windows 侧经模转换为 INFINITE,POSIX 侧宏内走 pthread_cond_wait */
+        long wait_ms = (timeout_ms < 0) ? -1 : (long)timeout_ms;
         if (!XT_CHAN_COND_WAIT(&c->send_cv, &c->mu, wait_ms)) {
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
             return 0;
@@ -2860,7 +2860,7 @@ int xt_channel_select(XTValue* channels, int count, int timeout_ms) {
             XTChannel* c = (XTChannel*)channels[i];
             XT_CHAN_MUTEX_LOCK(&c->mu);
             if (c->size > 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); break; }
-            uint32_t wait_ms = (timeout_ms < 0) ? 100 : (uint32_t)(timeout_ms < 100 ? timeout_ms : 100);
+            long wait_ms = (timeout_ms < 0) ? 100 : (long)(timeout_ms < 100 ? timeout_ms : 100);
             XT_CHAN_COND_WAIT(&c->recv_cv, &c->mu, wait_ms);
             int had_data = (c->size > 0);
             XT_CHAN_MUTEX_UNLOCK(&c->mu);

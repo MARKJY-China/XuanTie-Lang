@@ -15,6 +15,7 @@ import (
 )
 
 type GoCompiler struct {
+	TargetWindows   bool // 目标平台是否为 Windows(决定是否发射 syscall FFI 代码)
 	program         *ast.Program
 	output          bytes.Buffer
 	modules         map[string]string // 缓存已转译的模块路径和生成的函数名
@@ -33,10 +34,11 @@ func (c *GoCompiler) Errors() []string {
 
 func New(program *ast.Program) *GoCompiler {
 	return &GoCompiler{
-		program:   program,
-		modules:   make(map[string]string),
-		classes:   make(map[string]*ast.TypeDefinitionStatement),
-		functions: make(map[string]*ast.FunctionStatement),
+		TargetWindows: true, // 默认保持历史行为(Windows);非 Windows 目标由入口关闭
+		program:       program,
+		modules:       make(map[string]string),
+		classes:       make(map[string]*ast.TypeDefinitionStatement),
+		functions:     make(map[string]*ast.FunctionStatement),
 	}
 }
 
@@ -68,8 +70,10 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t\"time\"\n")
 	c.output.WriteString("\t\"bufio\"\n")
 	c.output.WriteString("\t\"strings\"\n")
-	c.output.WriteString("\t\"syscall\"\n")
-	c.output.WriteString("\t\"unsafe\"\n")
+	if c.TargetWindows {
+		c.output.WriteString("\t\"syscall\"\n")
+		c.output.WriteString("\t\"unsafe\"\n")
+	}
 	c.output.WriteString(")\n\n")
 	c.output.WriteString("var _ = reflect.TypeOf\n")
 	c.output.WriteString("var 空 interface{} = nil\n")
@@ -458,14 +462,18 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("var 外 = map[string]interface{}{\n")
 	c.output.WriteString("\t\"加载\": func(args []interface{}) interface{} {\n")
 	c.output.WriteString("\t\tif len(args) < 1 { return &Result{IsSuccess: false, Error: \"加载期望 1 个参数\"} }\n")
-	c.output.WriteString("\t\tlibPath := fmt.Sprintf(\"%v\", args[0])\n")
-	c.output.WriteString("\t\tdll, err := syscall.LoadDLL(libPath)\n")
-	c.output.WriteString("\t\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
-	c.output.WriteString("\t\treturn &Result{IsSuccess: true, Value: map[string]interface{}{\n")
-	c.output.WriteString("\t\t\t\"__HANDLE__\": \"DLL\",\n")
-	c.output.WriteString("\t\t\t\"__PTR__\":    int64(uintptr(dll.Handle)),\n")
-	c.output.WriteString("\t\t\t\"__PATH__\":   libPath,\n")
-	c.output.WriteString("\t\t}}\n")
+	if c.TargetWindows {
+		c.output.WriteString("\t\tlibPath := fmt.Sprintf(\"%v\", args[0])\n")
+		c.output.WriteString("\t\tdll, err := syscall.LoadDLL(libPath)\n")
+		c.output.WriteString("\t\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
+		c.output.WriteString("\t\treturn &Result{IsSuccess: true, Value: map[string]interface{}{\n")
+		c.output.WriteString("\t\t\t\"__HANDLE__\": \"DLL\",\n")
+		c.output.WriteString("\t\t\t\"__PTR__\":    int64(uintptr(dll.Handle)),\n")
+		c.output.WriteString("\t\t\t\"__PATH__\":   libPath,\n")
+		c.output.WriteString("\t\t}}\n")
+	} else {
+		c.output.WriteString("\t\treturn &Result{IsSuccess: false, Error: \"FFI(DLL) 暂不支持当前平台(仅 Windows)\"}\n")
+	}
 	c.output.WriteString("\t},\n")
 	c.output.WriteString("}\n\n")
 
@@ -492,26 +500,30 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\tif fn == nil { return nil }\n")
 	c.output.WriteString("\tif f, ok := fn.(func([]interface{}, map[string]string) interface{}); ok { return f(args, typeArgs) }\n")
 	c.output.WriteString("\tif f, ok := fn.(func([]interface{}) interface{}); ok { return f(args) }\n")
-	c.output.WriteString("\tif f, ok := fn.(*FFIFunction); ok {\n")
-	c.output.WriteString("\t\tdll := &syscall.DLL{Name: f.Path, Handle: syscall.Handle(f.Handle)}\n")
-	c.output.WriteString("\t\tproc, err := dll.FindProc(f.Name)\n")
-	c.output.WriteString("\t\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
-	c.output.WriteString("\t\tuArgs := make([]uintptr, len(args))\n")
-	c.output.WriteString("\t\tfor i, a := range args {\n")
-	c.output.WriteString("\t\t\tswitch v := a.(type) {\n")
-	c.output.WriteString("\t\t\tcase int64: uArgs[i] = uintptr(v)\n")
-	c.output.WriteString("\t\t\tcase string:\n")
-	c.output.WriteString("\t\t\t\tif strings.HasSuffix(f.Name, \"W\") {\n")
-	c.output.WriteString("\t\t\t\t\tp, _ := syscall.UTF16PtrFromString(v); uArgs[i] = uintptr(unsafe.Pointer(p))\n")
-	c.output.WriteString("\t\t\t\t} else {\n")
-	c.output.WriteString("\t\t\t\t\tp, _ := syscall.BytePtrFromString(v); uArgs[i] = uintptr(unsafe.Pointer(p))\n")
-	c.output.WriteString("\t\t\t\t}\n")
-	c.output.WriteString("\t\t\tdefault: uArgs[i] = 0\n")
-	c.output.WriteString("\t\t\t}\n")
-	c.output.WriteString("\t\t}\n")
-	c.output.WriteString("\t\tr1, _, _ := proc.Call(uArgs...)\n")
-	c.output.WriteString("\t\treturn int64(r1)\n")
-	c.output.WriteString("\t}\n")
+	if c.TargetWindows {
+		c.output.WriteString("\tif f, ok := fn.(*FFIFunction); ok {\n")
+		c.output.WriteString("\t\tdll := &syscall.DLL{Name: f.Path, Handle: syscall.Handle(f.Handle)}\n")
+		c.output.WriteString("\t\tproc, err := dll.FindProc(f.Name)\n")
+		c.output.WriteString("\t\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
+		c.output.WriteString("\t\tuArgs := make([]uintptr, len(args))\n")
+		c.output.WriteString("\t\tfor i, a := range args {\n")
+		c.output.WriteString("\t\t\tswitch v := a.(type) {\n")
+		c.output.WriteString("\t\t\tcase int64: uArgs[i] = uintptr(v)\n")
+		c.output.WriteString("\t\t\tcase string:\n")
+		c.output.WriteString("\t\t\t\tif strings.HasSuffix(f.Name, \"W\") {\n")
+		c.output.WriteString("\t\t\t\t\tp, _ := syscall.UTF16PtrFromString(v); uArgs[i] = uintptr(unsafe.Pointer(p))\n")
+		c.output.WriteString("\t\t\t\t} else {\n")
+		c.output.WriteString("\t\t\t\t\tp, _ := syscall.BytePtrFromString(v); uArgs[i] = uintptr(unsafe.Pointer(p))\n")
+		c.output.WriteString("\t\t\t\t}\n")
+		c.output.WriteString("\t\t\tdefault: uArgs[i] = 0\n")
+		c.output.WriteString("\t\t\t}\n")
+		c.output.WriteString("\t\t}\n")
+		c.output.WriteString("\t\tr1, _, _ := proc.Call(uArgs...)\n")
+		c.output.WriteString("\t\treturn int64(r1)\n")
+		c.output.WriteString("\t}\n")
+	} else {
+		c.output.WriteString("\tif _, ok := fn.(*FFIFunction); ok { return &Result{IsSuccess: false, Error: \"FFI(DLL) 暂不支持当前平台(仅 Windows)\"} }\n")
+	}
 	c.output.WriteString("\treturn nil\n")
 	c.output.WriteString("}\n\n")
 
@@ -549,40 +561,42 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("func getAttr(obj, attr interface{}) interface{} {\n")
 	c.output.WriteString("\tif dict, ok := obj.(map[string]interface{}); ok {\n")
 	c.output.WriteString("\t\tif s, ok := attr.(string); ok {\n")
-	c.output.WriteString("\t\t\t// 处理 FFI DLL 调用\n")
-	c.output.WriteString("\t\t\tif dict[\"__HANDLE__\"] == \"DLL\" {\n")
-	c.output.WriteString("\t\t\t\tptr := dict[\"__PTR__\"].(int64)\n")
-	c.output.WriteString("\t\t\t\tpath := dict[\"__PATH__\"].(string)\n")
-	c.output.WriteString("\t\t\t\tif s == \"函数\" {\n")
-	c.output.WriteString("\t\t\t\t\treturn func(args []interface{}) interface{} {\n")
-	c.output.WriteString("\t\t\t\t\t\tname := inspect(args[0])\n")
-	c.output.WriteString("\t\t\t\t\t\treturn &FFIFunction{Name: name, Path: path, Handle: uintptr(ptr)}\n")
-	c.output.WriteString("\t\t\t\t\t}\n")
-	c.output.WriteString("\t\t\t\t}\n")
-	c.output.WriteString("\t\t\t\tprocName := s\n")
-	c.output.WriteString("\t\t\t\treturn func(args []interface{}) interface{} {\n")
-	c.output.WriteString("\t\t\t\t\tdll := &syscall.DLL{Name: path, Handle: syscall.Handle(ptr)}\n")
-	c.output.WriteString("\t\t\t\t\tproc, err := dll.FindProc(procName)\n")
-	c.output.WriteString("\t\t\t\t\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
-	c.output.WriteString("\t\t\t\t\tuArgs := make([]uintptr, len(args))\n")
-	c.output.WriteString("\t\t\t\t\tfor i, a := range args {\n")
-	c.output.WriteString("\t\t\t\t\t\tswitch v := a.(type) {\n")
-	c.output.WriteString("\t\t\t\t\t\tcase int64: uArgs[i] = uintptr(v)\n")
-	c.output.WriteString("\t\t\t\t\t\tcase string:\n")
-	c.output.WriteString("\t\t\t\t\t\t\tif strings.HasSuffix(procName, \"W\") {\n")
-	c.output.WriteString("\t\t\t\t\t\t\t\tp, _ := syscall.UTF16PtrFromString(v)\n")
-	c.output.WriteString("\t\t\t\t\t\t\t\tuArgs[i] = uintptr(unsafe.Pointer(p))\n")
-	c.output.WriteString("\t\t\t\t\t\t\t} else {\n")
-	c.output.WriteString("\t\t\t\t\t\t\t\tp, _ := syscall.BytePtrFromString(v)\n")
-	c.output.WriteString("\t\t\t\t\t\t\t\tuArgs[i] = uintptr(unsafe.Pointer(p))\n")
-	c.output.WriteString("\t\t\t\t\t\t\t}\n")
-	c.output.WriteString("\t\t\t\t\t\tdefault: uArgs[i] = 0\n")
-	c.output.WriteString("\t\t\t\t\t\t}\n")
-	c.output.WriteString("\t\t\t\t\t}\n")
-	c.output.WriteString("\t\t\t\t\tr1, _, _ := proc.Call(uArgs...)\n")
-	c.output.WriteString("\t\t\t\t\treturn int64(r1)\n")
-	c.output.WriteString("\t\t\t\t}\n")
-	c.output.WriteString("\t\t\t}\n")
+	if c.TargetWindows {
+		c.output.WriteString("\t\t\t// 处理 FFI DLL 调用\n")
+		c.output.WriteString("\t\t\tif dict[\"__HANDLE__\"] == \"DLL\" {\n")
+		c.output.WriteString("\t\t\t\tptr := dict[\"__PTR__\"].(int64)\n")
+		c.output.WriteString("\t\t\t\tpath := dict[\"__PATH__\"].(string)\n")
+		c.output.WriteString("\t\t\t\tif s == \"函数\" {\n")
+		c.output.WriteString("\t\t\t\t\treturn func(args []interface{}) interface{} {\n")
+		c.output.WriteString("\t\t\t\t\t\tname := inspect(args[0])\n")
+		c.output.WriteString("\t\t\t\t\t\treturn &FFIFunction{Name: name, Path: path, Handle: uintptr(ptr)}\n")
+		c.output.WriteString("\t\t\t\t\t}\n")
+		c.output.WriteString("\t\t\t\t}\n")
+		c.output.WriteString("\t\t\t\tprocName := s\n")
+		c.output.WriteString("\t\t\t\treturn func(args []interface{}) interface{} {\n")
+		c.output.WriteString("\t\t\t\t\tdll := &syscall.DLL{Name: path, Handle: syscall.Handle(ptr)}\n")
+		c.output.WriteString("\t\t\t\t\tproc, err := dll.FindProc(procName)\n")
+		c.output.WriteString("\t\t\t\t\tif err != nil { return &Result{IsSuccess: false, Error: err.Error()} }\n")
+		c.output.WriteString("\t\t\t\t\tuArgs := make([]uintptr, len(args))\n")
+		c.output.WriteString("\t\t\t\t\tfor i, a := range args {\n")
+		c.output.WriteString("\t\t\t\t\t\tswitch v := a.(type) {\n")
+		c.output.WriteString("\t\t\t\t\t\tcase int64: uArgs[i] = uintptr(v)\n")
+		c.output.WriteString("\t\t\t\t\t\tcase string:\n")
+		c.output.WriteString("\t\t\t\t\t\t\tif strings.HasSuffix(procName, \"W\") {\n")
+		c.output.WriteString("\t\t\t\t\t\t\t\tp, _ := syscall.UTF16PtrFromString(v)\n")
+		c.output.WriteString("\t\t\t\t\t\t\t\tuArgs[i] = uintptr(unsafe.Pointer(p))\n")
+		c.output.WriteString("\t\t\t\t\t\t\t} else {\n")
+		c.output.WriteString("\t\t\t\t\t\t\t\tp, _ := syscall.BytePtrFromString(v)\n")
+		c.output.WriteString("\t\t\t\t\t\t\t\tuArgs[i] = uintptr(unsafe.Pointer(p))\n")
+		c.output.WriteString("\t\t\t\t\t\t\t}\n")
+		c.output.WriteString("\t\t\t\t\t\tdefault: uArgs[i] = 0\n")
+		c.output.WriteString("\t\t\t\t\t\t}\n")
+		c.output.WriteString("\t\t\t\t\t}\n")
+		c.output.WriteString("\t\t\t\t\tr1, _, _ := proc.Call(uArgs...)\n")
+		c.output.WriteString("\t\t\t\t\treturn int64(r1)\n")
+		c.output.WriteString("\t\t\t\t}\n")
+		c.output.WriteString("\t\t\t}\n")
+	}
 	c.output.WriteString("\t\t\tif visMap, ok := dict[\"__VIS__\"].(map[string]string); ok {\n")
 	c.output.WriteString("\t\t\t\tif vis, ok := visMap[s]; ok && vis != \"公\" {\n")
 	c.output.WriteString("\t\t\t\t\tpanic(fmt.Sprintf(\"禁止访问%s属性: %s\", vis, s))\n")

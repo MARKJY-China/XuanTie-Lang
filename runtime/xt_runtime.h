@@ -15,6 +15,19 @@
 #include <windows.h>
 #endif
 
+// 线程过程调用约定:Windows(_beginthreadex)要求 __stdcall;POSIX 平台留空
+#if defined(_WIN32)
+#define XT_THREAD_PROC __stdcall
+#else
+#define XT_THREAD_PROC
+#endif
+// 线程过程返回类型:Windows(_beginthreadex)用 unsigned;POSIX(pthread_create)用 void*
+#if defined(_WIN32)
+#define XT_THREAD_RET unsigned
+#else
+#define XT_THREAD_RET void*
+#endif
+
 /**
  * @file xt_runtime.h
  * @brief 玄铁编程语言 (XuanTie) 运行时环境头文件
@@ -179,12 +192,16 @@ typedef pthread_cond_t  xt_chan_cond_t;
 #define XT_CHAN_COND_INIT(c)     pthread_cond_init(c, NULL)
 #define XT_CHAN_COND_DESTROY(c)  pthread_cond_destroy(c)
 #define XT_CHAN_COND_WAIT(c,m,ms) ({ \
-    struct timespec _ts; clock_gettime(CLOCK_REALTIME, &_ts); \
-    _ts.tv_sec += (ms)/1000; _ts.tv_nsec += ((ms)%1000)*1000000; \
-    if (_ts.tv_nsec >= 1000000000) { _ts.tv_sec++; _ts.tv_nsec -= 1000000000; } \
-    /* 返回语义与 Windows 版对齐:成功被唤醒=真值,超时=0(调用处以 !WAIT 判超时; \
-       pthread_cond_timedwait 成功返 0/超时返错误码,方向相反,曾在此处反转) */ \
-    pthread_cond_timedwait(c, m, &_ts) == 0; })
+    int _r; \
+    /* ms<0 = 无限等待(对齐 Windows INFINITE):pthread_cond_wait 无超时参数 */ \
+    if ((ms) < 0) { _r = (pthread_cond_wait(c, m) == 0); } \
+    else { struct timespec _ts; clock_gettime(CLOCK_REALTIME, &_ts); \
+        _ts.tv_sec += (ms)/1000; _ts.tv_nsec += ((ms)%1000)*1000000; \
+        if (_ts.tv_nsec >= 1000000000) { _ts.tv_sec++; _ts.tv_nsec -= 1000000000; } \
+        /* 返回语义与 Windows 版对齐:成功被唤醒=真值,超时=0(调用处以 !WAIT 判超时; \
+           pthread_cond_timedwait 成功返 0/超时返错误码,方向相反,曾在此处反转) */ \
+        _r = (pthread_cond_timedwait(c, m, &_ts) == 0); } \
+    _r; })
 #define XT_CHAN_COND_SIGNAL(c)   pthread_cond_signal(c)
 #define XT_CHAN_COND_BROADCAST(c) pthread_cond_broadcast(c)
 #endif

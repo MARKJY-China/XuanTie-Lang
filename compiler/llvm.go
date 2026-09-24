@@ -32,7 +32,7 @@ type ClassInfo struct {
 type LLVMCompiler struct {
 	program         *ast.Program
 	output          bytes.Buffer
-	allocaOutput    bytes.Buffer   // 存储当前函数的所有 alloca
+	allocaOutput    bytes.Buffer    // 存储当前函数的所有 alloca
 	allocaSet       map[string]bool // 去重：已入口 alloca 的寄存器名
 	funcOutput      bytes.Buffer
 	globalOutput    bytes.Buffer // 存储全局变量定义的 IR
@@ -53,10 +53,58 @@ type LLVMCompiler struct {
 	visitedImports  map[string]bool
 	moduleAliases   map[string]bool
 	declaredGlobals map[string]bool
-	errors         []string       // 编译错误列表，进入 LLVM/clang 前必须检查
+	errors          []string          // 编译错误列表，进入 LLVM/clang 前必须检查
 	funcReturnTypes map[string]string // 函数名 → 内部返回类型
 	asyncCounter    int               // 异步/并行函数的唯一编号
 	probing         bool              // 干跑探测中(禁止嵌套探测,防嵌套若 2^n 爆炸)
+	// 目标平台(由入口传入;默认 windows/amd64 保持历史行为)
+	TargetOS   string // windows / linux / darwin
+	TargetArch string // amd64 / arm64
+}
+
+// TargetTriple 返回当前目标平台的 LLVM target triple。
+func (c *LLVMCompiler) TargetTriple() string {
+	osName := c.TargetOS
+	if osName == "" {
+		osName = "windows"
+	}
+	arch := c.TargetArch
+	if arch == "" {
+		arch = "amd64"
+	}
+	switch osName + "/" + arch {
+	case "linux/amd64":
+		return "x86_64-unknown-linux-gnu"
+	case "linux/arm64":
+		return "aarch64-unknown-linux-gnu"
+	case "darwin/amd64":
+		return "x86_64-apple-darwin"
+	case "darwin/arm64":
+		return "arm64-apple-darwin"
+	}
+	return "x86_64-w64-windows-gnu"
+}
+
+// TargetDataLayout 返回当前目标平台的 LLVM data layout。
+// 必须与 clang 按 triple 推导出的 layout 完全一致,否则 clang 报 "inconsistent data layout"。
+func (c *LLVMCompiler) TargetDataLayout() string {
+	osName := c.TargetOS
+	if osName == "" {
+		osName = "windows"
+	}
+	arch := c.TargetArch
+	if arch == "" {
+		arch = "amd64"
+	}
+	switch osName + "/" + arch {
+	case "darwin/arm64":
+		return "e-m:o-i64:64-i128:128-n32:64-S128"
+	case "darwin/amd64":
+		return "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+	case "linux/arm64":
+		return "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
+	}
+	return "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 }
 
 func (c *LLVMCompiler) Errors() []string { return c.errors }
@@ -142,8 +190,8 @@ func (c *LLVMCompiler) Compile() string {
 	var res bytes.Buffer
 	// 1. 写入模块头
 	res.WriteString("; XuanTie v0.15.5 LLVM Backend\n")
-	res.WriteString("target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n")
-	res.WriteString("target triple = \"x86_64-w64-windows-gnu\"\n\n")
+	res.WriteString("target datalayout = \"" + c.TargetDataLayout() + "\"\n")
+	res.WriteString("target triple = \"" + c.TargetTriple() + "\"\n\n")
 
 	// 2. 写入全局字符串常量
 	for content, alias := range c.strings {
@@ -3138,15 +3186,17 @@ func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string
 	oldAlloca := c.allocaOutput
 	oldFunc := c.currentFunc
 	oldTable := make(map[string]SymbolInfo)
-	for k, v := range c.symbolTable { oldTable[k] = v }
+	for k, v := range c.symbolTable {
+		oldTable[k] = v
+	}
 	oldScopeStack := c.scopeStack
-		// 隔离符号表：匿名函数仅可访问全局 + 参数 + 捕获
-		c.symbolTable = make(map[string]SymbolInfo)
-		for k, v := range oldTable {
-			if v.IsGlobal {
-				c.symbolTable[k] = v
-			}
+	// 隔离符号表：匿名函数仅可访问全局 + 参数 + 捕获
+	c.symbolTable = make(map[string]SymbolInfo)
+	for k, v := range oldTable {
+		if v.IsGlobal {
+			c.symbolTable[k] = v
 		}
+	}
 
 	c.output = bytes.Buffer{}
 	c.allocaOutput = bytes.Buffer{}
@@ -3177,18 +3227,18 @@ func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string
 		c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i64"}
 	}
 
-		// 闭包捕获：为外层局部变量分配 alloca
-		for name, info := range oldTable {
-			if info.IsGlobal {
-				continue
-			}
-			if _, exists := c.symbolTable[name]; exists {
-				continue
-			}
-			addrReg := fmt.Sprintf("%%\"%s\"", name)
-			c.emitAlloca("%s = alloca i64", addrReg)
-			c.symbolTable[name] = SymbolInfo{AddrReg: addrReg, Type: info.Type, ClassName: info.ClassName}
+	// 闭包捕获：为外层局部变量分配 alloca
+	for name, info := range oldTable {
+		if info.IsGlobal {
+			continue
 		}
+		if _, exists := c.symbolTable[name]; exists {
+			continue
+		}
+		addrReg := fmt.Sprintf("%%\"%s\"", name)
+		c.emitAlloca("%s = alloca i64", addrReg)
+		c.symbolTable[name] = SymbolInfo{AddrReg: addrReg, Type: info.Type, ClassName: info.ClassName}
+	}
 	// 编译函数体
 	for _, stmt := range fl.Body {
 		c.compileStatement(stmt)
@@ -3213,7 +3263,9 @@ func (c *LLVMCompiler) compileAnonymous(fl *ast.FunctionLiteral) (string, string
 
 	// 创建 XTFunction 包装（bitcast 签名中不含参数名，仅类型）
 	sigTypes := []string{}
-	for range fl.Parameters { sigTypes = append(sigTypes, "i64") }
+	for range fl.Parameters {
+		sigTypes = append(sigTypes, "i64")
+	}
 	paramSig := "i64 (" + strings.Join(sigTypes, ", ") + ")"
 	resReg := c.nextReg()
 	c.emit("  %s = call i64 @xt_func_new(i8* bitcast (%s* %s to i8*))",
@@ -3235,7 +3287,8 @@ func (c *LLVMCompiler) isLastLineReturn() bool {
 
 // compileAsync 将异步块编译为独立 LLVM 函数并提交到线程池
 func (c *LLVMCompiler) compileAsync(e *ast.AsyncExpression) (string, string, string) {
-	asyncID := c.asyncCounter; c.asyncCounter++
+	asyncID := c.asyncCounter
+	c.asyncCounter++
 	funcName := fmt.Sprintf("@\"__async_%d\"", asyncID)
 
 	// 生成异步函数体
@@ -3290,10 +3343,14 @@ func (c *LLVMCompiler) compileParallel(e *ast.ParallelExpression) (string, strin
 	// 逐个编译并提交
 	taskRegs := []string{}
 	for _, block := range e.Blocks {
-		pid := c.asyncCounter; c.asyncCounter++
+		pid := c.asyncCounter
+		c.asyncCounter++
 		funcName := fmt.Sprintf("@\"__parallel_%d\"", pid)
-		oldOutput := c.output; oldFunc := c.currentFunc; oldLabel := c.currentLabel
-		oldAllocaOutput := c.allocaOutput; oldAllocaSet := c.allocaSet
+		oldOutput := c.output
+		oldFunc := c.currentFunc
+		oldLabel := c.currentLabel
+		oldAllocaOutput := c.allocaOutput
+		oldAllocaSet := c.allocaSet
 		oldScopeStack := c.scopeStack
 		c.allocaOutput = bytes.Buffer{}
 		c.allocaSet = make(map[string]bool)
@@ -3301,11 +3358,13 @@ func (c *LLVMCompiler) compileParallel(e *ast.ParallelExpression) (string, strin
 		c.output = bytes.Buffer{}
 		c.currentFunc = fmt.Sprintf("__parallel_%d", pid)
 		c.emit("define i64 %s(i64) {", funcName)
-		c.emit("entry:"); c.currentLabel = "entry"
+		c.emit("entry:")
+		c.currentLabel = "entry"
 		for _, stmt := range block {
 			c.compileStatement(stmt)
 		}
-		c.emit("  ret i64 0"); c.emit("}")
+		c.emit("  ret i64 0")
+		c.emit("}")
 		parBody := c.output.String()
 		parAllocas := c.allocaOutput.String()
 		parIR := parBody
@@ -3313,9 +3372,12 @@ func (c *LLVMCompiler) compileParallel(e *ast.ParallelExpression) (string, strin
 			parIR = strings.Replace(parBody, "entry:\n", "entry:\n"+parAllocas, 1)
 		}
 		c.globalOutput.WriteString(parIR + "\n")
-		c.output = oldOutput; c.allocaOutput = oldAllocaOutput
-		c.allocaSet = oldAllocaSet; c.scopeStack = oldScopeStack
-		c.currentFunc = oldFunc; c.currentLabel = oldLabel
+		c.output = oldOutput
+		c.allocaOutput = oldAllocaOutput
+		c.allocaSet = oldAllocaSet
+		c.scopeStack = oldScopeStack
+		c.currentFunc = oldFunc
+		c.currentLabel = oldLabel
 
 		fRaw := c.nextReg()
 		c.emit("  %s = bitcast i64 (i64)* %s to i8*", fRaw, funcName)
