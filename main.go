@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"xuantie/ast"
 	"xuantie/compiler"
 	"xuantie/evaluator"
@@ -24,27 +23,6 @@ const (
 	colorRed   = "\033[31m"
 	colorBold  = "\033[1m"
 )
-
-func enableVirtualTerminalProcessing() {
-	if runtime.GOOS != "windows" {
-		return
-	}
-	const enableVirtualTerminalProcessingMode = 0x0004
-	var (
-		handle syscall.Handle
-		mode   uint32
-	)
-	handle = syscall.Handle(os.Stdout.Fd())
-	if err := syscall.GetConsoleMode(handle, &mode); err == nil {
-		mode |= enableVirtualTerminalProcessingMode
-		syscall.Syscall(syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleMode").Addr(), 2, uintptr(handle), uintptr(mode), 0)
-	}
-	handle = syscall.Handle(os.Stderr.Fd())
-	if err := syscall.GetConsoleMode(handle, &mode); err == nil {
-		mode |= enableVirtualTerminalProcessingMode
-		syscall.Syscall(syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleMode").Addr(), 2, uintptr(handle), uintptr(mode), 0)
-	}
-}
 
 func isPowerShell() bool {
 	return runtime.GOOS == "windows" || os.Getenv("PSModulePath") != ""
@@ -79,6 +57,17 @@ func hasImport(prog *ast.Program, target string) bool {
 		}
 	}
 	return false
+}
+
+// findCCompiler 探测可用的 C 编译器(LLVM IR → 目标文件):clang → gcc → cc。
+// 无 clang 环境(如仅装 gcc 的 Linux)回退 gcc/cc,避免 "exec: clang not found" 直接失败。
+func findCCompiler() string {
+	for _, name := range []string{"clang", "gcc", "cc"} {
+		if p, err := exec.LookPath(name); err == nil {
+			return p
+		}
+	}
+	return "clang"
 }
 
 func main() {
@@ -175,8 +164,16 @@ func main() {
 	}
 
 	if isNative {
-		fmt.Printf("正在使用 LLVM 编译 %s -> 原生二进制文件 (平台: %s, 架构: %s) ...\n", filename, runtime.GOOS, runtime.GOARCH)
+		if targetOS == "" {
+			targetOS = runtime.GOOS
+		}
+		if targetArch == "" {
+			targetArch = runtime.GOARCH
+		}
+		fmt.Printf("正在使用 LLVM 编译 %s -> 原生二进制文件 (平台: %s, 架构: %s) ...\n", filename, targetOS, targetArch)
 		c := compiler.NewLLVMCompiler(program)
+		c.TargetOS = targetOS
+		c.TargetArch = targetArch
 		llvmIR := c.Compile()
 
 		if len(c.Errors()) > 0 {
@@ -207,12 +204,30 @@ func main() {
 		runtimeDir := filepath.Join(projectDir, "runtime")
 		if strings.Contains(exePath, "go-build") {
 			runtimeDir = "runtime"
+		} else if !fileExists(filepath.Join(runtimeDir, "xt_runtime.c")) {
+			// 向上逐级查找仓库 runtime/(常见布局: build/xtc → 上级是仓库根)
+			up := filepath.Dir(projectDir)
+			for i := 0; i < 6 && up != "" && up != "/" && up != "."; i++ {
+				cand := filepath.Join(up, "runtime")
+				if fileExists(filepath.Join(cand, "xt_runtime.c")) {
+					runtimeDir = cand
+					break
+				}
+				parent := filepath.Dir(up)
+				if parent == up {
+					break
+				}
+				up = parent
+			}
 		}
 		rtC := filepath.Join(runtimeDir, "xt_runtime.c")
 
 		renderBridgeC := filepath.Join(projectDir, "lib", "渲染", "渲染桥.c")
+		localRaylib := filepath.Join(projectDir, "lib", "渲染")
 		raylibDir := os.Getenv("RAYLIB_DIR")
-		if raylibDir == "" {
+		if fileExists(filepath.Join(localRaylib, "libraylib.a")) {
+			raylibDir = localRaylib
+		} else if raylibDir == "" {
 			raylibDir = "C:/raylib/raylib/src"
 		}
 		raylibA := filepath.Join(raylibDir, "libraylib.a")
@@ -220,8 +235,9 @@ func main() {
 		useRender := hasImport(program, "渲染") && fileExists(renderBridgeC) && fileExists(raylibA)
 
 		objFile := strings.TrimSuffix(filename, ".xt") + ".o"
-		clangArgs := []string{"-target", "x86_64-w64-windows-gnu", "-c", irFile, "-o", objFile, "-Og"}
-		if out, err := exec.Command("clang", clangArgs...).CombinedOutput(); err != nil {
+		cc := findCCompiler()
+		clangArgs := []string{"-target", c.TargetTriple(), "-c", irFile, "-o", objFile, "-Og"}
+		if out, err := exec.Command(cc, clangArgs...).CombinedOutput(); err != nil {
 			fmt.Printf("LLVM 编译为对象文件失败: %v\n", err)
 			fmt.Printf("错误详情: %s\n", string(out))
 			return
@@ -230,9 +246,9 @@ func main() {
 		var bridgeObj string
 		if useRender {
 			bridgeObj = strings.TrimSuffix(filename, ".xt") + "_bridge.o"
-			bridgeArgs := []string{"-target", "x86_64-w64-windows-gnu", "-c", renderBridgeC,
+			bridgeArgs := []string{"-target", c.TargetTriple(), "-c", renderBridgeC,
 				"-o", bridgeObj, "-I", raylibInclude, "-Og"}
-			if out, err := exec.Command("clang", bridgeArgs...).CombinedOutput(); err != nil {
+			if out, err := exec.Command(cc, bridgeArgs...).CombinedOutput(); err != nil {
 				fmt.Printf("渲染桥编译失败: %v\n", err)
 				fmt.Printf("错误详情: %s\n", string(out))
 				return
@@ -240,7 +256,7 @@ func main() {
 		}
 
 		outputName := strings.TrimSuffix(filepath.Base(filename), ".xt")
-		if runtime.GOOS == "windows" {
+		if targetOS == "windows" {
 			outputName += ".exe"
 		}
 
@@ -253,9 +269,24 @@ func main() {
 		threadpoolC := filepath.Join(runtimeDir, "xt_threadpool.c")
 		netC := filepath.Join(runtimeDir, "xt_net.c")
 		tlsC := filepath.Join(runtimeDir, "xt_tls.c")
-		gccArgs := []string{objFile, rtC, threadpoolC, netC, tlsC, "-o", outputName, "-lshell32", "-lws2_32", "-lsecur32"}
+		gccArgs := []string{objFile, rtC, threadpoolC, netC, tlsC, "-o", outputName}
+		if targetOS == "windows" {
+			// Windows: TLS(Schannel 实现在 xt_tls.c) + WinSock + 安全库
+			gccArgs = append(gccArgs, "-lshell32", "-lws2_32", "-lsecur32")
+		}
+		if targetOS == "linux" {
+			gccArgs = append(gccArgs, "-lpthread", "-ldl", "-lm")
+		}
 		if useRender {
-			gccArgs = append(gccArgs, bridgeObj, raylibA, "-lopengl32", "-lgdi32", "-lwinmm")
+			gccArgs = append(gccArgs, bridgeObj, raylibA)
+			switch targetOS {
+			case "windows":
+				gccArgs = append(gccArgs, "-lopengl32", "-lgdi32", "-lwinmm", "-limm32")
+			case "darwin":
+				gccArgs = append(gccArgs, "-framework", "Cocoa", "-framework", "OpenGL", "-framework", "IOKit", "-framework", "CoreVideo")
+			case "linux":
+				gccArgs = append(gccArgs, "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+			}
 		}
 		gccCmd := exec.Command(gccExe, gccArgs...)
 		out, err := gccCmd.CombinedOutput()
@@ -278,6 +309,7 @@ func main() {
 
 	if isBuild {
 		c := compiler.New(program)
+		c.TargetWindows = (targetOS == "" && runtime.GOOS == "windows") || targetOS == "windows"
 		goCode := c.Compile()
 
 		if len(c.Errors()) > 0 {

@@ -14,9 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/object"
@@ -1748,14 +1746,14 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 						return newError(mce.GetLine(), "加载期望 1 个参数")
 					}
 					libPath := args[0].Inspect()
-					dll, err := syscall.LoadDLL(libPath)
+					dllHandle, err := ffiLoadDLL(libPath)
 					if err != nil {
 						return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 					}
 					// 返回一个包装了 DLL 句柄的字典
 					res := &object.Dict{Pairs: make(map[string]object.Object)}
 					res.Pairs["__HANDLE__"] = &object.String{Value: "DLL"} // 标记类型
-					res.Pairs["__PTR__"] = &object.Integer{Value: int64(uintptr(dll.Handle))}
+					res.Pairs["__PTR__"] = &object.Integer{Value: int64(dllHandle)}
 					res.Pairs["__PATH__"] = &object.String{Value: libPath}
 					return &object.Result{IsSuccess: true, Value: res}
 				}
@@ -1883,34 +1881,11 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 
 			fn := &object.Builtin{
 				Fn: func(fArgs ...object.Object) object.Object {
-					dll := &syscall.DLL{Name: path, Handle: syscall.Handle(ptr)}
-					proc, err := dll.FindProc(procName)
+					r1, err := ffiCall(uintptr(ptr), path, procName, fArgs)
 					if err != nil {
 						return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 					}
-
-					// 转换参数为 uintptr
-					uArgs := make([]uintptr, len(fArgs))
-					for i, a := range fArgs {
-						switch v := a.(type) {
-						case *object.Integer:
-							uArgs[i] = uintptr(v.Value)
-						case *object.String:
-							// 自动检测：如果函数名以 W 结尾，使用 UTF-16 编码，否则使用本地字节编码
-							if strings.HasSuffix(procName, "W") {
-								p, _ := syscall.UTF16PtrFromString(v.Value)
-								uArgs[i] = uintptr(unsafe.Pointer(p))
-							} else {
-								p, _ := syscall.BytePtrFromString(v.Value)
-								uArgs[i] = uintptr(unsafe.Pointer(p))
-							}
-						default:
-							uArgs[i] = 0
-						}
-					}
-
-					r1, _, _ := proc.Call(uArgs...)
-					return &object.Integer{Value: int64(r1)}
+					return &object.Integer{Value: r1}
 				},
 			}
 
@@ -2491,36 +2466,12 @@ func applyFunctionWithGenerics(line int, name string, fn object.Object, args []o
 
 		return result
 	case *object.FFIFunction:
-		dll := &syscall.DLL{Name: function.Path, Handle: syscall.Handle(function.Handle)}
-		proc, err := dll.FindProc(function.Name)
+		r1, err := ffiCall(function.Handle, function.Path, function.Name, args)
 		if err != nil {
 			return &object.Result{IsSuccess: false, Error: &object.String{Value: err.Error()}}
 		}
-
-		// 转换参数为 uintptr
-		uArgs := make([]uintptr, len(args))
-		for i, a := range args {
-			// 如果有原型定义，可以进行类型检查（这里暂时简化，直接转换）
-			switch v := a.(type) {
-			case *object.Integer:
-				uArgs[i] = uintptr(v.Value)
-			case *object.String:
-				// 自动检测：如果函数名以 W 结尾，使用 UTF-16 编码，否则使用本地字节编码
-				if strings.HasSuffix(function.Name, "W") {
-					p, _ := syscall.UTF16PtrFromString(v.Value)
-					uArgs[i] = uintptr(unsafe.Pointer(p))
-				} else {
-					p, _ := syscall.BytePtrFromString(v.Value)
-					uArgs[i] = uintptr(unsafe.Pointer(p))
-				}
-			default:
-				uArgs[i] = 0
-			}
-		}
-
-		r1, _, _ := proc.Call(uArgs...)
 		// 如果有返回类型定义，可以按需转换。目前统一转为整数。
-		return &object.Integer{Value: int64(r1)}
+		return &object.Integer{Value: r1}
 
 	case *object.Builtin:
 		res := function.Fn(args...)

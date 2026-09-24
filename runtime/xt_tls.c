@@ -328,4 +328,25 @@ void xt_tls_close(void* ctx) {
     free(c);
 }
 
+#else
+// POSIX(macOS/Linux) 暂未实现 TLS:HTTPS 请求返回明确错误,不静默降级。
+// 后续可用 SecureTransport(macOS) / OpenSSL(Linux) 接入。
+#include <errno.h>
+#include <stdint.h>
+
+int xt_tls_handshake(uintptr_t sock, const char* hostname, void** ctx_out) {
+    (void)sock; (void)hostname; (void)ctx_out;
+    errno = ENOTSUP;
+    return -1;
+}
+int xt_tls_send(void* ctx, const char* data, int len) {
+    (void)ctx; (void)data; (void)len;
+    return -1;
+}
+int xt_tls_recv(void* ctx, char* out, int cap) {
+    (void)ctx; (void)out; (void)cap;
+    return -1;
+}
+void xt_tls_close(void* ctx) { (void)ctx; }
+
 #endif // _WIN32

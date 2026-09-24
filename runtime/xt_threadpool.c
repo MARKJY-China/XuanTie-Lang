@@ -2,6 +2,7 @@
 // 编译: gcc -c xt_threadpool.c -o xt_threadpool.o
 
 #include "xt_threadpool.h"
+#include "xt_runtime.h"
 #include <stdlib.h>
 #include <stdio.h>
 
@@ -28,7 +29,7 @@ typedef struct {
     void* arg;
 } xt_thread_wrapper;
 
-static unsigned __stdcall xt_thread_proc(void* p) {
+static unsigned XT_THREAD_PROC xt_thread_proc(void* p) {
     xt_thread_wrapper* w = (xt_thread_wrapper*)p;
     w->func(w->arg);
     free(w);
