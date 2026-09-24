@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 84: 空安全与类型判定 ===
+PASS: 空值判定
+PASS: 零非空
+PASS: 假非空
+PASS: 匹配类型判定-整
+PASS: 匹配类型判定-字
+=== Test 84 完成 ===

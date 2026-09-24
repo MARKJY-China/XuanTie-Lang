@@ -1,0 +1,5 @@
+compile_ok=True
+exit=0
+--- 108_捕获修改跨park持久 开始 ---
+PASS: 捕获修改跨park存活
+--- 108_捕获修改跨park持久 结束 ---

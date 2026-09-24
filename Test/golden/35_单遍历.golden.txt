@@ -1,0 +1,5 @@
+compile_ok=True
+exit=0
+--- 35_单遍历测试 ---
+a=10
+a=20

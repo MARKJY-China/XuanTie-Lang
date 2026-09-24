@@ -1,0 +1,8 @@
+compile_ok=True
+exit=0
+--- 102_fiber网络回环 开始 ---
+PASS: 写返回真
+PASS: 读上限生效 块1=16字节
+PASS: 二次读有数据 块2=18字节
+PASS: 回环内容完整
+--- 102_fiber网络回环 结束 ---

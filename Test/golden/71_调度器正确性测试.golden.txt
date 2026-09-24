@@ -1,0 +1,16 @@
+compile_ok=True
+exit=0
+=== Test 71 完成 ===
+=== Test 71: 调度器正确性测试 ===
+PASS: 测试1
+PASS: 测试2
+PASS: 测试3
+PASS: 测试4
+PASS: 测试5
+PASS: 测试6
+[测试1] 5 fiber
+[测试2] 不同耗时交错
+[测试3] N=0
+[测试4] 跨依赖
+[测试5] 50 fiber
+[测试6] 混合调度

@@ -1,0 +1,5 @@
+compile_ok=True
+exit=0
+--- 107_异步块内局部跨park持久 开始 ---
+PASS: 块内局部跨park保持
+--- 107_异步块内局部跨park持久 结束 ---

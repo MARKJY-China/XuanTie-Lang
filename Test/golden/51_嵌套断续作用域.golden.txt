@@ -1,0 +1,8 @@
+compile_ok=True
+exit=0
+=== Test 51: 嵌套断续作用域 ===
+  断于 outer=3
+PASS: 嵌套断正确退出
+PASS: 嵌套续正确工作, found=7
+PASS: 三层嵌套断正确, j=4
+=== Test 51 完成 ===

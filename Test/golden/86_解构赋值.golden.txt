@@ -1,0 +1,8 @@
+compile_ok=True
+exit=0
+=== Test 86: 解构赋值 ===
+PASS: 数组解构
+PASS: 剩余解构
+PASS: 字典解构
+PASS: 解构后运算
+=== Test 86 完成 ===

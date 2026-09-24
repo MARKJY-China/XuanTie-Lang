@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 89: 字符串插值边界 ===
+PASS: 基本插值
+PASS: 表达式插值
+PASS: 拼接插值
+PASS: 连续插值
+PASS: 无插值原样
+=== Test 89 完成 ===

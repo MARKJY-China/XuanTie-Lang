@@ -1,0 +1,16 @@
+compile_ok=True
+exit=0
+=== Test 78: 边界与异常输入 ===
+PASS: 空数组长度
+PASS: 空字典长度
+PASS: 空串
+PASS: 中文包含
+PASS: 万级追加
+PASS: 深递归5000
+PASS: 整(42)成功
+PASS: 整(abc)失败可判定
+PASS: 小数(2.5)成功
+PASS: 空值拼接
+PASS: 索引首尾边界
+PASS: 字典覆盖删除
+=== Test 78 完成 ===

@@ -1,0 +1,12 @@
+compile_ok=True
+exit=0
+=== Test 56: 布尔类型安全 ===
+PASS: 真条件正确
+PASS: 假条件正确
+PASS: 布尔数组正确
+PASS: 布尔字典正确
+PASS: 布尔比较正确
+布尔打印测试: 真=真 假=假
+PASS: 布尔遍历正确
+PASS: 逻辑运算正确
+=== Test 56 完成 ===

@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+=== Test 85: 泛型与约束 ===
+PASS: 泛型整盒
+PASS: 泛型字盒
+PASS: 泛型函数
+=== Test 85 完成 ===

@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 76: 循环表征翻转回归 ===
+PASS: 函数内索引算术翻转
+PASS: 型方法内翻转
+PASS: 嵌套循环翻转
+PASS: 遍历循环翻转
+PASS: 混合赋值
+=== Test 76 完成 ===

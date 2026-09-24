@@ -1,0 +1,5 @@
+compile_ok=True
+exit=0
+--- 36_test ---
+abc=10
+abc=20

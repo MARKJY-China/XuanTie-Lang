@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 80: 内存ARC压力 ===
+PASS: 字符串搅动
+PASS: 对象数组搅动
+PASS: 闭包逐迭代捕获
+PASS: 结果链式传递
+PASS: 弱引用相关创建
+=== Test 80 完成 ===

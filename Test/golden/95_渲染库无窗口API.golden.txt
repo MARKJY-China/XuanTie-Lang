@@ -1,0 +1,5 @@
+compile_ok=True
+exit=0
+PASS: 无窗口随机API(500次范围断言)
+PASS: 无窗口屏参调用不崩
+95 PASS

@@ -1,0 +1,12 @@
+compile_ok=True
+exit=0
+=== Test 82: 数学库矩阵 ===
+PASS: 绝对值
+PASS: 最大值
+PASS: 最小值
+PASS: 幂
+PASS: 平方根
+PASS: 取整
+PASS: 进一
+PASS: 四舍五入
+=== Test 82 完成 ===

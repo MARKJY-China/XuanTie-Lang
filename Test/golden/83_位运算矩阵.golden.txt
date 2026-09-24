@@ -1,0 +1,10 @@
+compile_ok=True
+exit=0
+=== Test 83: 位运算矩阵 ===
+PASS: 位与
+PASS: 位或
+PASS: 异或
+PASS: 左移
+PASS: 右移
+PASS: 掩码截取
+=== Test 83 完成 ===

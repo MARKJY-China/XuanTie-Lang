@@ -1,0 +1,14 @@
+compile_ok=True
+exit=0
+=== Test 75: 全部验证完成 ===
+=== Test 75: 调度特性功能验证 ===
+PASS: 验证1 时睡不截断 发 (sum=300)
+PASS: 验证2 count=2 (每个语句执行一次)
+PASS: 验证3 50并发耗时<T> (并发有效)
+PASS: 验证4
+PASS: 验证5 sum=10
+[验证1] 分段编译+await point
+[验证2] body不重复执行
+[验证3] 多worker真并发
+[验证4] fiber直接创建
+[验证5] 通道收发完整性

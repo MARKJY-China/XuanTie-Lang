@@ -1,0 +1,13 @@
+compile_ok=True
+exit=0
+=== Test 54: 文件读写边界 ===
+PASS: 空文件写入成功
+PASS: 空文件读取成功, 内容长度=0
+PASS: 单行写入成功
+PASS: 单行读取正确
+PASS: 中文写入成功
+PASS: 中文读取正确
+PASS: 不存在的文件读取失败（预期）
+PASS: 文件存在检查正确
+PASS: 不存在文件检查正确
+=== Test 54 完成 ===

@@ -1,0 +1,54 @@
+compile_ok=True
+exit=0
+INFO: Initializing raylib 6.0
+INFO: Platform backend: DESKTOP (GLFW)
+INFO: Supported raylib modules:
+INFO:     > rcore:..... loaded (mandatory)
+INFO:     > rlgl:...... loaded (mandatory)
+INFO:     > rshapes:... loaded (optional)
+INFO:     > rtextures:. loaded (optional)
+INFO:     > rtext:..... loaded (optional)
+INFO:     > rmodels:... loaded (optional)
+INFO:     > raudio:.... loaded (optional)
+INFO: DISPLAY: Device initialized successfully
+INFO:     > Display size: 3440 x 1440
+INFO:     > Screen size:  360 x 240
+INFO:     > Render size:  360 x 240
+INFO:     > Viewport offsets: 0, 0
+INFO: GLAD: OpenGL extensions loaded successfully
+INFO: GL: Supported extensions count: 404
+INFO: GL: OpenGL device information:
+INFO:     > Vendor:   NVIDIA Corporation
+INFO:     > Renderer: NVIDIA GeForce RTX 4060/PCIe/SSE2
+INFO:     > Version:  3.3.0 NVIDIA 610.62
+INFO:     > GLSL:     3.30 NVIDIA via Cg compiler
+INFO: GL: VAO extension detected, VAO functions loaded successfully
+INFO: GL: NPOT textures extension detected, full NPOT textures supported
+INFO: GL: DXT compressed textures supported
+INFO: GL: ETC2/EAC compressed textures supported
+INFO: PLATFORM: DESKTOP (GLFW - Win32): Initialized successfully
+INFO: TEXTURE: [ID <N>] Texture loaded successfully (1x1 | R8G8B8A8 | 1 mipmaps)
+INFO: TEXTURE: [ID <N>] Default texture loaded successfully
+INFO: SHADER: [ID <N>] Vertex shader compiled successfully
+INFO: SHADER: [ID <N>] Fragment shader compiled successfully
+INFO: SHADER: [ID <N>] Program shader loaded successfully
+INFO: SHADER: [ID <N>] Default shader loaded successfully
+INFO: RLGL: Render batch vertex buffers loaded successfully in RAM (CPU)
+INFO: RLGL: Render batch vertex buffers loaded successfully in VRAM (GPU)
+INFO: RLGL: Default OpenGL state initialized successfully
+INFO: TEXTURE: [ID <N>] Texture loaded successfully (128x128 | GRAY_ALPHA | 1 mipmaps)
+INFO: FONT: Default font loaded successfully (224 glyphs)
+INFO: SYSTEM: Working Directory: G:\FUsed_Folders\Project\XuanTie
+INFO: TIMER: Target time per frame: 16.667 milliseconds
+INFO: TEXTURE: [ID <N>] Texture loaded successfully (8192x4096 | GRAY_ALPHA | 1 mipmaps)
+INFO: SHADER: [ID <N>] Fragment shader compiled successfully
+INFO: SHADER: [ID <N>] Program shader loaded successfully
+INFO: IMAGE: Data loaded successfully (256x256 | R8G8B8A8 | 1 mipmaps)
+INFO: TEXTURE: [ID <N>] Texture loaded successfully (256x256 | R8G8B8A8 | 1 mipmaps)
+INFO: TEXTURE: [ID <N>] Unloaded texture data from VRAM (GPU)
+INFO: TEXTURE: [ID <N>] Unloaded texture data from VRAM (GPU)
+INFO: TEXTURE: [ID <N>] Unloaded texture data from VRAM (GPU)
+INFO: SHADER: [ID <N>] Default shader unloaded successfully
+INFO: TEXTURE: [ID <N>] Default texture unloaded successfully
+INFO: Window closed successfully
+98 PASS

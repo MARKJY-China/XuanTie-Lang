@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+=== Test 92: 控制流组合 ===
+PASS: 断续组合
+PASS: 嵌套续
+PASS: 嵌套遍历
+=== Test 92 完成 ===

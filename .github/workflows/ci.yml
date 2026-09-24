@@ -1,0 +1,66 @@
+> 本工作流是《docs/CI落地方案.md》P0 阶段的落地件：把"判定依据"（回归 runner + 基线 + 自举固定点比对）接成机器门禁。
+> 门禁判据：编译成功性 / 退出码 / FAIL 标记 / 与 Test/golden 基线逐行 diff（四层），叠加自举 s3==s4 逐字节一致（DDC）。
+name: CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gate:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 准备工具链(clang / MinGW gcc)
+        shell: bash
+        run: |
+          set -e
+          # clang:windows-latest 镜像自带 LLVM;缺失则用 choco 补装
+          if ! command -v clang >/dev/null 2>&1 && [ ! -f "/c/Program Files/LLVM/bin/clang.exe" ]; then
+            choco install llvm -y --no-progress
+          fi
+          if [ -d "/c/Program Files/LLVM/bin" ]; then echo "/c/Program Files/LLVM/bin" >> "$GITHUB_PATH"; fi
+          # MinGW gcc:镜像不含,用 choco 装(链接阶段调用 gcc)
+          if ! command -v gcc >/dev/null 2>&1; then
+            choco install mingw -y --no-progress
+            echo "C:/ProgramData/chocolatey/lib/mingw/tools/install/mingw64/bin" >> "$GITHUB_PATH"
+          fi
+          clang --version || true
+          gcc --version || true
+
+      - name: 构建种子编译器 GSC
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(s1→s4,固定点 s3==s4)
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: 铁铺包同步(渲染/UI 以裸名解析依赖此目录)
+        shell: bash
+        run: |
+          set -e
+          DEST="$USERPROFILE/.tiepm/已安装"
+          mkdir -p "$DEST/渲染" "$DEST/UI"
+          cp -f lib/渲染/* "$DEST/渲染/"
+          cp -f lib/UI/*   "$DEST/UI/"
+
+      - name: 全量回归(弹窗类 96/97/98 跳过:CI 无显示服务)
+        run: python tools/regress.py --xtc build/xtc_s4.exe --skip 96_,97_,98_
+
+      - name: 失败时上传回归日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: regression-logs
+          path: |
+            temp/regression_logs/
+            temp/_bootstrap_scratch/
+          if-no-files-found: ignore

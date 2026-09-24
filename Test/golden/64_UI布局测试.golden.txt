@@ -1,0 +1,18 @@
+compile_ok=True
+exit=0
+=== Test 64: FlexBox 布局算法 ===
+PASS: 文本固有宽
+PASS: 文本固有高
+PASS: 行布局总宽
+PASS: 剩余空间
+PASS: 弹性扩展
+PASS: 多弹性平分
+PASS: space-between
+PASS: space-around
+PASS: 居中对齐偏移
+PASS: 末尾对齐偏移
+PASS: 间距总计
+PASS: 列布局高度
+PASS: stretch 撑满
+PASS: 边距缩减
+=== Test 64 完成 ===

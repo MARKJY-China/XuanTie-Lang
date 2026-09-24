@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+--- 105_fiber连失败与关读 开始 ---
+PASS: 死端口连接被拒绝
+PASS: 对端关闭读返回空
+fiber 存活到终点
+--- 105_fiber连失败与关读 结束 ---

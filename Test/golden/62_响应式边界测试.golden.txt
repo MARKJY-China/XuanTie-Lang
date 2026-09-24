@@ -1,0 +1,12 @@
+compile_ok=True
+exit=0
+=== Test 62: @响应边界 ===
+PASS: 循环累加
+PASS: 遍历修改
+PASS: 条件分支修改
+PASS: 响应默认空
+PASS: 闭包捕获响应变量
+PASS: 型字段响应
+PASS: 型字段修改
+PASS: 连续响应声明
+=== Test 62 完成 ===

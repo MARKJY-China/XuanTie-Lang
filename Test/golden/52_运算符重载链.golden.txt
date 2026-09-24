@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 52: 运算符重载链 ===
+PASS: 单次加法正确
+PASS: 20次链式加法正确
+PASS: 嵌套表达式正确
+PASS: 条件中==重载正确
+PASS: 条件中!=重载正确
+=== Test 52 完成 ===

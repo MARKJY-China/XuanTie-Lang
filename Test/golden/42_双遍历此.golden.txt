@@ -1,0 +1,6 @@
+compile_ok=True
+exit=0
+此.val=99 k=20 v=10
+此.val=99 k=20 v=20
+此.val=99 k=10 v=10
+此.val=99 k=10 v=20

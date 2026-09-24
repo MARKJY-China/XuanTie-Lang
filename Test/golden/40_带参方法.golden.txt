@@ -1,0 +1,6 @@
+compile_ok=True
+exit=0
+此.值=42 外部=hello a=1 b=x
+此.值=42 外部=hello a=1 b=y
+此.值=42 外部=hello a=2 b=x
+此.值=42 外部=hello a=2 b=y

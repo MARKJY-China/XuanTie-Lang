@@ -1,0 +1,6 @@
+compile_ok=True
+exit=0
+=== Test 88: 尝试捕捉与越界约定 ===
+PASS: 无异常不误捕
+PASS: 越界返回空
+=== Test 88 完成 ===

@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 90: 深嵌套数据结构 ===
+PASS: 字典套数组
+PASS: 三层嵌套
+PASS: 数组套字典
+PASS: 二维数组
+PASS: 嵌套写入
+=== Test 90 完成 ===

@@ -1,0 +1,14 @@
+compile_ok=True
+exit=0
+=== Test 61: @响应声明 ===
+PASS: 响应声明初值
+PASS: 响应变量重赋值
+PASS: 响应变量累加
+PASS: 函数内修改响应变量
+PASS: 响应布尔真
+PASS: 响应布尔假
+PASS: 响应字符串初值
+PASS: 响应字符串修改
+PASS: 多响应变量
+PASS: 响应与非响应混合
+=== Test 61 完成 ===

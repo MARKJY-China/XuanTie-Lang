@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+=== Test 87: 匹配语句深度 ===
+PASS: 值匹配
+PASS: 类型匹配
+PASS: 嵌套匹配
+=== Test 87 完成 ===

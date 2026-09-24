@@ -1,0 +1,10 @@
+compile_ok=True
+exit=0
+=== Test 94: 内存搅动猎手 ===
+PASS: 嵌套即弃 3000 轮
+PASS: 字符串长链搅动
+PASS: 数组覆写搅动
+PASS: 字典增删清空
+PASS: 闭包捕获堆对象
+PASS: 结果链搅动
+=== Test 94 完成 ===

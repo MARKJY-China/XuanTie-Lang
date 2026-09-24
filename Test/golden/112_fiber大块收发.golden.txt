@@ -1,0 +1,6 @@
+compile_ok=True
+exit=0
+--- 104_fiber大块收发 开始 ---
+PASS: 大块写完成
+PASS: 服务端收齐100000字节
+--- 104_fiber大块收发 结束 ---

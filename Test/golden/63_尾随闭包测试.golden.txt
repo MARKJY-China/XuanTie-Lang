@@ -1,0 +1,10 @@
+compile_ok=True
+exit=0
+=== Test 63: 尾随闭包 ===
+PASS: 无参尾随闭包
+PASS: 带参尾随闭包
+PASS: 多参尾随闭包
+PASS: 嵌套尾随闭包
+PASS: 等价性验证
+PASS: 仅尾随闭包
+=== Test 63 完成 ===

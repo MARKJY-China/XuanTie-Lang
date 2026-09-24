@@ -1,0 +1,9 @@
+compile_ok=True
+exit=0
+=== Test 91: 逻辑运算短路 ===
+PASS: 且短路
+PASS: 或短路
+PASS: 且继续
+PASS: 或继续
+PASS: 短路结果值
+=== Test 91 完成 ===

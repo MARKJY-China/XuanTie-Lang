@@ -1,0 +1,4 @@
+compile_ok=True
+exit=0
+--- 37 ---
+和=6

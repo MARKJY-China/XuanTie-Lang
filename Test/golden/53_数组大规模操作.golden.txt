@@ -1,0 +1,12 @@
+compile_ok=True
+exit=0
+=== Test 53: 数组大规模操作 ===
+PASS: 100次追加, 长度=100
+PASS: 索引访问正确
+PASS: 50次删除后长度=50
+PASS: 删除后第一个元素=50
+PASS: 插入正确
+PASS: 包含测试正确
+PASS: 空数组长度=0
+PASS: 空数组追加正确
+=== Test 53 完成 ===

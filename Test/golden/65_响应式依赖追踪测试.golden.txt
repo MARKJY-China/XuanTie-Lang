@@ -1,0 +1,15 @@
+compile_ok=True
+exit=0
+=== Test 65: 响应式依赖追踪 ===
+PASS: 基础读写
+PASS: 写入标脏
+PASS: 同值不触发
+PASS: 依赖追踪
+PASS: 订阅回调
+PASS: 多次回调
+PASS: 多订阅者
+PASS: 状态快照
+PASS: 渲染后标脏
+PASS: 独立状态渲染周期
+PASS: 嵌套上下文
+=== Test 65 完成 ===

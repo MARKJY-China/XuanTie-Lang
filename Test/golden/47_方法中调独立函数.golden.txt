@@ -1,0 +1,3 @@
+compile_ok=True
+exit=0
+result=42

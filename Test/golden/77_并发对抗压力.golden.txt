@@ -1,0 +1,8 @@
+compile_ok=True
+exit=0
+=== Test 77 完成 ===
+=== Test 77: 并发对抗性压力 ===
+PASS: 500短命fiber
+PASS: 多生产者汇总
+PASS: 容量1乒乓
+PASS: 选超时交替

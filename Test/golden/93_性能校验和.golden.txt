@@ -1,0 +1,6 @@
+compile_ok=True
+exit=0
+=== Test 93: 性能校验和 ===
+PASS: 校验和正确
+耗时: <T>
+=== Test 93 完成 ===

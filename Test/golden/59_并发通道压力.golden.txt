@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+=== Test 59 完成 ===
+=== Test 59: 并发通道压力测试 ===
+PASS: 异步生产者-消费者完成
+PASS: 通道8次收发累加=280
+PASS: 通道基本收发正确
