@@ -10,6 +10,15 @@
 #include <string.h>
 #include <errno.h>
 
+// 线程入口函数：仅 Windows（_beginthreadex）要求 __stdcall + unsigned 返回，POSIX pthread 用普通约定 + void*
+#if defined(_WIN32)
+#define XT_THREAD_PROC __stdcall
+#define XT_THREAD_RET unsigned
+#else
+#define XT_THREAD_PROC
+#define XT_THREAD_RET void*
+#endif
+
 #if defined(_WIN32)
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -515,7 +524,7 @@ extern struct XTArena* g_current_arena;
 
 // 每个连接独立线程处理：禁用 arena，调用回调，释放 socket
 struct conn_ctx { void (*cb)(void*); XTSocket* sock; XTValue fn; };
-static unsigned __stdcall conn_handler(void* arg) {
+static XT_THREAD_RET XT_THREAD_PROC conn_handler(void* arg) {
     struct conn_ctx* cc = (struct conn_ctx*)arg;
     struct XTArena* saved = g_current_arena;
     g_current_arena = NULL;
