@@ -59,6 +59,9 @@ jobs:
           ls "$DEST/UI" | head -5
 
       - name: 全量回归(弹窗类 96/97/98 跳过:CI 无显示服务)
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
         run: python tools/regress.py --xtc build/xtc_s4.exe --skip 96_,97_,98_
 
       - name: 失败时上传回归日志

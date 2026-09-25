@@ -20,6 +20,18 @@
 #   python tools/regress.py --xtc build/xtc_s4.exe   # 指定编译器(自举各级对照用)
 import os, re, subprocess, sys, time
 
+# CI runner 的 stdout 默认编码不是 UTF-8(Windows runner 为 cp1252/en-US):
+# 直接 print 中文(编译器路径行、测试名)会抛 UnicodeEncodeError 致整轮回归中断——
+# 实测 GitHub Actions 上崩在 print("编译器: %s")。此处统一把标准输出/错误改为
+# UTF-8 并对个别不可编码字符降级替换:任何区域设置下都能跑完全程。
+# (注意:判定判定不依赖 stdout——基线读写均为显式 utf-8 文件 I/O,输出编码只影响展示。)
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 CLI_XTC = None  # --xtc 显式指定;未指定时按下方 XTC_DEFAULT
 XTC_DEFAULT = os.path.join(ROOT, "build", "xtc_s4.exe")
