@@ -81,6 +81,8 @@ func (c *LLVMCompiler) TargetTriple() string {
 		return "x86_64-apple-darwin"
 	case "darwin/arm64":
 		return "arm64-apple-darwin"
+	case "windows/arm64":
+		return "aarch64-w64-windows-gnu"
 	}
 	return "x86_64-w64-windows-gnu"
 }
@@ -103,6 +105,8 @@ func (c *LLVMCompiler) TargetDataLayout() string {
 		return "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 	case "linux/arm64":
 		return "e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128"
+	case "windows/arm64":
+		return "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-n32:64-S128"
 	}
 	return "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 }

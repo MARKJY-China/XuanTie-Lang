@@ -263,6 +263,15 @@
             若 _机器 == "arm64" 或 _机器 == "aarch64" { 架构 = "arm64" }
             抑 _机器 == "x86_64" 或 _机器 == "amd64" { 架构 = "amd64" }
         }
+        // Windows 无 uname:用 cmd 的 PROCESSOR_ARCHITECTURE(原生进程链下返回 ARM64/AMD64)
+        若 架构 == "" 且 平台 == "windows" {
+            设 _探测3 = 执("cmd /c echo %PROCESSOR_ARCHITECTURE%")
+            若 _探测3.成功 {
+                设 _机器2 = _探测3.值.替换("\r", "").替换("\n", "").替换(" ", "")
+                若 _机器2 == "ARM64" { 架构 = "arm64" }
+                抑 _机器2 == "AMD64" { 架构 = "amd64" }
+            }
+        }
         若 架构 == "" { 架构 = "amd64" }
     }
 
@@ -475,7 +484,8 @@
     设 gcc程序 = "gcc"
     若 平台 == "windows" 且 _自身目录 != "" {
         若 文件.存在?(_自身目录 & "tools\\clang\\bin\\clang.exe") { clang程序 = _自身目录 & "tools\\clang\\bin\\clang.exe" }
-        若 文件.存在?(_自身目录 & "tools\\mingw\\bin\\gcc.exe") { gcc程序 = _自身目录 & "tools\\mingw\\bin\\gcc.exe" }
+        若 架构 == "arm64" 且 文件.存在?(_自身目录 & "tools\\mingw\\bin\\aarch64-w64-mingw32-gcc.exe") { gcc程序 = _自身目录 & "tools\\mingw\\bin\\aarch64-w64-mingw32-gcc.exe" }
+        若 架构 == "amd64" 且 文件.存在?(_自身目录 & "tools\\mingw\\bin\\gcc.exe") { gcc程序 = _自身目录 & "tools\\mingw\\bin\\gcc.exe" }
     }
 
     // 调用 clang 生成对象文件
