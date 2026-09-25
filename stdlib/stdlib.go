@@ -237,6 +237,28 @@ var Builtins = map[string]object.Object{
 					if len(args) == 0 {
 						return &object.Null{}
 					}
+					if len(args) == 1 {
+						if arr, ok := args[0].(*object.Array); ok {
+							if len(arr.Elements) == 0 {
+								return &object.Null{}
+							}
+							max := getFloat(arr.Elements[0])
+							isFloat := arr.Elements[0].Type() == object.FLOAT_OBJ
+							for _, a := range arr.Elements[1:] {
+								v := getFloat(a)
+								if v > max {
+									max = v
+								}
+								if a.Type() == object.FLOAT_OBJ {
+									isFloat = true
+								}
+							}
+							if isFloat {
+								return &object.Float{Value: max}
+							}
+							return &object.Integer{Value: int64(max)}
+						}
+					}
 					max := getFloat(args[0])
 					isFloat := args[0].Type() == object.FLOAT_OBJ
 					for _, a := range args[1:] {
@@ -258,6 +280,28 @@ var Builtins = map[string]object.Object{
 				Fn: func(args ...object.Object) object.Object {
 					if len(args) == 0 {
 						return &object.Null{}
+					}
+					if len(args) == 1 {
+						if arr, ok := args[0].(*object.Array); ok {
+							if len(arr.Elements) == 0 {
+								return &object.Null{}
+							}
+							min := getFloat(arr.Elements[0])
+							isFloat := arr.Elements[0].Type() == object.FLOAT_OBJ
+							for _, a := range arr.Elements[1:] {
+								v := getFloat(a)
+								if v < min {
+									min = v
+								}
+								if a.Type() == object.FLOAT_OBJ {
+									isFloat = true
+								}
+							}
+							if isFloat {
+								return &object.Float{Value: min}
+							}
+							return &object.Integer{Value: int64(min)}
+						}
 					}
 					min := getFloat(args[0])
 					isFloat := args[0].Type() == object.FLOAT_OBJ
@@ -474,6 +518,16 @@ var Builtins = map[string]object.Object{
 			"现": &object.Builtin{
 				Fn: func(args ...object.Object) object.Object {
 					return &object.Integer{Value: time.Now().UnixNano() / int64(time.Millisecond)}
+				},
+			},
+			"毫秒": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					return &object.Integer{Value: time.Now().UnixNano() / int64(time.Millisecond)}
+				},
+			},
+			"微秒": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					return &object.Integer{Value: time.Now().UnixNano() / int64(time.Microsecond)}
 				},
 			},
 			"解析": &object.Builtin{
