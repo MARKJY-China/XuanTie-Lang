@@ -145,6 +145,24 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	c.declaredGlobals["道"] = true
 	c.symbolTable["数学.随机"] = SymbolInfo{AddrReg: "@\"xt_math_random\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["数学.随机"] = true
+	c.symbolTable["数学.平方根"] = SymbolInfo{AddrReg: "@\"xt_math_sqrt\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.平方根"] = true
+	c.symbolTable["数学.幂"] = SymbolInfo{AddrReg: "@\"xt_math_pow\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.幂"] = true
+	c.symbolTable["数学.绝对值"] = SymbolInfo{AddrReg: "@\"xt_math_abs\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.绝对值"] = true
+	c.symbolTable["数学.正弦"] = SymbolInfo{AddrReg: "@\"xt_math_sin\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.正弦"] = true
+	c.symbolTable["数学.余弦"] = SymbolInfo{AddrReg: "@\"xt_math_cos\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.余弦"] = true
+	c.symbolTable["数学.最大值"] = SymbolInfo{AddrReg: "@\"xt_math_max\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.最大值"] = true
+	c.symbolTable["数学.最小值"] = SymbolInfo{AddrReg: "@\"xt_math_min\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.最小值"] = true
+	c.symbolTable["数学.圆周率"] = SymbolInfo{AddrReg: "@\"xt_math_pi\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.圆周率"] = true
+	c.symbolTable["数学.自然常数"] = SymbolInfo{AddrReg: "@\"xt_math_e\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["数学.自然常数"] = true
 	c.symbolTable["时.现"] = SymbolInfo{AddrReg: "@\"xt_time_now\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["时.现"] = true
 	c.symbolTable["时.毫秒"] = SymbolInfo{AddrReg: "@\"xt_time_ms\"", IsGlobal: true, Type: "i64"}
@@ -289,6 +307,15 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare i64 @xt_file_delete(i64)\n")
 	res.WriteString("declare i64 @xt_http_request(i64)\n")
 	res.WriteString("declare i64 @xt_math_random(i64)\n")
+	res.WriteString("declare i64 @xt_math_sqrt(i64)\n")
+	res.WriteString("declare i64 @xt_math_pow(i64, i64)\n")
+	res.WriteString("declare i64 @xt_math_abs(i64)\n")
+	res.WriteString("declare i64 @xt_math_sin(i64)\n")
+	res.WriteString("declare i64 @xt_math_cos(i64)\n")
+	res.WriteString("declare i64 @xt_math_max(i64)\n")
+	res.WriteString("declare i64 @xt_math_min(i64)\n")
+	res.WriteString("declare i64 @xt_math_pi()\n")
+	res.WriteString("declare i64 @xt_math_e()\n")
 	res.WriteString("declare i64 @xt_time_now()\n")
 	res.WriteString("declare i64 @xt_time_ms()\n")
 	res.WriteString("declare i64 @xt_time_micro()\n")
@@ -1882,6 +1909,39 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					res := c.nextReg()
 					c.emit("  %s = call i64 @xt_math_random(i64 %s)", res, xtVal)
 					c.emit("  call void @xt_release(i64 %s)", xtVal)
+					return res, "i64", ""
+				} else if e.Member.Value == "平方根" || e.Member.Value == "绝对值" || e.Member.Value == "正弦" || e.Member.Value == "余弦" || e.Member.Value == "最大值" || e.Member.Value == "最小值" {
+					valReg, valType, _ := c.compileExpression(e.Arguments[0])
+					xtVal := c.ensureI64(valReg, valType)
+					res := c.nextReg()
+					fnName := map[string]string{
+						"平方根": "xt_math_sqrt",
+						"绝对值": "xt_math_abs",
+						"正弦": "xt_math_sin",
+						"余弦": "xt_math_cos",
+						"最大值": "xt_math_max",
+						"最小值": "xt_math_min",
+					}[e.Member.Value]
+					c.emit("  %s = call i64 @%s(i64 %s)", res, fnName, xtVal)
+					c.emit("  call void @xt_release(i64 %s)", xtVal)
+					return res, "i64", ""
+				} else if e.Member.Value == "幂" {
+					baseReg, baseType, _ := c.compileExpression(e.Arguments[0])
+					expReg, expType, _ := c.compileExpression(e.Arguments[1])
+					baseVal := c.ensureI64(baseReg, baseType)
+					expVal := c.ensureI64(expReg, expType)
+					res := c.nextReg()
+					c.emit("  %s = call i64 @xt_math_pow(i64 %s, i64 %s)", res, baseVal, expVal)
+					c.emit("  call void @xt_release(i64 %s)", baseVal)
+					c.emit("  call void @xt_release(i64 %s)", expVal)
+					return res, "i64", ""
+				} else if e.Member.Value == "圆周率" {
+					res := c.nextReg()
+					c.emit("  %s = call i64 @xt_math_pi()", res)
+					return res, "i64", ""
+				} else if e.Member.Value == "自然常数" {
+					res := c.nextReg()
+					c.emit("  %s = call i64 @xt_math_e()", res)
 					return res, "i64", ""
 				}
 			} else if c.moduleAliases[ident.Value] {
