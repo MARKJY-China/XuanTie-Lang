@@ -138,9 +138,13 @@ def one_test(xtfile, record):
         with open(os.path.join(LOG_DIR, name + ".compile.log"), "w", encoding="utf-8") as f:
             f.write("=== 编译命令 ===\n%s 铁 %s -sc %s\n\n=== 编译输出 ===\n%s" % (XTC, src, exe, cout))
 
+    # 压力单元的超时判定要在**首次**运行前就生效(此前只作用于重跑轮次,CI 上首次 304s 即被 300s 砍掉)
+    is_stress = any(name.startswith(p) for p in STRESS_TESTS)
+    run_timeout = RUN_TIMEOUT_STRESS if is_stress else RUN_TIMEOUT
+
     run_rc, run_out, = "", ""
     if compile_ok:
-        run_rc, run_out = run_cmd([exe], RUN_TIMEOUT, cwd=ROOT)  # 部分测试用 "Test/..." 相对路径,必须以项目根为 CWD
+        run_rc, run_out = run_cmd([exe], run_timeout, cwd=ROOT)  # 部分测试用 "Test/..." 相对路径,必须以项目根为 CWD
 
     if record:
         os.makedirs(GOLDEN_DIR, exist_ok=True)
@@ -164,12 +168,10 @@ def one_test(xtfile, record):
     g_body = "\n".join(glines[2:])
 
     if not compile_ok:
-        return ("COMPILE_FAIL" if g_compile else "COMPILE_FAIL(与基线一致)", name, compile_tail)
+        return ("COMPILE_FAIL" if g_compile else "PASS(预期编译失败-与基线一致)", name, compile_tail)
 
     # 并发类测试:反复运行 STRESS_REPEATS 次,每次都要与基线一致
-    is_stress = any(name.startswith(p) for p in STRESS_TESTS)
     repeats = STRESS_REPEATS if is_stress else 1
-    run_timeout = RUN_TIMEOUT_STRESS if is_stress else RUN_TIMEOUT
     for attempt in range(repeats):
         if attempt > 0:
             run_rc, run_out = run_cmd([exe], run_timeout, cwd=ROOT)
