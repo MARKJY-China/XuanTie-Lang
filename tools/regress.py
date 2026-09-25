@@ -40,6 +40,12 @@ XTC = XTC_DEFAULT if os.path.exists(XTC_DEFAULT) else XTC_FALLBACK
 TESTDIR = os.path.join(ROOT, "Test")
 GOLDEN_DIR = os.path.join(ROOT, "Test", "golden")
 LOG_DIR = os.path.join(ROOT, "temp", "regression_logs")
+# 产物目录(ASCII 路径):**必须显式 -sc 指定 ASCII 输出名**——
+# XTC 未给 -sc 时会从源文件名派生输出路径(如 Test\01_基础测试.exe),该路径直通 gcc 的 -o;
+# 在区域为 en-US(CP1252)的 CI runner 上,MinGW 的 gcc/ld 按 ANSI 码页解 argv,中文被
+# 打成 "??.exe"(? 非法文件名字符) → ld: cannot open output file ??.exe → 全部单元 COMPILE_FAIL。
+# 与 Issue #21(GSC 侧同因)同属一类,故此处统一走 ASCII 产物路径。
+OUT_DIR = os.path.join(ROOT, "temp", "_regress_out")
 COMPILE_TIMEOUT = 180
 RUN_TIMEOUT = 240
 # 无控制台环境(后台任务/CI)拉起子进程时不新配可见控制台窗口,杜绝回归期 CMD 频闪
@@ -98,17 +104,36 @@ def run_cmd(argv, timeout, cwd=ROOT):
         out = (e.stdout or b"").decode("utf-8", "replace")
         return "TIMEOUT", out + "\n[RUNNER] 超时终止\n"
 
+def pick_error_lines(cout, max_lines=3):
+    """从编译输出里挑出最能说明失败原因的行(末几行常是无关警告,不可作判据)。"""
+    lines = [ln.rstrip() for ln in cout.replace("\r", "").split("\n") if ln.strip()]
+    keys = ("错误", "失败", "error", "Error", "undefined", "cannot", "无法", "非法",
+            "expected", "返回码", "exit status")
+    hits = [ln for ln in lines if any(k in ln for k in keys)]
+    picked = lines[-1:] + hits[:max_lines]
+    seen, out = set(), []
+    for ln in picked:
+        if ln not in seen:
+            seen.add(ln); out.append(ln)
+    return " | ".join(out)[:400]
+
 def one_test(xtfile, record):
     name = xtfile[:-3]  # 去 .xt
     src = os.path.join(TESTDIR, xtfile)
-    exe = os.path.join(TESTDIR, name + ".exe")
+    m = re.match(r"^(\d+)_", name)
+    exe = os.path.join(OUT_DIR, (m.group(1) if m else name) + ".exe")  # ASCII 产物路径(见 OUT_DIR 注释)
     sorted_mode = any(name.startswith(p) for p in SORTED_TESTS)
+    os.makedirs(OUT_DIR, exist_ok=True)
     if os.path.exists(exe):
         os.remove(exe)  # 防陈旧二进制假绿
 
-    rc, cout = run_cmd([XTC, "铁", src], COMPILE_TIMEOUT)
+    rc, cout = run_cmd([XTC, "铁", src, "-sc", exe], COMPILE_TIMEOUT)
     compile_ok = (rc == 0 and os.path.exists(exe))
-    compile_tail = "\n".join(cout.strip().split("\n")[-3:])
+    compile_tail = pick_error_lines(cout)
+    if not compile_ok:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(os.path.join(LOG_DIR, name + ".compile.log"), "w", encoding="utf-8") as f:
+            f.write("=== 编译命令 ===\n%s 铁 %s -sc %s\n\n=== 编译输出 ===\n%s" % (XTC, src, exe, cout))
 
     run_rc, run_out, = "", ""
     if compile_ok:
