@@ -263,10 +263,18 @@ func main() {
 		}
 
 		gccExe := "gcc"
-		// 优先用 TDM-GCC（w64devkit GCC 15.2.0 在此系统上产生无效 exe）
-		tdmGcc := "C:/TDM-GCC-64/bin/gcc.exe"
-		if fileExists(tdmGcc) {
-			gccExe = tdmGcc
+		if targetOS == "windows" && targetArch == "arm64" {
+			// llvm-mingw aarch64 包装:argv[0] 决定 clang 目标,复制改名成 gcc.exe 会丢目标信息
+			localAarch64Gcc := "tools/mingw/bin/aarch64-w64-mingw32-gcc.exe"
+			if fileExists(localAarch64Gcc) {
+				gccExe = localAarch64Gcc
+			}
+		} else {
+			// 优先用 TDM-GCC（w64devkit GCC 15.2.0 在此系统上产生无效 exe）
+			tdmGcc := "C:/TDM-GCC-64/bin/gcc.exe"
+			if fileExists(tdmGcc) {
+				gccExe = tdmGcc
+			}
 		}
 		threadpoolC := filepath.Join(runtimeDir, "xt_threadpool.c")
 		netC := filepath.Join(runtimeDir, "xt_net.c")
