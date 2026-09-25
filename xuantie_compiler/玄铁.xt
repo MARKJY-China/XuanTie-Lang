@@ -666,6 +666,7 @@
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
         若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
+        若 平台 == "linux" { 链接指令 = 链接指令 & " -lm -lpthread -ldl" }
         若 使用渲染 {
             链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\""
             若 平台 == "darwin" { 链接指令 = 链接指令 & " -framework Cocoa -framework OpenGL -framework IOKit -framework CoreVideo" }
