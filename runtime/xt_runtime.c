@@ -3143,7 +3143,10 @@ XTValue xt_execute(XTValue cmd_val) {
     }
 
     if (status != 0 && status != -1) {
-        char err_msg[1024];
+        // 缓冲从 1024 放大到 16384:编译器/链接器失败时输出常达数千字节(gcc 警告刷屏),
+        // 1024 会把真正的 error 行截掉——实测 CI 上"MinGW 链接失败"只留下警告,真因被埋,
+        // 排查被迫多绕一轮。此为诊断能力(不改变成功路径)。
+        char err_msg[16384];
         snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", status, res->data);
         xt_release((XTValue)res);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));

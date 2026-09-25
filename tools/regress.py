@@ -47,7 +47,10 @@ LOG_DIR = os.path.join(ROOT, "temp", "regression_logs")
 # 与 Issue #21(GSC 侧同因)同属一类,故此处统一走 ASCII 产物路径。
 OUT_DIR = os.path.join(ROOT, "temp", "_regress_out")
 COMPILE_TIMEOUT = 180
-RUN_TIMEOUT = 240
+RUN_TIMEOUT = 300
+# 并发/调度类压力单元在低核 CI 机器上明显更慢(实测 77_并发对抗压力 本机 22s / CI 244s,
+# 且它们本身要跑 STRESS_REPEATS 轮),单独给更宽的时间上限,避免把"慢"误判成"挂死"。
+RUN_TIMEOUT_STRESS = 900
 # 无控制台环境(后台任务/CI)拉起子进程时不新配可见控制台窗口,杜绝回归期 CMD 频闪
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -164,10 +167,12 @@ def one_test(xtfile, record):
         return ("COMPILE_FAIL" if g_compile else "COMPILE_FAIL(与基线一致)", name, compile_tail)
 
     # 并发类测试:反复运行 STRESS_REPEATS 次,每次都要与基线一致
-    repeats = STRESS_REPEATS if any(name.startswith(p) for p in STRESS_TESTS) else 1
+    is_stress = any(name.startswith(p) for p in STRESS_TESTS)
+    repeats = STRESS_REPEATS if is_stress else 1
+    run_timeout = RUN_TIMEOUT_STRESS if is_stress else RUN_TIMEOUT
     for attempt in range(repeats):
         if attempt > 0:
-            run_rc, run_out = run_cmd([exe], RUN_TIMEOUT, cwd=ROOT)
+            run_rc, run_out = run_cmd([exe], run_timeout, cwd=ROOT)
         if run_rc == "TIMEOUT":
             return ("TIMEOUT(第%d次)" % (attempt + 1), name, "")
         if run_rc != 0 and str(run_rc) != g_exit:
