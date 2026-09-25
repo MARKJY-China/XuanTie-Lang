@@ -7045,7 +7045,9 @@
             }
         } 否 {
             // POSIX(darwin/linux):无 -static;gcc 即 clang 或系统 gcc
-            链接指令 = "gcc \"" & o路径 & "\" \"" & rtFile & "\" -o \"" & 输出路径 & "\""
+            链接指令 = "gcc \"" & o路径 & "\" \"" & rtFile & "\""
+            若 平台 == "linux" { 链接指令 = 链接指令 & " -lm -lpthread -ldl" }
+            链接指令 = 链接指令 & " -o \"" & 输出路径 & "\""
         }
         
         设 gcc结果 = 执(链接指令)
