@@ -145,6 +145,10 @@
         此.函数表["文件.写"] = 真
         此.符号表["文件.存在?"] = "@\"xt_file_exists\""
         此.函数表["文件.存在?"] = 真
+        // 文件.删(路径):带重试的删除,结果容器带错误(语言层替代 执("cmd /c del …")——
+        // 后者会被 cmd 把路径里的 / 当开关,且失败常被忽略而静默不删)
+        此.符号表["文件.删"] = "@\"xt_file_delete\""
+        此.函数表["文件.删"] = 真
         此.符号表["数学.随机"] = "@\"xt_math_random\""
         此.函数表["数学.随机"] = 真
         此.符号表["数学.绝对值"] = "@\"xt_math_abs\""
@@ -979,6 +983,7 @@
         此.写出("declare i64 @\"xt_file_read\"(i64)")
         此.写出("declare i64 @\"xt_file_write\"(i64, i64)")
         此.写出("declare i64 @\"xt_file_exists\"(i64)")
+        此.写出("declare i64 @\"xt_file_delete\"(i64)")
         此.写出("declare i64 @\"xt_http_request\"(i64)")
         此.写出("declare i64 @\"xt_http_request_ex\"(i64, i64)")
         此.写出("declare i64 @\"xt_math_random\"(i64)")

@@ -2520,10 +2520,68 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
         xt_release((XTValue)content); 
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入文件 (打开失败)")); 
     }
-    fwrite(content->data, 1, content->length, f);
-    fclose(f);
+    // 铁律:对明确的错误宁可报错退出也不静默跳过——旧实现忽略 fwrite/fflush/fclose 的返回值,
+    // 磁盘满或短写时会"成功"返回,调用方与用户都看不到内容其实没落盘。
+    size_t written = fwrite(content->data, 1, content->length, f);
+    int flush_rc = fflush(f);
+    int close_rc = fclose(f);
+    if (written != (size_t)content->length || flush_rc != 0 || close_rc != 0) {
+        char msg[256];
+        snprintf(msg, sizeof(msg),
+                 "写文件失败: %s (写入 %llu/%d 字节, fflush=%d, fclose=%d)",
+                 path->data, (unsigned long long)written, (int)content->length, flush_rc, close_rc);
+        xt_release((XTValue)content);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(msg));
+    }
     xt_release((XTValue)content);
     return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+// 删除文件(带重试):
+//   1) 语言层此前没有删除 API,只能 执("cmd /c del …") —— 该写法有两个实打实的坑:
+//      路径里的正斜杠会被 cmd 当作开关前缀(实测 temp/_p1.txt → "Invalid switch"),
+//      且 执 的失败结果常被调用方忽略 → 静默不删。
+//   2) Windows 上文件常在句柄刚释放/杀软扫描的瞬间短暂不可删,故此处按间隔重试。
+//   3) 结果是 结果 容器:成功 → 值=真;失败(含文件不存在)→ 错误带最后一次系统错误码。
+// 铁律:绝不静默失败;调用方必须检查 结果。
+XTValue xt_file_delete(XTValue path_val) {
+    if (!xt_is_real_ptr(path_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    XTObject* obj = (XTObject*)path_val;
+    if (obj->type_id != XT_TYPE_STRING) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    XTString* path = (XTString*)path_val;
+    if (!path->data || path->length == 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径为空"));
+
+    const int max_attempts = 10;
+    int last_err = 0;
+    int attempts = 0;
+    for (int attempt = 0; attempt < max_attempts; attempt++) {
+        int rc;
+        attempts = attempt + 1;
+#ifdef _WIN32
+        wchar_t* wpath = xt_utf8_to_utf16(path->data);
+        if (!wpath) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径转换失败"));
+        rc = DeleteFileW(wpath) ? 0 : -1;
+        if (rc != 0) last_err = (int)GetLastError();
+        free(wpath);
+        // 文件不存在属明确错误,不重试(重试也不会变出来)
+        if (rc != 0 && last_err == ERROR_FILE_NOT_FOUND) break;
+#else
+        errno = 0;
+        rc = remove(path->data);
+        if (rc != 0) last_err = errno;
+        if (rc != 0 && last_err == ENOENT) break;
+#endif
+        if (rc == 0) return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+        // 共享冲突/占用类错误:短等后重试(句柄释放与杀软扫描常在毫秒级完成)
+        _sched_sleep_us(20000 * (attempt + 1));
+    }
+    char msg[320];
+#ifdef _WIN32
+    snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, 系统错误码 %d)", path->data, attempts, last_err);
+#else
+    snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, errno %d)", path->data, attempts, last_err);
+#endif
+    return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(msg));
 }
 
 XTValue xt_file_exists(XTValue path_val) {
