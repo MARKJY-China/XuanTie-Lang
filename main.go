@@ -240,7 +240,9 @@ func main() {
 		if out, err := exec.Command(cc, clangArgs...).CombinedOutput(); err != nil {
 			fmt.Printf("LLVM 编译为对象文件失败: %v\n", err)
 			fmt.Printf("错误详情: %s\n", string(out))
-			return
+			// 编译失败必须显式非零退出:旧行为只 return(退出码 0),
+			// 下游门禁/脚本按退出码判定时会误判为"编译成功但没产物",掩盖真实原因
+			os.Exit(1)
 		}
 
 		var bridgeObj string
@@ -251,7 +253,7 @@ func main() {
 			if out, err := exec.Command(cc, bridgeArgs...).CombinedOutput(); err != nil {
 				fmt.Printf("渲染桥编译失败: %v\n", err)
 				fmt.Printf("错误详情: %s\n", string(out))
-				return
+				os.Exit(1)
 			}
 		}
 
@@ -295,7 +297,8 @@ func main() {
 		if err != nil {
 			fmt.Printf("MinGW 链接失败 (请确保已安装 GCC/MinGW): %v\n", err)
 			fmt.Printf("错误详情: %s\n", string(out))
-			return
+			// 链接失败同样必须非零退出(与上方 clang 失败同理,旧行为 return 出 0)
+			os.Exit(1)
 		}
 
 		os.Remove(objFile)

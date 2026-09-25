@@ -63,10 +63,18 @@ rm -f "$PROBE_EXE"
 grep -q "工具链自检通过" "$SCRATCH/probe_run.log" || { dump_log "$SCRATCH/probe_run.log"; fail "工具链自检:probe 输出异常"; }
 
 echo "[自举门禁] 阶段一:GSC → s1(在独立目录内构建,避免产出仓库根的 玄铁.exe)"
-rm -f "$SCRATCH/玄铁.exe"
-( cd "$SCRATCH" && "$GSC" 铁 "$(W "$SRC")" ) > "$SCRATCH/s1.log" 2>&1 || { dump_log "$SCRATCH/s1.log"; fail "GSC 编译 s1 失败"; }
-[ -f "$SCRATCH/玄铁.exe" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 玄铁.exe"; }
-mv -f "$SCRATCH/玄铁.exe" "$BUILD/xtc_s1.exe"
+# GSC 不支持 -sc,输出名取自源文件基名;而 Windows CI runner 区域为 en-US(CP1252),
+# MinGW 的 gcc/ld 走窄字符 API,中文输出名会被打成 "??.exe" 致链接失败(实测 Issue #21:
+# "ld.exe: cannot open output file ??.exe: Invalid argument")。故把源码整套复制到 scratch
+# 并把入口改名为 ASCII(兄弟模块保留原名——`引 "编译"` 等按文件名解析,且只读不写)。
+mkdir -p "$SCRATCH/src"
+cp -f "$ROOT"/xuantie_compiler/*.xt "$SCRATCH/src/"
+ENTRY="$SCRATCH/src/xentry.xt"
+cp -f "$ROOT/xuantie_compiler/玄铁.xt" "$ENTRY"
+rm -f "$SCRATCH/src/xentry.exe" "$SCRATCH/xentry.exe"
+( cd "$SCRATCH" && "$GSC" 铁 "$(W "$ENTRY")" ) > "$SCRATCH/s1.log" 2>&1 || { dump_log "$SCRATCH/s1.log"; fail "GSC 编译 s1 失败"; }
+[ -f "$SCRATCH/xentry.exe" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 xentry.exe(见上方日志)"; }
+mv -f "$SCRATCH/xentry.exe" "$BUILD/xtc_s1.exe"
 
 echo "[自举门禁] 阶段二:逐级自举 s1 → s2 → s3 → s4"
 for pair in "1 2" "2 3" "3 4"; do
