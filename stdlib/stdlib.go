@@ -97,7 +97,38 @@ var Builtins = map[string]object.Object{
 				Fn: func(args ...object.Object) object.Object { return &object.Boolean{Value: true} },
 			},
 			"删": &object.Builtin{
-				Fn: func(args ...object.Object) object.Object { return &object.Boolean{Value: true} },
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: fmt.Sprintf("期望 1 个参数，得到 %d", len(args))}
+					}
+					path, ok := args[0].(*object.String)
+					if !ok {
+						return &object.Error{Message: fmt.Sprintf("参数必须是字符串，得到 %s", args[0].Type())}
+					}
+					if _, err := os.Stat(path.Value); err != nil {
+						if os.IsNotExist(err) {
+							return &object.Result{IsSuccess: false, Error: &object.Error{Message: fmt.Sprintf("文件不存在，无法删除 (%s)", path.Value)}}
+						}
+						return &object.Result{IsSuccess: false, Error: &object.Error{Message: fmt.Sprintf("无法访问文件 (%s)", path.Value)}}
+					}
+					if err := os.Remove(path.Value); err != nil {
+						return &object.Result{IsSuccess: false, Error: &object.Error{Message: fmt.Sprintf("删除文件失败: %v", err)}}
+					}
+					return &object.Result{IsSuccess: true, Value: &object.Boolean{Value: true}}
+				},
+			},
+			"存在?": &object.Builtin{
+				Fn: func(args ...object.Object) object.Object {
+					if len(args) != 1 {
+						return &object.Error{Message: fmt.Sprintf("期望 1 个参数，得到 %d", len(args))}
+					}
+					path, ok := args[0].(*object.String)
+					if !ok {
+						return &object.Error{Message: fmt.Sprintf("参数必须是字符串，得到 %s", args[0].Type())}
+					}
+					_, err := os.Stat(path.Value)
+					return &object.Boolean{Value: err == nil}
+				},
 			},
 			"建": &object.Builtin{
 				Fn: func(args ...object.Object) object.Object { return &object.Boolean{Value: true} },

@@ -24,6 +24,7 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <math.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #include <shellapi.h>
