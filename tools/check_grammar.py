@@ -7,7 +7,19 @@
 # 本脚本:① 校验所有词形规则的边界断言(含转义是否正确) ② 离线复现着色并断言若干样本。
 #
 # 用法: python tools/check_grammar.py            (项目根目录)
-import io, json, os, regex, sys
+import io, json, os, sys
+
+# CI runner 的 stdout 默认编码不是 UTF-8(Windows runner 为 cp1252/en-US):
+# 本脚本输出含中文与 ①② 等符号,直接 print 会抛 UnicodeEncodeError 致自检中断
+# (与 tools/regress.py 同一坑,已在 CI 实测踩到)。统一改为 UTF-8 + 不可编码字符降级替换。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+import regex  # noqa: E402  (需 pip install regex;CI 步骤已装)
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 GRAMMAR = os.path.join(ROOT, "extensions", "xuantie-syntax", "syntaxes", "xuantie.tmLanguage.json")

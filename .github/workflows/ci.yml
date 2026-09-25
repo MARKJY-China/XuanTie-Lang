@@ -48,6 +48,9 @@ jobs:
         run: bash tools/bootstrap_check.sh
 
       - name: 语法着色自检(TextMate 规则边界,防「是否完成」类标识符被劈开)
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
         run: |
           python -m pip install --quiet regex
           python tools/check_grammar.py
