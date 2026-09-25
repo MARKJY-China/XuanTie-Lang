@@ -358,6 +358,19 @@ function activateLsp(context) {
         vscode.workspace.onDidSaveTextDocument(doc => {
             if (doc.languageId === 'xuantie' && client) client.didSave(doc);
         }),
+        // 项目配置文件监视:玄铁.配置.toml 变更(新增/改/删)→ 通知服务器对已打开文档重新诊断。
+        // 否则"先开编辑器、后写配置"时,忽略警告(如 W001)等配置不生效,用户看不到任何变化(实测踩到)。
+        ...(() => {
+            const watcher = vscode.workspace.createFileSystemWatcher('**/玄铁.配置.toml');
+            const notifyCfg = (uri) => {
+                if (client && client.connected) {
+                    client.notify('workspace/didChangeWatchedFiles', {
+                        changes: [{ uri: uri.toString(), type: 2 }]
+                    });
+                }
+            };
+            return [watcher, watcher.onDidChange(notifyCfg), watcher.onDidCreate(notifyCfg), watcher.onDidDelete(notifyCfg)];
+        })(),
         // P2:补全转发到 xt_lsp('.' 触发:模块别名. 弹出成员)
         vscode.languages.registerCompletionItemProvider('xuantie', {
             async provideCompletionItems(document, position) {

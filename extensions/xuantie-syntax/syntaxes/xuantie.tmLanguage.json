@@ -47,23 +47,23 @@
 			"patterns": [
 				{
 					"name": "keyword.control.xt",
-					"match": "\\b(若|抑|否|当|循|遍历|于|断|续|返|尝试|捕捉|异步|等待|并行|引|予|接着|且|或|非|是|匹配|终)\\b"
+					"match": "(?<![\\p{L}\\p{N}_?])(若|抑|否|当|循|遍历|于|断|续|返|尝试|捕捉|异步|等待|并行|引|予|接着|且|或|非|是|匹配|终)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "storage.type.xt",
-					"match": "\\b(设|常|型|函|造|公|私|护|承|口|变量|常量|函数|外|覆|弱)\\b"
+					"match": "(?<![\\p{L}\\p{N}_?])(设|常|型|函|造|公|私|护|承|口|变量|常量|函数|外|覆|弱)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "storage.type.primitive.xt",
-					"match": "\\b(整|小数|字|布尔|空|数组|字典|字节|结果|任务|字符串|整数|逻辑)\\b"
+					"match": "(?<![\\p{L}\\p{N}_?])(整|小数|字|布尔|空|数组|字典|字节|结果|任务|字符串|整数|逻辑)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "support.function.xt",
-					"match": "\\b(示|化|解|求|听|连|执|道|输|成功|失败|打印)\\b"
+					"match": "(?<![\\p{L}\\p{N}_?])(示|化|解|求|听|连|执|道|输|成功|失败|打印)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "support.class.xt",
-					"match": "\\b(文件|网络|字符串|数学|时|系统|时间)\\b"
+					"match": "(?<![\\p{L}\\p{N}_?])(文件|网络|字符串|数学|时|系统|时间)(?![\\p{L}\\p{N}_?])"
 				}
 			]
 		},
@@ -165,7 +165,7 @@
 			"patterns": [
 				{
 					"name": "constant.language.xt",
-					"match": "\\b(真|假|空|此)\\b"
+					"match": "(?<![\\p{L}\\p{N}_?])(真|假|空|此)(?![\\p{L}\\p{N}_?])"
 				}
 			]
 		},
@@ -177,7 +177,11 @@
 				},
 				{
 					"name": "keyword.operator.comparison.xt",
-					"match": "(==|!=|<=|>=|<|>|等于)"
+					"match": "(==|!=|<=|>=|<|>)"
+				},
+					{
+					"name": "keyword.operator.comparison.xt",
+					"match": "(?<![\\p{L}\\p{N}_?])(等于)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "keyword.operator.arithmetic.xt",
@@ -185,11 +189,15 @@
 				},
 				{
 					"name": "keyword.operator.logical.xt",
-					"match": "(&|且|或|非|是|\\|)"
+					"match": "(&|\\|)"
+				},
+					{
+					"name": "keyword.operator.logical.xt",
+					"match": "(?<![\\p{L}\\p{N}_?])(且|或|非|是)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "keyword.operator.bitwise.xt",
-					"match": "(位与|位或|异或|左移|右移|取反)"
+					"match": "(?<![\\p{L}\\p{N}_?])(位与|位或|异或|左移|右移|取反)(?![\\p{L}\\p{N}_?])"
 				},
 				{
 					"name": "keyword.operator.other.xt",

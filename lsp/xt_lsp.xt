@@ -958,6 +958,14 @@
             处理定义(流, 消息)
         } 抑 方法 == "textDocument/documentSymbol" {
             处理文档符号(流, 消息)
+        } 抑 方法 == "workspace/didChangeWatchedFiles" {
+            // 玄铁.配置.toml 变更(客户端文件监视器上报):忽略警告等配置随之改动,
+            // 需对**全部已打开文档**重新诊断并发布。
+            // 此前只有 didOpen/didChange/didSave 触发诊断——"先开编辑器、后补配置"的用户
+            // 会一直看到旧诊断(W001 黄波浪线),实测踩到。
+            遍历 _u 于 文档表 {
+                若 文档表[_u] != "" { 发布诊断(流, _u, 文档表[_u], []) }
+            }
         } 抑 方法 == "textDocument/didOpen" {
             设 文档 = 消息["params"]["textDocument"]
             设 uri = 文档["uri"]
