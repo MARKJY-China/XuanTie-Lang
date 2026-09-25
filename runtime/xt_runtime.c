@@ -1604,11 +1604,47 @@ XTValue xt_array_new(size_t capacity) {
     return (XTValue)arr;
 }
 
+// 数组方法接收者校验(铁律:明确的编程错误必须报错退出,不静默、不崩溃)。
+// 旧实现只判"是真指针",于是把字符串/字典等**错类型对象**当 XTArray 用——
+// 按数组布局读 length/elements 即越界踩内存:实测 `s.找("Xuan")` 直接段错误
+// (而 `s.拼接(...)` 只报"对象不存在的方法",两条路径健壮性不一致)。
+// 非指针(整/布尔/空)仍沿用各函数原有宽容返回值,不在本次改动范围内。
+static const char* xt_type_label_zh(XTValue v) {
+    if (!XT_IS_REAL_PTR(v)) return "非指针标量(整/布尔/空)";
+    switch (((XTObject*)v)->type_id) {
+        case XT_TYPE_INT:      return "整";
+        case XT_TYPE_FLOAT:    return "小数";
+        case XT_TYPE_STRING:   return "字符串";
+        case XT_TYPE_BOOL:     return "布尔";
+        case XT_TYPE_ARRAY:    return "数组";
+        case XT_TYPE_DICT:     return "字典";
+        case XT_TYPE_INSTANCE: return "类实例";
+        case XT_TYPE_RESULT:   return "结果容器";
+        case XT_TYPE_FUNCTION: return "函数";
+        case XT_TYPE_BYTES:    return "字节";
+        case XT_TYPE_TASK:     return "任务";
+        case XT_TYPE_CHANNEL:  return "通道";
+        case XT_TYPE_SOCKET:   return "网络流";
+        default:               return "其它对象";
+    }
+}
+
+static void xt_require_array(XTValue v, const char* method) {
+    if (!XT_IS_REAL_PTR(v)) return;                       // 非指针:走各函数原有宽容路径
+    if (((XTObject*)v)->type_id == XT_TYPE_ARRAY) return; // 真数组:正常执行
+    fprintf(stderr, "运行时错误: 方法 '%s' 的接收者是 %s,不是数组\n",
+            method, xt_type_label_zh(v));
+    fprintf(stderr, "  提示: 数组方法(追加/删/插/找/含?/包含?/连接)只能用于数组;\n");
+    fprintf(stderr, "        字符串请用 截取/包含?/替换/分割;字典请用 含?/键/值/设/删。\n");
+    exit(1);
+}
+
 /**
  * @brief 数组追加元素，支持 2 倍扩容
  */
 void xt_array_append(XTValue arr_val, XTValue element) {
     if (!XT_IS_REAL_PTR(arr_val)) return;
+    xt_require_array(arr_val, "追加");
     XTArray* arr = (XTArray*)arr_val;
     
     if (arr->length >= arr->capacity) {
@@ -1641,6 +1677,7 @@ void xt_array_append(XTValue arr_val, XTValue element) {
  */
 XTValue xt_array_get(XTValue arr_val, XTValue index_val) {
     if (!XT_IS_REAL_PTR(arr_val)) return XT_NULL;
+    xt_require_array(arr_val, "取元素");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
     if (index < 0 || (size_t)index >= arr->length) return XT_NULL;
@@ -1663,6 +1700,7 @@ XTValue xt_array_pop(XTArray* arr) {
  */
 void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value) {
     if (!XT_IS_REAL_PTR(arr_val)) return;
+    xt_require_array(arr_val, "改元素");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
     if (index < 0 || (size_t)index >= arr->length) return;
@@ -1677,6 +1715,7 @@ void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value) {
  */
 void xt_array_remove(XTValue arr_val, XTValue index_val) {
     if (!XT_IS_REAL_PTR(arr_val)) return;
+    xt_require_array(arr_val, "删");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
     if (index < 0 || (size_t)index >= arr->length) return;
@@ -1692,6 +1731,7 @@ void xt_array_remove(XTValue arr_val, XTValue index_val) {
  */
 void xt_array_insert(XTValue arr_val, XTValue index_val, XTValue value) {
     if (!XT_IS_REAL_PTR(arr_val)) return;
+    xt_require_array(arr_val, "插");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
     if (index < 0 || (size_t)index > arr->length) return;
@@ -1709,6 +1749,7 @@ void xt_array_insert(XTValue arr_val, XTValue index_val, XTValue value) {
  */
 XTValue xt_array_contains(XTValue arr_val, XTValue element) {
     if (!XT_IS_REAL_PTR(arr_val)) return XT_FALSE;
+    xt_require_array(arr_val, "含?");
     XTArray* arr = (XTArray*)arr_val;
     for (size_t i = 0; i < arr->length; i++) {
         if (xt_compare((XTValue)arr->elements[i], element) == 0) return XT_TRUE;
@@ -1721,6 +1762,7 @@ XTValue xt_array_contains(XTValue arr_val, XTValue element) {
  */
 XTValue xt_array_find(XTValue arr_val, XTValue element) {
     if (!XT_IS_REAL_PTR(arr_val)) return XT_FROM_INT(-1);
+    xt_require_array(arr_val, "找");
     XTArray* arr = (XTArray*)arr_val;
     for (size_t i = 0; i < arr->length; i++) {
         if (xt_compare((XTValue)arr->elements[i], element) == 0) return XT_FROM_INT(i);
@@ -1733,6 +1775,7 @@ XTValue xt_array_find(XTValue arr_val, XTValue element) {
  */
 XTValue xt_array_slice(XTValue arr_val, XTValue start_val) {
     if (!XT_IS_REAL_PTR(arr_val)) return xt_array_new(0);
+    xt_require_array(arr_val, "截取");
     XTArray* arr = (XTArray*)arr_val;
     int64_t start = xt_to_int(start_val);
     if (start < 0) start = 0;
@@ -2615,8 +2658,18 @@ XTValue xt_bytes_new(size_t capacity) {
     return (XTValue)b;
 }
 
+static void xt_require_bytes(XTValue v, const char* method) {
+    if (XT_IS_INT(v)) return;                             // 整:走原有宽容路径
+    if (XT_IS_REAL_PTR(v) && ((XTObject*)v)->type_id == XT_TYPE_BYTES) return;
+    fprintf(stderr, "运行时错误: 方法 '%s' 的接收者是 %s,不是字节\n",
+            method, xt_type_label_zh(v));
+    fprintf(stderr, "  提示: 字节流方法只用于 字节 类型;数组请用 追加/删/插/找/含?/连接。\n");
+    exit(1);
+}
+
 void xt_bytes_append(XTValue bytes_val, uint8_t b_val) {
     if (XT_IS_INT(bytes_val)) return;
+    xt_require_bytes(bytes_val, "追加");
     XTBytes* b = (XTBytes*)bytes_val;
     if (b->length >= b->capacity) {
         size_t new_capacity = b->capacity * 2;
