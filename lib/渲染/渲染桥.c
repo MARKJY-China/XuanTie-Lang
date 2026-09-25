@@ -97,6 +97,8 @@ static uintptr_t xt_make_float(double v) {
 #include "nanosvgrast.h"
 
 // Win32 Unicode API 前向声明（避免包含 <windows.h> 与 raylib 冲突）
+// 平台隔离：仅 Windows 需要这些声明（macOS/Linux 用 raylib 原生 API）
+#ifdef _WIN32
 #ifndef WINAPI
 #define WINAPI __stdcall
 #endif
@@ -127,6 +129,7 @@ static void xt_apply_style(HWND hwnd) {
     SetWindowPos(hwnd, 0, 0, 0, 0, 0,
         XT_SWP_NOMOVE | XT_SWP_NOSIZE | XT_SWP_NOZORDER | XT_SWP_FRAMECHANGED);
 }
+#endif // _WIN32
 
 // 读取文件全部字节(宽字符路径,支持中文路径——raylib 的 LoadFontEx/LoadTexture
 // 内部走 ANSI fopen,中文路径必失败,实测 已安装 目录下字体加载 Failed to open)
@@ -199,6 +202,7 @@ uintptr_t XT_GetScreenHeight(void) {
 
 void XT_SetWindowTitle(uintptr_t title) {
     const char* utf8 = xt_get_cstr(title);
+#ifdef _WIN32
     // 通过 Win32 宽字符 API 正确设置 Unicode 窗口标题
     int wideLen = MultiByteToWideChar(65001 /*CP_UTF8*/, 0, utf8, -1, NULL, 0);
     if (wideLen > 0) {
@@ -210,6 +214,9 @@ void XT_SetWindowTitle(uintptr_t title) {
             free(wideTitle);
         }
     }
+#else
+    SetWindowTitle(utf8);
+#endif
 }
 
 // ============================================================
@@ -217,6 +224,7 @@ void XT_SetWindowTitle(uintptr_t title) {
 // ============================================================
 
 void XT_SetWindowResizable(uintptr_t on) {
+#ifdef _WIN32
     HWND hwnd = (HWND)GetWindowHandle();
     if (!hwnd) return;
     g_xt_resizable = XT_TO_INT(on) ? 1 : 0;
@@ -225,9 +233,14 @@ void XT_SetWindowResizable(uintptr_t on) {
     else style &= ~(XT_WS_THICKFRAME | XT_WS_MAXIMIZEBOX);
     SetWindowLongPtrW(hwnd, XT_GWL_STYLE, style);
     xt_apply_style(hwnd);
+#else
+    if (XT_TO_INT(on)) SetWindowState(FLAG_WINDOW_RESIZABLE);
+    else ClearWindowState(FLAG_WINDOW_RESIZABLE);
+#endif
 }
 
 void XT_SetWindowUndecorated(uintptr_t on) {
+#ifdef _WIN32
     HWND hwnd = (HWND)GetWindowHandle();
     if (!hwnd) return;
     intptr_t style = GetWindowLongPtrW(hwnd, XT_GWL_STYLE);
@@ -239,6 +252,10 @@ void XT_SetWindowUndecorated(uintptr_t on) {
     }
     SetWindowLongPtrW(hwnd, XT_GWL_STYLE, style);
     xt_apply_style(hwnd);
+#else
+    if (XT_TO_INT(on)) SetWindowState(FLAG_WINDOW_UNDECORATED);
+    else ClearWindowState(FLAG_WINDOW_UNDECORATED);
+#endif
 }
 
 void XT_SetWindowFullscreen(uintptr_t on) {
@@ -304,8 +321,10 @@ uintptr_t XT_WindowMinimize(void) {
    盖满全屏含任务栏(实测与用户预期"最大化≠全屏"冲突);改为 SPI_GETWORKAREA 取工作区
    矩形 + SetWindowPos。最大化前存原始矩形供还原;状态桥内跟踪(raylib IsWindowMaximized
    只认 SW_MAXIMIZE,手动 SetWindowPos 它不认) */
+#ifdef _WIN32
 static XT_RECT2 xt_maxsave = {0, 0, 0, 0};
 static int xt_maxed = 0;
+#endif
 
 uintptr_t XT_WindowMaximize(void) {
 #ifdef _WIN32
@@ -363,9 +382,11 @@ void XT_WindowClose(void) {
    的呈现路径会留下满屏残影);光标增量与按住判定走 Win32 原生(GetCursorPos 实时、
    GetAsyncKeyState),不读 raylib 输入态(其鼠标态比事件泵滞后一拍,初版拖拽起点
    跳变十余像素即此所致);首步 SetWindowPosition(原位) 恒等,零跳变 */
+#ifdef _WIN32
 typedef struct { long x, y; } XT_POINT;
 extern __declspec(dllimport) int WINAPI GetCursorPos(XT_POINT*);
 extern __declspec(dllimport) short WINAPI GetAsyncKeyState(int);
+#endif
 
 void XT_WindowDrag(void) {
 #ifdef _WIN32
@@ -1478,6 +1499,15 @@ void XT_FontGDI_Unload(uintptr_t handle) {
     f->used = 0;
 }
 #endif /* _WIN32 */
+
+#if !defined(_WIN32)
+/* 非 Windows 平台：GDI 系统字体光栅化暂不支持（macOS/Linux 走 raylib 字体路径）。
+   返回 0 = 创建失败；调用方（加载系统字体）拿到 0 后，绘制路径回退 raylib 默认字体/无操作。 */
+uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
+    (void)faceVal; (void)sizeVal;
+    return XT_FROM_INT(0);
+}
+#endif
 
 /* 截图导出 PNG(当前帧缓冲;渲染调试/自动化验收用——须在 结束绘图 之后调用) */
 void XT_SaveScreenshot(uintptr_t pathVal) {
