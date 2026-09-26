@@ -581,6 +581,10 @@
     // libraylib.a 查找顺序:① 渲染桥同目录(铁铺包内/发行包内捆绑) ② C:/raylib 硬编码(向后兼容)
     设 _raylib候选 = []
     若 渲染桥C != "" {
+        // 平台化:darwin/linux 优先平台专属库(Windows MinGW 版 .a 无法被 darwin ld 链接);
+        // 找不到平台库时报明确错误(见下方 raylibA == "" 分支),不再静默带错库进链接
+        若 平台 == "darwin" { _raylib候选.追加(渲染桥C.替换("渲染桥.c", "libraylib.darwin-" & 架构 & ".a")) }
+        若 平台 == "linux" { _raylib候选.追加(渲染桥C.替换("渲染桥.c", "libraylib.linux-" & 架构 & ".a")) }
         _raylib候选.追加(渲染桥C.替换("渲染桥.c", "libraylib.a"))
         _raylib候选.追加("C:/raylib/raylib/src\\libraylib.a")
         _raylib候选.追加("C:/raylib/w64devkit/lib\\libraylib.a")
@@ -632,13 +636,17 @@
         } 否 {
         设 时间戳2 = 指纹of(渲染桥C)
         渲染桥Obj = 缓存目录 & _路径分隔 & "xt_" & 时间戳2 & "_bridge.o"
-        设 渲染包含目录 = raylibA.替换("\\libraylib.a", "").替换("/libraylib.a", "")
+        设 渲染包含目录 = 渲染桥C.替换("\\渲染桥.c", "").替换("/渲染桥.c", "")
         设 桥clang指令 = "\"" & clang程序 & "\" -g -target " & 目标三元组 & " " & 优化等级 & " -c \"" & 渲染桥C & "\" -o \"" & 渲染桥Obj & "\" -I \"" & 渲染包含目录 & "\""
         若 输出详细 { 示("渲染桥 clang: " & 桥clang指令) }
         设 桥clang结果 = 执(桥clang指令)
         若 非 桥clang结果.成功 或 非 文件.存在?(渲染桥Obj) {
             示("渲染桥编译失败: " & 桥clang结果.错误)
             若 桥clang结果.成功 { 示("错误：未找到渲染桥对象文件") }
+            若 保留中间产物 {
+                复制文件("\"" & ll路径 & "\"", "\"自举输出.ll\"", 平台)
+                复制文件("\"" & o路径 & "\"", "\"自举输出.o\"", 平台)
+            }
             删文件([ll路径, o路径], 平台)
             xt_arena_destroy(池)
             终 1
@@ -690,7 +698,15 @@
     
     设 gcc结果 = 执(链接指令)
     若 非 gcc结果.成功 {
-        示("MinGW 链接失败 (请确保已安装 GCC/MinGW): " & gcc结果.错误)
+        若 平台 == "windows" {
+            示("MinGW 链接失败 (请确保已安装 GCC/MinGW): " & gcc结果.错误)
+        } 否 {
+            示("链接失败 (请确保已安装 clang/gcc): " & gcc结果.错误)
+        }
+        若 保留中间产物 {
+            复制文件("\"" & ll路径 & "\"", "\"自举输出.ll\"", 平台)
+            复制文件("\"" & o路径 & "\"", "\"自举输出.o\"", 平台)
+        }
         删文件([ll路径, o路径], 平台)
         xt_arena_destroy(池)
         终 1
