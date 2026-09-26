@@ -3,14 +3,19 @@
 
 示("=== Test 57: 综合运行时安全 ===")
 
+// 平台检测:Windows 有 cmd, POSIX 无——执("cmd /c echo ok") 成败即平台判定
+设 是Windows = 执("cmd /c echo ok").成功
+
 // C6: 执() 命令——测试长命令字符串不会导致sprintf溢出
-// 构造一个中等长度的命令（不是超长，但足够覆盖正常使用）
-设 短命令 = "cmd /c echo hello"
+// 构造一个中等长度的命令（不是超长，但足够覆盖正常使用）——平台无关命令
+设 短命令 = ""
+若 是Windows { 短命令 = "cmd /c echo hello" } 否 { 短命令 = "sh -c \"echo hello\"" }
 设 短结果 = 执(短命令)
 若 短结果.成功 { 示("PASS: 短命令执行成功") } 否 { 示("FAIL: 短命令执行失败") }
 
-// 嵌套命令
-设 嵌套命令 = "cmd /c dir /b Test\\50_JSON特殊字符.xt 2>nul"
+// 嵌套命令（平台无关:POSIX 用 ls;只验证未崩溃）
+设 嵌套命令 = ""
+若 是Windows { 嵌套命令 = "cmd /c dir /b Test\\50_JSON特殊字符.xt 2>nul" } 否 { 嵌套命令 = "sh -c \"ls Test/50_JSON特殊字符.xt 2>/dev/null\"" }
 设 嵌套结果 = 执(嵌套命令)
 示("PASS: 嵌套命令未崩溃")
 
@@ -63,7 +68,11 @@
 }
 示("PASS: 混合类型遍历未崩溃")
 
-// 清理
-执("cmd /c del /q Test\\_test_big.txt 2>nul")
+// 清理（平台无关）
+若 是Windows {
+    执("cmd /c del /q Test\\_test_big.txt 2>nul")
+} 否 {
+    执("sh -c \"rm -f Test/_test_big.txt\"")
+}
 
 示("=== Test 57 完成 ===")

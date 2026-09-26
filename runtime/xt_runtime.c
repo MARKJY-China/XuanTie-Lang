@@ -32,6 +32,7 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 #include <fcntl.h>
 #else
 #include <unistd.h>  // readlink / usleep（非 Windows 必需）
+#include <sys/wait.h>  // WIFEXITED/WEXITSTATUS（POSIX 子进程退出码归一化,issue #30）
 #endif
 
 #if defined(__APPLE__)
@@ -2623,7 +2624,7 @@ XTValue xt_file_delete(XTValue path_val) {
 #ifdef _WIN32
     snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, 系统错误码 %d)", path->data, attempts, last_err);
 #else
-    snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, errno %d)", path->data, attempts, last_err);
+    snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, 系统错误码 %d)", path->data, attempts, last_err);
 #endif
     return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(msg));
 }
@@ -3283,9 +3284,14 @@ XTValue xt_execute(XTValue cmd_val) {
     }
     int status = pclose(pipe);
     if (status != 0) {
+        // POSIX wait 状态归一化: exit(n) 编码为 n<<8;被信号终止为 128+信号号
+        // ——与 Windows 基线一致报"退出码: N",否则 darwin 报 256 而非 1(issue #30)
+        int code = status;
+        if (WIFEXITED(status)) { code = WEXITSTATUS(status); }
+        else if (WIFSIGNALED(status)) { code = 128 + WTERMSIG(status); }
+        char err_msg[16384];
+        snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", code, res->data);
         xt_release((XTValue)res);
-        char err_msg[128];
-        sprintf(err_msg, "执行失败，状态码: %d", status);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));
     }
     return (XTValue)xt_result_new(1, (void*)res, NULL);
