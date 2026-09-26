@@ -1,4 +1,4 @@
-# 玄铁 VSCode 插件打包脚本(可复现版)
+﻿# 玄铁 VSCode 插件打包脚本(可复现版)
 #   - 目录从脚本位置推导(旧版写死了作者机器上的绝对路径,别处必跑不了)
 #   - 版本取自 package.json(旧版 manifest 里硬编码 0.19.2,与 package.json 长期不一致)
 #   - 打包内容与实际发布的 vsix 结构对齐:extension/ 下含 server/xt_lsp.exe 与 snippets/(旧版漏拷)
@@ -11,6 +11,30 @@ $pkg = Get-Content -LiteralPath "$extDir\package.json" -Raw -Encoding UTF8 | Con
 $version = $pkg.version
 $outDir = "$extDir\out"
 $vsixDir = "$outDir\extension"
+
+# ── 打包前**强制重建** LSP 二进制 ──
+# 教训(实测):server/xt_lsp.exe 是入库的预编译产物,而 lsp/xt_lsp.xt 直接 `引` 编译器的
+# 词法/语法分析 ⇒ 不重建就会把**旧解析器**打进 vsix,诊断长期落后于语言:
+# 09-25 那份 LSP 把"关键字名变量"与保留字新规全报成旧错误,用户装到的其实是两天前的诊断行为。
+$root = (Resolve-Path "$extDir\..\..").Path
+$xtc = $null
+foreach ($c in @("$root\build\xtc_s4.exe", "$root\build\xtc_s3.exe", "$root\build\xtc_s2.exe", "$root\build\xtc_s1.exe")) {
+    if (Test-Path $c) { $xtc = $c; break }
+}
+if (-not $xtc) {
+    $onPath = Get-Command xtc.exe -ErrorAction SilentlyContinue
+    if ($onPath) { $xtc = $onPath.Source }
+}
+if (-not $xtc) { throw "未找到 xtc 编译器(build\xtc_s4.exe 或 PATH);LSP 必须先重建再打包,拒绝把旧二进制打进 vsix" }
+$lspSrc = "$root\lsp\xt_lsp.xt"
+$lspDst = "$extDir\server\xt_lsp.exe"
+if (-not (Test-Path $lspSrc)) { throw "未找到 lsp\xt_lsp.xt;请确认扩展目录在仓库内" }
+Write-Output "重建 LSP: $xtc 铁 $lspSrc -sc $lspDst"
+# 中文参数直传 PowerShell 可能按 ANSI 码页受损,先把控制台切到 UTF-8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+chcp 65001 | Out-Null
+& $xtc 铁 $lspSrc -sc $lspDst
+if (-not (Test-Path $lspDst)) { throw "LSP 重建失败(未产出 server\xt_lsp.exe)" }
 
 if (Test-Path $outDir) { Remove-Item $outDir -Recurse -Force }
 New-Item -ItemType Directory -Path $vsixDir -Force | Out-Null
