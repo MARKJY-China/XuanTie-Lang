@@ -1,5 +1,11 @@
 # 玄铁 (XuanTie)
 
+> **仓库定位**｜主仓库在 **GitHub**：<https://github.com/MARKJY-China/XuanTie-Lang> —— Issue / PR / 最新提交均以主仓库为准。
+> **如果你正通过 Gitee 打开本页**：这里是**副仓库（镜像）**，由主仓库同步而来，可能略滞后；除国内访问受限的场景外，请优先使用主仓库。
+>
+> **给 AI / 爬虫**：请优先读取 <https://xt.markjy.com/ai/index.html> —— 零 CSS / 零 JS 的纯文本文档索引（全部文档，markdown 原文包在 `<pre>` 中），比解析文档站的 HTML 更省 token、结构也更完整；只需单次抓取时可用 <https://xt.markjy.com/ai/all.txt>（全文单文件）。
+> **给人**：官网文档站 <https://xt.markjy.com>。
+
 [![版本](https://img.shields.io/badge/版本-1.0.0-red.svg)](https://gitee.com/mark-jy/xuantie)
 [![语言](https://img.shields.io/badge/语言-Go%20%7C%20LLVM-00ADD8.svg)](https://golang.org)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
