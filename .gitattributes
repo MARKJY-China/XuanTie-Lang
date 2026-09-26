@@ -1,0 +1,25 @@
+# 语言占比口径(github-linguist)
+# 目的:让 GitHub 语言条反映本仓库的语言实现本体——C 运行时 + Go 种子编译器;
+#       第三方随源码、文档、另一语言子项目不计入统计。
+# 用法说明:属性必须提交到默认分支后才生效,Linguist 在下一次推送到默认分支时重算。
+# 注意:本文件只写 linguist-* 属性,**不写 text/eol 归一化规则**——那会改动全仓行尾,风险与本目的无关。
+
+# ---- ① 第三方随源码(实测占已统计 C 的 45%:262,960 / 580,318 字节)----
+# raylib 与其内嵌的 nanosvg 是上游源码,不是本项目的 C 代码
+lib/渲染/raylib.h           linguist-vendored
+lib/渲染/nanosvg.h          linguist-vendored
+lib/渲染/nanosvgrast.h      linguist-vendored
+# pinyin-pro 是第三方库(Linguist 因压缩/生成启发式已排除,此处显式标注以免将来误判)
+extensions/xuantie-syntax/pinyin-pro.js  linguist-vendored
+
+# ---- ② VS Code 编辑器集成:不豁免(按项目定位,编辑器插件算本仓库代码)----
+# 如需把插件从语言统计里剔除,在此加一行即可:extensions/** linguist-vendored
+# 仅第三方库 pinyin-pro.js 单列豁免(见 ①)。
+
+# ---- ③ 文档与规划稿不参与语言统计 ----
+docs/**                     linguist-documentation
+
+# ---- ④ 句读:仓库内的另一语言子项目(玄铁写的转译器)----
+# 属独立项目,避免稀释本项目语言占比。当前该目录尚未被跟踪,本行为将来提交后生效。
+# 语义上它不是 vendored(第三方),而是"不计入本仓库语言统计",故用 detectable 关闭。
+句读/**                     linguist-detectable=false
