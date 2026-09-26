@@ -23,3 +23,5 @@ docs/**                     linguist-documentation
 # 属独立项目,避免稀释本项目语言占比。当前该目录尚未被跟踪,本行为将来提交后生效。
 # 语义上它不是 vendored(第三方),而是"不计入本仓库语言统计",故用 detectable 关闭。
 句读/**                     linguist-detectable=false
+
+extensions/** linguist-vendored
