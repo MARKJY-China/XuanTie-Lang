@@ -451,6 +451,9 @@ void xt_init() {
 #endif
     XT_CHAN_MUTEX_INIT(&g_weak_mutex);  // 初始化弱引用全局锁
     g_main_thread_id = XT_THREAD_SELF(); // 记录主线程,供通道阻塞时的调度器泵送判定
+#if !defined(_WIN32)
+    g_main_thread_id_set = 1;            // POSIX 主线程标志:SCHED_IS_MAIN_THREAD 依赖(修复 #31——此前恒假,drain 不生效)
+#endif
     xt_threadpool_init(0);              // 初始化线程池（0=自动检测CPU核数）
     xt_net_init();                      // 初始化网络子系统
     xt_scheduler_init();                // 初始化用户态调度器
