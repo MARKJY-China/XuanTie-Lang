@@ -32,6 +32,7 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 #include <fcntl.h>
 #else
 #include <unistd.h>  // readlink / usleep（非 Windows 必需）
+#include <sys/wait.h>  // WIFEXITED/WEXITSTATUS（POSIX 子进程退出码归一化,issue #30）
 #endif
 
 #if defined(__APPLE__)
@@ -451,6 +452,9 @@ void xt_init() {
 #endif
     XT_CHAN_MUTEX_INIT(&g_weak_mutex);  // 初始化弱引用全局锁
     g_main_thread_id = XT_THREAD_SELF(); // 记录主线程,供通道阻塞时的调度器泵送判定
+#if !defined(_WIN32)
+    g_main_thread_id_set = 1;            // POSIX 主线程标志:SCHED_IS_MAIN_THREAD 依赖(修复 #31——此前恒假,drain 不生效)
+#endif
     xt_threadpool_init(0);              // 初始化线程池（0=自动检测CPU核数）
     xt_net_init();                      // 初始化网络子系统
     xt_scheduler_init();                // 初始化用户态调度器
@@ -2623,7 +2627,7 @@ XTValue xt_file_delete(XTValue path_val) {
 #ifdef _WIN32
     snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, 系统错误码 %d)", path->data, attempts, last_err);
 #else
-    snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, errno %d)", path->data, attempts, last_err);
+    snprintf(msg, sizeof(msg), "删除失败: %s (尝试 %d 次, 系统错误码 %d)", path->data, attempts, last_err);
 #endif
     return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(msg));
 }
@@ -3283,9 +3287,14 @@ XTValue xt_execute(XTValue cmd_val) {
     }
     int status = pclose(pipe);
     if (status != 0) {
+        // POSIX wait 状态归一化: exit(n) 编码为 n<<8;被信号终止为 128+信号号
+        // ——与 Windows 基线一致报"退出码: N",否则 darwin 报 256 而非 1(issue #30)
+        int code = status;
+        if (WIFEXITED(status)) { code = WEXITSTATUS(status); }
+        else if (WIFSIGNALED(status)) { code = 128 + WTERMSIG(status); }
+        char err_msg[16384];
+        snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", code, res->data);
         xt_release((XTValue)res);
-        char err_msg[128];
-        sprintf(err_msg, "执行失败，状态码: %d", status);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));
     }
     return (XTValue)xt_result_new(1, (void*)res, NULL);
