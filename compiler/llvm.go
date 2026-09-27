@@ -240,7 +240,11 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("%XTDict = type { i32, i32, i32, i8***, i64, i64 }\n")
 	res.WriteString("%XTFunction = type { i32, i32, i32, i8*, i64 }\n")
 	res.WriteString("%XTInstance = type { i32, i32, i32, i8***, i64, i64, i8* }\n")
-	res.WriteString("%XTResult = type { i32, i32, i32, i32, i32, i64, i64 }\n")
+	// XTResult 的 value/error 在 C 侧是 void*(见 runtime/xt_runtime.h),故须声明为 i8*。
+	// 原写 i64:LLVM 17+ 已移除强类型指针(全部降级为 ptr)故不报错,但 LLVM 15/16 会以
+	// "'%x' defined with type 'i64*' but expected 'i8**'" 拒绝整份 IR(macos-14 的
+	// Apple clang 15 实测)。i64 与 i8* 同尺寸同对齐,改动不影响结构体布局与 ABI。
+	res.WriteString("%XTResult = type { i32, i32, i32, i32, i32, i8*, i8* }\n")
 	res.WriteString("declare %XTArray* @xt_dict_keys(%XTDict*)\n")
 	res.WriteString("declare %XTArray* @xt_dict_values(%XTDict*)\n")
 	res.WriteString("declare void @xt_init()\n")
