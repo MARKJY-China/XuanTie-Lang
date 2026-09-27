@@ -4021,3 +4021,157 @@ XTValue xt_bit_shl(XTValue a, XTValue b) {
 XTValue xt_bit_shr(XTValue a, XTValue b) {
     return XT_FROM_INT(xt_to_int(a) >> xt_to_int(b));
 }
+
+/**
+ * @brief 以「继承本进程控制台」的方式运行可执行文件并等待结束(供编译器 `跑`/`pao` 指令用)。
+ *
+ * 与 执 的区别:执 走管道捕获 + CREATE_NO_WINDOW,交互式程序(输/REPL/TUI)会被废掉;
+ * 本函数不建管道、不加隐藏标志,子进程的 stdin/stdout/stderr 与父进程同一份,退出码原样返回。
+ * 语义对齐 `go run` / `cargo run`:编译产物落在缓存目录、跑完即清理、参数与退出码透传。
+ *
+ * @param exe_val 可执行文件路径(UTF-8 字符串)
+ * @param args_val 传给程序的参数数组(不含程序名;可为空数组)
+ * @return 子进程退出码(启动失败返回 -1)
+ */
+#ifdef _WIN32
+static void _xt_append_quoted(wchar_t* out, size_t cap, size_t* pos, const wchar_t* s) {
+    // MSVCRT 引号规则:含空白/引号则整体加引号;引号前与结尾的连续反斜杠需翻倍
+    size_t n = wcslen(s);
+    int need = 0;
+    for (size_t i = 0; i < n; i++) { if (s[i] == L' ' || s[i] == L'\t' || s[i] == L'"') { need = 1; break; } }
+    if (!need) {
+        if (*pos + n + 1 < cap) { wcsncpy(out + *pos, s, n); *pos += n; out[*pos] = 0; }
+        return;
+    }
+    if (*pos + 1 < cap) { out[(*pos)++] = L'"'; out[*pos] = 0; }
+    size_t bs = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (s[i] == L'\\') { bs++; continue; }
+        if (s[i] == L'"') {
+            for (size_t k = 0; k < bs * 2 + 1; k++) { if (*pos + 2 < cap) { out[(*pos)++] = L'\\'; out[*pos] = 0; } }
+            bs = 0;
+            if (*pos + 2 < cap) { out[(*pos)++] = L'"'; out[*pos] = 0; }
+            continue;
+        }
+        for (size_t k = 0; k < bs; k++) { if (*pos + 2 < cap) { out[(*pos)++] = L'\\'; out[*pos] = 0; } }
+        bs = 0;
+        if (*pos + 2 < cap) { out[(*pos)++] = s[i]; out[*pos] = 0; }
+    }
+    for (size_t k = 0; k < bs * 2; k++) { if (*pos + 2 < cap) { out[(*pos)++] = L'\\'; out[*pos] = 0; } }
+    if (*pos + 1 < cap) { out[(*pos)++] = L'"'; out[*pos] = 0; }
+}
+
+static int _xt_run_inherit_code(XTValue exe_val, XTValue args_val) {
+    if (!XT_IS_REAL_PTR(exe_val)) return -1;
+    XTString* exe = (XTString*)exe_val;
+    if (!exe->data || exe->length == 0) return -1;
+
+    // 拼命令行:先放程序名(必要时加引号),再逐个追加参数
+    size_t cap = 4096;
+    wchar_t* cmdline = (wchar_t*)malloc(cap * sizeof(wchar_t));
+    if (!cmdline) return -1;
+    cmdline[0] = 0;
+    size_t pos = 0;
+    int wn = MultiByteToWideChar(CP_UTF8, 0, exe->data, -1, NULL, 0);
+    wchar_t* wexe = (wchar_t*)malloc((size_t)wn * sizeof(wchar_t));
+    if (!wexe) { free(cmdline); return -1; }
+    MultiByteToWideChar(CP_UTF8, 0, exe->data, -1, wexe, wn);
+    _xt_append_quoted(cmdline, cap, &pos, wexe);
+    free(wexe);
+
+    if (args_val != XT_NULL && XT_IS_REAL_PTR(args_val) && ((XTObject*)args_val)->type_id == XT_TYPE_ARRAY) {
+        XTArray* arr = (XTArray*)args_val;
+        for (size_t i = 0; i < arr->length; i++) {
+            XTValue a = (XTValue)arr->elements[i];
+            if (!XT_IS_REAL_PTR(a)) continue;
+            XTString* as = (XTString*)a;
+            int n2 = MultiByteToWideChar(CP_UTF8, 0, as->data, -1, NULL, 0);
+            wchar_t* w = (wchar_t*)malloc((size_t)n2 * sizeof(wchar_t));
+            if (!w) continue;
+            MultiByteToWideChar(CP_UTF8, 0, as->data, -1, w, n2);
+            if (pos + 1 < cap) { cmdline[pos++] = L' '; cmdline[pos] = 0; }
+            _xt_append_quoted(cmdline, cap, &pos, w);
+            free(w);
+        }
+    }
+
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    ZeroMemory(&pi, sizeof(pi));
+    // bInheritHandles=TRUE 且不给 STARTF_USESTDHANDLES:子进程直接继承本进程的控制台句柄;
+    // 不加 CREATE_NO_WINDOW —— 交互式程序要能正常读写终端
+    BOOL created = CreateProcessW(NULL, cmdline, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
+    free(cmdline);
+    if (!created) return -1;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 0;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return (int)code;
+}
+#else
+#include <spawn.h>
+#include <sys/wait.h>
+extern char** environ;
+static int _xt_run_inherit_code(XTValue exe_val, XTValue args_val) {
+    if (!XT_IS_REAL_PTR(exe_val)) return -1;
+    XTString* exe = (XTString*)exe_val;
+    if (!exe->data || exe->length == 0) return -1;
+
+    size_t argc = 1;
+    if (args_val != XT_NULL && XT_IS_REAL_PTR(args_val) && ((XTObject*)args_val)->type_id == XT_TYPE_ARRAY) {
+        argc += ((XTArray*)args_val)->length;
+    }
+    char** argv = (char**)calloc(argc + 1, sizeof(char*));
+    if (!argv) return -1;
+    argv[0] = exe->data;
+    size_t k = 1;
+    if (argc > 1) {
+        XTArray* arr = (XTArray*)args_val;
+        for (size_t i = 0; i < arr->length; i++) {
+            XTValue a = (XTValue)arr->elements[i];
+            if (!XT_IS_REAL_PTR(a)) continue;
+            argv[k++] = ((XTString*)a)->data;
+        }
+    }
+    argv[k] = NULL;
+    // posix_spawn:多线程进程里比 fork 安全(编译器自身可能已起线程)
+    pid_t pid = 0;
+    int rc = posix_spawn(&pid, exe->data, NULL, NULL, argv, environ);
+    free(argv);
+    if (rc != 0) return -1;
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    if (WIFEXITED(status)) return (int)WEXITSTATUS(status);
+    return -1;
+}
+#endif
+
+/**
+ * @brief 运行程序 → 清理临时产物 → **以子进程退出码结束本进程**(编译器 `跑`/`pao` 用)。
+ *
+ * 为什么不把退出码带回 XuanTie 层再 `终`:解析层目前只接受数字字面量(`终 3` 可以、
+ * `终 码` 会被静默忽略退成 0——见 语法分析.xt 的 解析终止语句),故整条"运行+收场"
+ * 放在运行时内一次做完,语义与 go run 一致:退出码透传、临时产物清理、不打印额外噪声。
+ *
+ * @param cleanup_val 需要清理的路径(空串 = 不清理;-sc 指定的用户产物传空串)
+ */
+void xt_run_inherit_exit(XTValue exe_val, XTValue args_val, XTValue cleanup_val) {
+    int code = _xt_run_inherit_code(exe_val, args_val);
+    if (cleanup_val != XT_NULL && XT_IS_REAL_PTR(cleanup_val)) {
+        XTString* p = (XTString*)cleanup_val;
+        if (p->data && p->length > 0) { (void)xt_file_delete(cleanup_val); }   // 内部自带重试
+    }
+    if (code < 0) {
+        if (XT_IS_REAL_PTR(exe_val)) {
+            fprintf(stderr, "错误: 无法运行编译产物: %s\n", ((XTString*)exe_val)->data);
+        }
+        fflush(NULL);
+        exit(1);
+    }
+    fflush(NULL);
+    exit(code);
+}

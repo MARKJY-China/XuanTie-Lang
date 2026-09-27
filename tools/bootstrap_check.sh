@@ -118,4 +118,19 @@ rm -f "$SMOKE_EXE"
     || { dump_log "$SCRATCH/smoke_run.log"; fail "s4 产物运行失败(退出码非零)"; }
 grep -q "01_基础测试 结束" "$SCRATCH/smoke_run.log" || { dump_log "$SCRATCH/smoke_run.log"; fail "冒烟输出不完整(未见结束标记)"; }
 
+echo "[自举门禁] 阶段六:pao/跑 冒烟(编译后立即运行;校验输出、噪声与退出码透传)"
+PAO_SRC="$SCRATCH/pao_probe.xt"
+PAO_LOG="$SCRATCH/pao.log"
+printf '示("pao 冒烟通过")
+' > "$PAO_SRC"
+( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" pao "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1 || { dump_log "$PAO_LOG"; fail "pao 运行失败"; }
+grep -q "pao 冒烟通过" "$PAO_LOG" || { dump_log "$PAO_LOG"; fail "pao 输出异常(未见程序输出)"; }
+if grep -q "原生编译完成" "$PAO_LOG"; then dump_log "$PAO_LOG"; fail "pao 不该打印编译完成噪声(对齐 go run)"; fi
+printf '终 3
+' > "$PAO_SRC"
+( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" 跑 "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1
+pao_rc=$?
+[ "$pao_rc" = "3" ] || { dump_log "$PAO_LOG"; fail "pao 退出码未透传(得到 $pao_rc,期望 3)"; }
+[ -f "$SCRATCH/跑_pao_probe.exe" ] && { fail "pao 未清理临时产物"; }
+
 echo "[自举门禁] 通过:s1..s4 建成,固定点在 s3→s4,s4 冒烟正常"
