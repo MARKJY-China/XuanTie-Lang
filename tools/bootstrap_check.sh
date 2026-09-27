@@ -61,6 +61,18 @@ DDC_SOFT=""
 [ "$(uname -s)" = "Darwin" ] && DDC_SOFT=1
 [ "${XT_DDC_SOFT:-}" = "1" ] && DDC_SOFT=1
 
+# 产物名探测:Windows 上编译器无条件给输出名补 .exe;POSIX 上输出名=源名去 .xt(不带后缀)。
+# 凡"名字由源文件基名决定"的产物(GSC 的 probe / xentry)都不能写死后缀——
+# macos-14 首跑实证:GSC 实际产出 probe(无 .exe),脚本却按 probe.exe 判定,误报"未产出",
+# 而日志里"原生编译完成: probe"证明编译链接本身是成功的。
+# 故按"先找带 .exe、再找无后缀"探测实际落盘名,不依赖平台判断。
+resolve_exe() {
+    if [ -f "$1.exe" ]; then printf '%s' "$1.exe"
+    elif [ -f "$1" ]; then printf '%s' "$1"
+    else printf '%s' ""
+    fi
+}
+
 [ -x "$GSC" ] || [ -f "$GSC" ] || fail "未找到种子编译器 $GSC(先执行: go build -o xt_gsc.exe .)"
 [ -f "$SRC" ] || fail "未找到编译器源码 $SRC"
 mkdir -p "$BUILD" "$SCRATCH"
@@ -75,13 +87,13 @@ echo "[自举门禁] 环境: 平台=$(uname -s)  DDC=$( [ "$DDC_SOFT" = "1" ] &&
 
 echo "[自举门禁] 阶段零:工具链自检(GSC 编译并运行最小程序,隔离"工具链坏"与"大源码编译失败")"
 PROBE_SRC="$SCRATCH/probe.xt"
-PROBE_EXE="$SCRATCH/probe.exe"
 printf '示("工具链自检通过")\n' > "$PROBE_SRC"
-rm -f "$PROBE_EXE"
+rm -f "$SCRATCH/probe.exe" "$SCRATCH/probe"
 ( cd "$SCRATCH" && "$GSC" 铁 "$(W "$PROBE_SRC")" ) > "$SCRATCH/probe.log" 2>&1 \
     || { dump_log "$SCRATCH/probe.log"; fail "工具链自检:GSC 编译最小程序失败(clang/gcc 链路问题)"; }
-[ -f "$PROBE_EXE" ] || { dump_log "$SCRATCH/probe.log"; fail "工具链自检:GSC 未产出 probe.exe"; }
-"$PROBE_EXE" > "$SCRATCH/probe_run.log" 2>&1 || { dump_log "$SCRATCH/probe_run.log"; fail "工具链自检:probe.exe 运行失败"; }
+PROBE_BIN=$(resolve_exe "$SCRATCH/probe")
+[ -n "$PROBE_BIN" ] || { dump_log "$SCRATCH/probe.log"; fail "工具链自检:GSC 未产出 probe 可执行文件(probe.exe 与 probe 均不存在)"; }
+"$PROBE_BIN" > "$SCRATCH/probe_run.log" 2>&1 || { dump_log "$SCRATCH/probe_run.log"; fail "工具链自检:probe 运行失败"; }
 grep -q "工具链自检通过" "$SCRATCH/probe_run.log" || { dump_log "$SCRATCH/probe_run.log"; fail "工具链自检:probe 输出异常"; }
 
 echo "[自举门禁] 阶段一:GSC → s1(在独立目录内构建,避免产出仓库根的 玄铁.exe)"
@@ -93,10 +105,11 @@ mkdir -p "$SCRATCH/src"
 cp -f "$ROOT"/xuantie_compiler/*.xt "$SCRATCH/src/"
 ENTRY="$SCRATCH/src/xentry.xt"
 cp -f "$ROOT/xuantie_compiler/玄铁.xt" "$ENTRY"
-rm -f "$SCRATCH/src/xentry.exe" "$SCRATCH/xentry.exe"
+rm -f "$SCRATCH/src/xentry.exe" "$SCRATCH/xentry.exe" "$SCRATCH/src/xentry" "$SCRATCH/xentry"
 ( cd "$SCRATCH" && "$GSC" 铁 "$(W "$ENTRY")" ) > "$SCRATCH/s1.log" 2>&1 || { dump_log "$SCRATCH/s1.log"; fail "GSC 编译 s1 失败"; }
-[ -f "$SCRATCH/xentry.exe" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 xentry.exe(见上方日志)"; }
-mv -f "$SCRATCH/xentry.exe" "$BUILD/xtc_s1.exe"
+S1_BIN=$(resolve_exe "$SCRATCH/xentry")
+[ -n "$S1_BIN" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 xentry 可执行文件(探测 xentry.exe 与 xentry 均不存在)"; }
+mv -f "$S1_BIN" "$BUILD/xtc_s1.exe"
 
 echo "[自举门禁] 阶段二:逐级自举 s1 → s2 → s3 → s4"
 for pair in "1 2" "2 3" "3 4"; do
@@ -175,7 +188,22 @@ printf '终 3
 ( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" 跑 "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1
 pao_rc=$?
 [ "$pao_rc" = "3" ] || { dump_log "$PAO_LOG"; fail "pao 退出码未透传(得到 $pao_rc,期望 3)"; }
-# 产物名是 pao_<源基名>(纯 ASCII;中文会被 MinGW 打成 ? 致链接失败,已修)
-if ls "$SCRATCH"/pao_*.exe >/dev/null 2>&1; then fail "pao 未清理临时产物"; fi
+# pao/跑 的临时产物落在编译器缓存目录(Windows: %TEMP%\XuanTie\Cache;POSIX: $TMPDIR|/tmp/XuanTie/Cache),
+# 名字是 pao_<源基名>(Windows 上 gcc 驱动会给无后缀输出补 .exe),跑完由运行时清理。
+# 注意两个坑:旧写法核对 $SCRATCH/pao_*.exe —— 产物根本不在 CWD,那是个永远为空的空检查;
+# 而只写 $SCRATCH/pao_* 又会匹配到本阶段自己写的源文件 pao_probe.xt(假阳性,已实测触发过)。
+# 故改为核对缓存目录 + 精确产物名前缀(源基名是 ASCII,安全名=基名)。
+PAO_BASE="$(basename "$PAO_SRC" .xt)"
+case "$(uname -s)" in
+    Darwin|Linux) PAO_CACHE="${TMPDIR:-/tmp}/XuanTie/Cache" ;;
+    *)            PAO_CACHE="$(cygpath -u "${TEMP:-${TMP:-}}" 2>/dev/null || printf '%s' "${TEMP:-${TMP:-}}")/XuanTie/Cache" ;;
+esac
+# 逐名判定,不用 `ls 甲 乙`:ls 只要有任一参数不存在就返回非零,写成 `ls x x.exe` 会让"只有无后缀
+# 残留"这种情形永远漏检(实测:bare 存在 + .exe 不存在 → ls 退出码非零 → 判成"无残留")。
+PAO_PROD="$PAO_CACHE/pao_$PAO_BASE"
+if [ -f "$PAO_PROD" ] || [ -f "$PAO_PROD.exe" ]; then
+    fail "pao 未清理临时产物: $PAO_PROD*"
+fi
+echo "[自举门禁] 缓存目录核对: $PAO_PROD* 无残留"
 
 echo "[自举门禁] 通过:s1..s4 建成,固定点在 s3→s4,s4 冒烟正常"
