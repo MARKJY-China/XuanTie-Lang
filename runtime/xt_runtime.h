@@ -475,6 +475,12 @@ XTValue xt_http_request(XTValue url_val);
 XTValue xt_listen(XTValue port_val, XTValue callback_val);
 XTValue xt_connect(XTValue addr_val);
 XTValue xt_execute(XTValue cmd_val);
+
+/**
+ * @brief 继承本进程控制台运行可执行文件并等待结束(编译器 `跑`/`pao` 指令用)
+ *        与 执 的区别:不建管道、不隐藏窗口,子进程与本进程共用 stdin/stdout/stderr,可交互;返回退出码。
+ */
+void xt_run_inherit_exit(XTValue exe_val, XTValue args_val, XTValue cleanup_val);
 XTValue xt_input(XTValue prompt_val);
 XTValue xt_get_temp_path();
 
