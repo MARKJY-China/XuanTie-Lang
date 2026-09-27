@@ -3,14 +3,14 @@
 # 玄铁一键发布:组包 → 安装器 → 压缩包(含 Defender 文件锁重试)
 # 前置: Git Bash 环境; temp/innosetup 便携版 Inno Setup; 最新 build/xtc.exe / lsp/xt_lsp.exe / tiepm/tiepm.exe
 # 用法: bash release/make_release.sh
-# 产物: release/xuantie_v1.0-rc_setup.exe + release/xuantie_v1.0-rc_windows_amd64.zip
+# 产物: release/xuantie_v1.0-rc.2_setup.exe + release/xuantie_v1.0-rc.2_windows_amd64.zip
 # ══════════════════════════════════════════════════════════════
 set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_WIN="$(cygpath -w "$ROOT")"   # PowerShell 只认 Windows 形式路径(G:\...)
 ISCC=$ROOT/temp/innosetup/ISCC.exe
-VER=v1.0.0
+VER=v1.0-rc.2
 
 [ -f "$ISCC" ] || { echo "错误: 未找到 $ISCC(Inno Setup 便携版)"; exit 1; }
 

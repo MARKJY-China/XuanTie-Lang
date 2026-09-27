@@ -2,7 +2,7 @@
   "name": "xuantie-syntax",
   "displayName": "玄铁 (XuanTie)",
   "description": "玄铁编程语言的VSCode插件。支持完善的语法高亮、代码片段补全、关键字提示等功能。",
-  "version": "2.3.3",
+  "version": "2.3.4",
   "publisher": "xuantie",
   "icon": "icon.ico",
   "main": "./extension.js",
@@ -71,7 +71,7 @@
         "xuantie.xtcPath": {
           "type": "string",
           "default": "",
-          "description": "xtc.exe(玄铁编译器)的路径,用于保存文件时的语义级诊断(xtc --检查)。留空则自动探测 xt_lsp.exe 同目录,再退到 PATH。"
+          "description": "玄铁编译器 xtc.exe 的路径。用途:保存文件时由 LSP 子进程调用 `xtc --检查`,产出语义级诊断(未定义标识符、类型与访问控制、方法名拼错、参数个数不符、保留字作标识符等)。注意:编辑器里打字时的**实时波浪线不经过本设置** —— 实时解析诊断由 LSP 自带的解析器产生(与编译器同源,打包时强制重建),本设置只决定保存那一次跑的是哪个编译器。留空时的探测顺序:① xt_lsp.exe 同目录下的 xtc.exe → ② PATH 里的 xtc;两者都没有则退化为仅解析诊断。建议显式指向你正在用的编译器,例如 build\\xtc_s4.exe(自举链顶)或 build\\env\\xtc.exe(发行包),以免诊断用的编译器版本与手动编译不一致。"
         }
       }
     }

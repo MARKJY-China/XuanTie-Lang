@@ -89,7 +89,7 @@ done
 
 # ── 6. 发行说明 ──
 cat > $PKG/README.md << 'EOF'
-# 玄铁 (XuanTie) v1.0-rc
+# 玄铁 (XuanTie) v1.0-rc.2
 
 中文静态强类型编译型语言。本包为绿色免安装版,解压即用:
 
@@ -109,4 +109,4 @@ EOF
 
 echo "=== payload 就绪 ==="
 du -sh $PKG
-echo "下一步: iscc release/xuantie_setup.iss  →  release/xuantie_v1.0-rc_setup.exe"
+echo "下一步: iscc release/xuantie_setup.iss  →  release/xuantie_v1.0-rc.2_setup.exe"
