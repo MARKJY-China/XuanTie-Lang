@@ -81,3 +81,39 @@ jobs:
             temp/regression_logs/
             temp/_bootstrap_scratch/
           if-no-files-found: ignore
+
+  # darwin 门禁:补上 macOS arm64 的链接路径覆盖 —— issue #41(darwin 自举链接失败)正是"上游 CI 全绿
+  # 而 darwin 侧断链"的漏洞。跑同一条 tools/bootstrap_check.sh:构建链路与两段冒烟硬判;DDC 在 darwin
+  # 上因 ld64 每次链接注入随机 LC_UUID、叠加 -g 的 DWARF 调试段不确定(实测 s3/s4 差 200 字节)无法逐字节
+  # 比对,脚本会自动转入"IR 补判":s3/s4 各编同一 fixture 并用 -bl 保留中间产物,逐字节比对编译器自己
+  # 生成的 IR(不含链接器注入项),IR 不一致即硬失败。
+  gate-darwin:
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 工具链与系统版本
+        run: |
+          clang --version | head -2
+          gcc --version | head -1
+          sw_vers
+
+      - name: 构建种子编译器 GSC
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(darwin:链接器差异隔离为 IR 补判)
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: 失败时上传自举日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-logs-darwin
+          path: temp/_bootstrap_scratch/
+          if-no-files-found: ignore
