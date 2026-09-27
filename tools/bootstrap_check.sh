@@ -25,6 +25,8 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 GSC="$ROOT/xt_gsc.exe"
+# 产物后缀:Windows MinGW 链接产出 .exe;darwin/linux 原生产物无扩展名(实测 GSC 输出"原生编译完成: probe")
+EXE=".exe"; case "$(uname -s)" in Darwin|Linux) EXE="";; esac
 SRC="$ROOT/xuantie_compiler/玄铁.xt"
 BUILD="$ROOT/build"
 SCRATCH="$ROOT/temp/_bootstrap_scratch"
@@ -75,7 +77,7 @@ echo "[自举门禁] 环境: 平台=$(uname -s)  DDC=$( [ "$DDC_SOFT" = "1" ] &&
 
 echo "[自举门禁] 阶段零:工具链自检(GSC 编译并运行最小程序,隔离"工具链坏"与"大源码编译失败")"
 PROBE_SRC="$SCRATCH/probe.xt"
-PROBE_EXE="$SCRATCH/probe.exe"
+PROBE_EXE="$SCRATCH/probe$EXE"
 printf '示("工具链自检通过")\n' > "$PROBE_SRC"
 rm -f "$PROBE_EXE"
 ( cd "$SCRATCH" && "$GSC" 铁 "$(W "$PROBE_SRC")" ) > "$SCRATCH/probe.log" 2>&1 \
@@ -93,23 +95,23 @@ mkdir -p "$SCRATCH/src"
 cp -f "$ROOT"/xuantie_compiler/*.xt "$SCRATCH/src/"
 ENTRY="$SCRATCH/src/xentry.xt"
 cp -f "$ROOT/xuantie_compiler/玄铁.xt" "$ENTRY"
-rm -f "$SCRATCH/src/xentry.exe" "$SCRATCH/xentry.exe"
+rm -f "$SCRATCH/src/xentry$EXE" "$SCRATCH/xentry$EXE"
 ( cd "$SCRATCH" && "$GSC" 铁 "$(W "$ENTRY")" ) > "$SCRATCH/s1.log" 2>&1 || { dump_log "$SCRATCH/s1.log"; fail "GSC 编译 s1 失败"; }
-[ -f "$SCRATCH/xentry.exe" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 xentry.exe(见上方日志)"; }
-mv -f "$SCRATCH/xentry.exe" "$BUILD/xtc_s1.exe"
+[ -f "$SCRATCH/xentry$EXE" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 xentry.exe(见上方日志)"; }
+mv -f "$SCRATCH/xentry$EXE" "$BUILD/xtc_s1$EXE"
 
 echo "[自举门禁] 阶段二:逐级自举 s1 → s2 → s3 → s4"
 for pair in "1 2" "2 3" "3 4"; do
     set -- $pair
     parent="$1"; child="$2"
-    "$BUILD/xtc_s$parent.exe" 铁 "$(W "$SRC")" -sc "$(W "$BUILD/xtc_s$child.exe")" \
+    "$BUILD/xtc_s$parent$EXE" 铁 "$(W "$SRC")" -sc "$(W "$BUILD/xtc_s$child$EXE")" \
         > "$SCRATCH/s$child.log" 2>&1 || { dump_log "$SCRATCH/s$child.log"; fail "s$parent → s$child 失败"; }
-    [ -f "$BUILD/xtc_s$child.exe" ] || { dump_log "$SCRATCH/s$child.log"; fail "s$parent → s$child 未产出产物"; }
+    [ -f "$BUILD/xtc_s$child$EXE" ] || { dump_log "$SCRATCH/s$child.log"; fail "s$parent → s$child 未产出产物"; }
 done
 
 echo "[自举门禁] 阶段三:各级产物指纹"
     for n in 1 2 3 4; do
-    f="$BUILD/xtc_s$n.exe"
+    f="$BUILD/xtc_s$n$EXE"
     size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f")
     hash=$(hash_of "$f")
     echo "  s$n  size=$size  md5=$hash"
@@ -118,11 +120,11 @@ done
 echo "[自举门禁] 阶段四:DDC 硬门禁(相邻级逐字节比对)"
 for pair in "1 2" "2 3" "3 4"; do
     set -- $pair
-    if cmp -s "$BUILD/xtc_s$1.exe" "$BUILD/xtc_s$2.exe"; then
+    if cmp -s "$BUILD/xtc_s$1$EXE" "$BUILD/xtc_s$2$EXE"; then
         echo "  s$1 vs s$2: 逐字节一致"
         SAME="yes"
     else
-        diff_bytes=$(cmp -l "$BUILD/xtc_s$1.exe" "$BUILD/xtc_s$2.exe" 2>/dev/null | wc -l)
+        diff_bytes=$(cmp -l "$BUILD/xtc_s$1$EXE" "$BUILD/xtc_s$2$EXE" 2>/dev/null | wc -l)
         echo "  s$1 vs s$2: 差异 $diff_bytes 字节"
         SAME="no"
     fi
@@ -136,7 +138,7 @@ for pair in "1 2" "2 3" "3 4"; do
             printf '示("ddc")\n' > "$DDC_FIX"
             for n in 3 4; do
                 rm -f "$SCRATCH/自举输出.ll" "$SCRATCH/ddc_s$n.ll"
-                ( cd "$SCRATCH" && "$BUILD/xtc_s$n.exe" 铁 "$(W "$DDC_FIX")" -bl -sc "$(W "$SCRATCH/ddc_s$n.exe")" ) \
+                ( cd "$SCRATCH" && "$BUILD/xtc_s$n$EXE" 铁 "$(W "$DDC_FIX")" -bl -sc "$(W "$SCRATCH/ddc_s$n.exe")" ) \
                     > "$SCRATCH/ddc_s$n.log" 2>&1 || { dump_log "$SCRATCH/ddc_s$n.log"; fail "DDC 补判:s$n 编译 fixture 失败"; }
                 [ -f "$SCRATCH/自举输出.ll" ] || { dump_log "$SCRATCH/ddc_s$n.log"; fail "DDC 补判:s$n 未保留 IR(-bl)"; }
                 mv -f "$SCRATCH/自举输出.ll" "$SCRATCH/ddc_s$n.ll"
@@ -154,9 +156,9 @@ for pair in "1 2" "2 3" "3 4"; do
 done
 
 echo "[自举门禁] 阶段五:链顶冒烟(s4 编译并运行 Test/01_基础测试.xt)"
-SMOKE_EXE="$SCRATCH/smoke01.exe"
+SMOKE_EXE="$SCRATCH/smoke01$EXE"
 rm -f "$SMOKE_EXE"
-"$BUILD/xtc_s4.exe" 铁 "$(W "$ROOT/Test/01_基础测试.xt")" -sc "$(W "$SMOKE_EXE")" > "$SCRATCH/smoke.log" 2>&1 \
+"$BUILD/xtc_s4$EXE" 铁 "$(W "$ROOT/Test/01_基础测试.xt")" -sc "$(W "$SMOKE_EXE")" > "$SCRATCH/smoke.log" 2>&1 \
     || { dump_log "$SCRATCH/smoke.log"; fail "s4 编译冒烟用例失败"; }
 ( cd "$ROOT" && "$SMOKE_EXE" ) > "$SCRATCH/smoke_run.log" 2>&1 \
     || { dump_log "$SCRATCH/smoke_run.log"; fail "s4 产物运行失败(退出码非零)"; }
@@ -167,15 +169,15 @@ PAO_SRC="$SCRATCH/pao_probe.xt"
 PAO_LOG="$SCRATCH/pao.log"
 printf '示("pao 冒烟通过")
 ' > "$PAO_SRC"
-( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" pao "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1 || { dump_log "$PAO_LOG"; fail "pao 运行失败"; }
+( cd "$SCRATCH" && "$BUILD/xtc_s4$EXE" pao "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1 || { dump_log "$PAO_LOG"; fail "pao 运行失败"; }
 grep -q "pao 冒烟通过" "$PAO_LOG" || { dump_log "$PAO_LOG"; fail "pao 输出异常(未见程序输出)"; }
 if grep -q "原生编译完成" "$PAO_LOG"; then dump_log "$PAO_LOG"; fail "pao 不该打印编译完成噪声(对齐 go run)"; fi
 printf '终 3
 ' > "$PAO_SRC"
-( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" 跑 "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1
+( cd "$SCRATCH" && "$BUILD/xtc_s4$EXE" 跑 "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1
 pao_rc=$?
 [ "$pao_rc" = "3" ] || { dump_log "$PAO_LOG"; fail "pao 退出码未透传(得到 $pao_rc,期望 3)"; }
 # 产物名是 pao_<源基名>(纯 ASCII;中文会被 MinGW 打成 ? 致链接失败,已修)
-if ls "$SCRATCH"/pao_*.exe >/dev/null 2>&1; then fail "pao 未清理临时产物"; fi
+if find "$SCRATCH" -maxdepth 1 -name "pao_*" ! -name "*.xt" | grep -q .; then fail "pao 未清理临时产物"; fi
 
 echo "[自举门禁] 通过:s1..s4 建成,固定点在 s3→s4,s4 冒烟正常"
