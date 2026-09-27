@@ -131,6 +131,7 @@ printf '终 3
 ( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" 跑 "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1
 pao_rc=$?
 [ "$pao_rc" = "3" ] || { dump_log "$PAO_LOG"; fail "pao 退出码未透传(得到 $pao_rc,期望 3)"; }
-[ -f "$SCRATCH/跑_pao_probe.exe" ] && { fail "pao 未清理临时产物"; }
+# 产物名是 pao_<源基名>(纯 ASCII;中文会被 MinGW 打成 ? 致链接失败,已修)
+if ls "$SCRATCH"/pao_*.exe >/dev/null 2>&1; then fail "pao 未清理临时产物"; fi
 
 echo "[自举门禁] 通过:s1..s4 建成,固定点在 s3→s4,s4 冒烟正常"
