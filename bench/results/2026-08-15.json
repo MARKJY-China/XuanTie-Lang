@@ -1,0 +1,76 @@
+{
+  "date": "2026-08-15",
+  "time": "",
+  "kind": "historical",
+  "method": {
+    "runs": 1,
+    "aggregate": "single",
+    "source": "GUIDE/性能优化待处理表.md",
+    "note": "回填快照：原表为单次测量(字符串拼接一项为 10 次平均)。与 bench/run.py 产出的中位数口径不同，对比时只能看方向。原语料已从 temp/ 抢救入 bench/cases/，但本表数字是当年在旧语料/旧编译器上测的，不保证逐题可复现。"
+  },
+  "machine": {
+    "platform": "Windows 10 x64",
+    "note": "原表记录：Windows 10 x64；玄铁 = XTC 默认 -Og；Node = v22.17.1；Java = 21 LTS；Go = 1.26.1 windows/386(32 位，数据偏弱，仅作编译型下限参考)；Python 仅存档"
+  },
+  "toolchain": {
+    "xtc_version": "v1.0.x(未记录精确版本)",
+    "note": "原表未记录编译器提交与自举链指纹——这正是今后每次快照必须记录的原因"
+  },
+  "cases": [
+    {"lang": "玄铁", "name": "空函数调用1e6", "median_us": 5944},
+    {"lang": "玄铁", "name": "fib30递归", "median_us": 25021, "method_note": "原表有此行，但来源探针不在本次抢救的语料内(fib30 用例已由 bench/ 补入语料)"},
+    {"lang": "玄铁", "name": "字符串拼接1e5", "median_us": 3514, "method_note": "10 次平均；修复前为 10543254 微秒(P1 根治)", "pre_fix_us": 10543254},
+    {"lang": "玄铁", "name": "列表添加1e5", "median_us": 6667, "name_in_source": "列表追加1e5"},
+    {"lang": "玄铁", "name": "字典插入1e4", "median_us": 48631},
+    {"lang": "玄铁", "name": "浮点累加1e6", "median_us": 255203},
+    {"lang": "玄铁", "name": "乘模1e6", "median_us": 19320},
+    {"lang": "玄铁", "name": "分支1e7", "median_us": 252965},
+    {"lang": "玄铁", "name": "嵌套循环1e6", "median_us": 18172},
+
+    {"lang": "node", "name": "空函数调用1e6", "median_us": 3099},
+    {"lang": "node", "name": "fib30递归", "median_us": 10559},
+    {"lang": "node", "name": "字符串拼接1e5", "median_us": 7436},
+    {"lang": "node", "name": "列表添加1e5", "median_us": 4742, "name_in_source": "列表追加1e5"},
+    {"lang": "node", "name": "字典插入1e4", "median_us": 4154},
+    {"lang": "node", "name": "浮点累加1e6", "median_us": 2504},
+    {"lang": "node", "name": "乘模1e6", "median_us": 5390},
+    {"lang": "node", "name": "分支1e7", "median_us": 12949},
+    {"lang": "node", "name": "嵌套循环1e6", "median_us": 1808},
+
+    {"lang": "java", "name": "空函数调用1e6", "median_us": 5506},
+    {"lang": "java", "name": "fib30递归", "median_us": 8083},
+    {"lang": "java", "name": "字符串拼接1e5", "median_us": 1047916},
+    {"lang": "java", "name": "列表添加1e5", "median_us": 4715, "name_in_source": "列表追加1e5"},
+    {"lang": "java", "name": "字典插入1e4", "median_us": 4638},
+    {"lang": "java", "name": "浮点累加1e6", "median_us": 2141},
+    {"lang": "java", "name": "乘模1e6", "median_us": 5070},
+    {"lang": "java", "name": "分支1e7", "median_us": 13534},
+    {"lang": "java", "name": "嵌套循环1e6", "median_us": 9002},
+
+    {"lang": "go", "name": "fib30递归", "median_us": 4097, "method_note": "windows/386 32 位工具链，原表已声明数据偏弱"},
+    {"lang": "go", "name": "字符串拼接1e5", "median_us": 761946, "method_note": "windows/386"},
+    {"lang": "go", "name": "字典插入1e4", "median_us": 1627, "method_note": "windows/386"},
+    {"lang": "go", "name": "浮点累加1e6", "median_us": null, "method_note": "原表标注“消除”(编译器把累加消掉了)"},
+    {"lang": "go", "name": "分支1e7", "median_us": null, "method_note": "原表标注“存疑”"},
+    {"lang": "go", "name": "空函数调用1e6", "median_us": null, "method_note": "原表未测(—)"},
+    {"lang": "go", "name": "列表添加1e5", "median_us": null, "method_note": "原表未测(—)"},
+    {"lang": "go", "name": "乘模1e6", "median_us": null, "method_note": "原表未测(—)"},
+    {"lang": "go", "name": "嵌套循环1e6", "median_us": null, "method_note": "原表未测(—)"},
+
+    {"lang": "python", "name": "空函数调用1e6", "median_us": 92211},
+    {"lang": "python", "name": "fib30递归", "median_us": 94077},
+    {"lang": "python", "name": "字符串拼接1e5", "median_us": 125583},
+    {"lang": "python", "name": "列表添加1e5", "median_us": 9616, "name_in_source": "列表追加1e5"},
+    {"lang": "python", "name": "字典插入1e4", "median_us": 5328},
+    {"lang": "python", "name": "浮点累加1e6", "median_us": 99615},
+    {"lang": "python", "name": "乘模1e6", "median_us": 142626},
+    {"lang": "python", "name": "分支1e7", "median_us": 1181899},
+    {"lang": "python", "name": "嵌套循环1e6", "median_us": 85043}
+  ],
+  "pending": [
+    {"id": "P2", "item": "字典插入(慢 9.1×于 Python)", "target": "≤11ms, 冲刺 ≤5ms"},
+    {"id": "P3", "item": "浮点装箱(慢 2.6×于 Python, 102×于 Node)", "target": "≤120ms, 冲刺 ≤10ms"},
+    {"id": "P4", "item": "控制流与调用(分支慢 Node 19.5×、嵌套 10×、fib 2.4×)", "target": "分支/嵌套 ≤2× Node; fib30 ≤12ms"},
+    {"id": "观察", "item": "GC/Arena、方法分派内联缓存、IO/网络吞吐、字符串插值分配次数", "target": "暂不排期"}
+  ]
+}
