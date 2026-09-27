@@ -6371,7 +6371,12 @@
                 "+" -> { _pf码 = "add" }
                 "-" -> { _pf码 = "sub" }
                 "*" -> { _pf码 = "mul" }
-                // 除/模不内联:select 挡不住 sdiv 的除零 UB(指令先执行后选择),统一走运行时调用
+                // 除/模恢复内联:当年删它的理由是"select 挡不住 sdiv 的除零 UB"(指令先执行后选择)——
+                // 判断没错,但代价从未被测:每轮多出字符串构造+字典查找+引用计数,实测 1e6 轮取模
+                // 19.9ms→140.9ms(7.1×)、分支 146ms→759ms(5.2×)。现改为**控制流**守卫(见下方快路径分流):
+                // 除数为零时原生指令不被执行,UB 无从发生;零除数落运行时调用,保留除零返 0/可捕捉与浮点提升。
+                "/" -> { _pf码 = "sdiv" }
+                "%" -> { _pf码 = "srem" }
             }
             设 _pf左可 = 假
             若 左类型 == "i64" { _pf左可 = 真 }
@@ -6405,29 +6410,41 @@
                 此.写出("  " & _pfA & " = ashr i64 " & _lXt2 & ", 1")
                 设 _pfB = 此.取新寄存器()
                 此.写出("  " & _pfB & " = ashr i64 " & _rXt2 & ", 1")
-                设 _pfRaw = 此.取新寄存器()
-                此.写出("  " & _pfRaw & " = " & _pf码 & " i64 " & _pfA & ", " & _pfB)
-                设 _pfRaw2 = _pfRaw
-                若 _pf码 == "sdiv" {
+                // 除/模:除数为零时**不得执行**原生指令(裸 sdiv/srem 遇零是 UB/信号),故用 br 提前分流到
+                // 运行时调用;select 只会事后选值,挡不住那次执行——这正是 3258029 当初删掉内联的原因。
+                // 两块落点一致:各自把结果 store 进 _pfRes 后并流,后续回标/使用逻辑无需改动。
+                若 _pf码 == "sdiv" 或 _pf码 == "srem" {
                     设 _pfZ = 此.取新寄存器()
                     此.写出("  " & _pfZ & " = icmp eq i64 " & _pfB & ", 0")
-                    设 _pfSel = 此.取新寄存器()
-                    此.写出("  " & _pfSel & " = select i1 " & _pfZ & ", i64 0, i64 " & _pfRaw)
-                    _pfRaw2 = _pfSel
+                    设 _pf算L = 此.标(此.取新标签("op.arithcalc"))
+                    设 _pf零L = 此.标(此.取新标签("op.arithzero"))
+                    此.写出("  br i1 " & _pfZ & ", label %" & _pf零L & ", label %" & _pf算L)
+                    此.写出(_pf算L & ":")
+                    设 _pfRaw = 此.取新寄存器()
+                    此.写出("  " & _pfRaw & " = " & _pf码 & " i64 " & _pfA & ", " & _pfB)
+                    设 _pfT = 此.取新寄存器()
+                    此.写出("  " & _pfT & " = shl i64 " & _pfRaw & ", 1")
+                    设 _pfO = 此.取新寄存器()
+                    此.写出("  " & _pfO & " = or i64 " & _pfT & ", 1")
+                    此.写出("  store i64 " & _pfO & ", i64* " & _pfRes)
+                    此.写出("  br label %" & _pfMergeL)
+                    此.写出(_pf零L & ":")
+                    设 _pfFd = "xt_div"
+                    若 _pf码 == "srem" { _pfFd = "xt_mod" }
+                    设 _pfRz = 此.取新寄存器()
+                    此.写出("  " & _pfRz & " = call i64 @\"" & _pfFd & "\"(i64 " & _lXt2 & ", i64 " & _rXt2 & ")")
+                    此.写出("  store i64 " & _pfRz & ", i64* " & _pfRes)
+                    此.写出("  br label %" & _pfMergeL)
+                } 否 {
+                    设 _pfRaw = 此.取新寄存器()
+                    此.写出("  " & _pfRaw & " = " & _pf码 & " i64 " & _pfA & ", " & _pfB)
+                    设 _pfT = 此.取新寄存器()
+                    此.写出("  " & _pfT & " = shl i64 " & _pfRaw & ", 1")
+                    设 _pfO = 此.取新寄存器()
+                    此.写出("  " & _pfO & " = or i64 " & _pfT & ", 1")
+                    此.写出("  store i64 " & _pfO & ", i64* " & _pfRes)
+                    此.写出("  br label %" & _pfMergeL)
                 }
-                若 _pf码 == "srem" {
-                    设 _pfZ2 = 此.取新寄存器()
-                    此.写出("  " & _pfZ2 & " = icmp eq i64 " & _pfB & ", 0")
-                    设 _pfSel2 = 此.取新寄存器()
-                    此.写出("  " & _pfSel2 & " = select i1 " & _pfZ2 & ", i64 0, i64 " & _pfRaw)
-                    _pfRaw2 = _pfSel2
-                }
-                设 _pfT = 此.取新寄存器()
-                此.写出("  " & _pfT & " = shl i64 " & _pfRaw2 & ", 1")
-                设 _pfO = 此.取新寄存器()
-                此.写出("  " & _pfO & " = or i64 " & _pfT & ", 1")
-                此.写出("  store i64 " & _pfO & ", i64* " & _pfRes)
-                此.写出("  br label %" & _pfMergeL)
                 // 慢路径:完整重载机制(内联复制既有流程)
                 此.写出(_pfSlowL & ":")
                 设 _pfKey = 此.获取字符串对象(魔术方法)
