@@ -6,6 +6,8 @@
 #   相邻两级逐字节一致 = 到达自举固定点,才算自举验证通过(仅"能构建+测试通过"不算)。
 #
 # 本脚本做四件事:
+#   0. 预编译 runtime/*.o 到 build/runtime/ —— 此后各级链接、冒烟与后续全量回归全部复用,
+#      不再让每个编译单元现场现编 160KB 的 C 源(实测每次约省 3.2 秒,回归整体省约 7 分钟)
 #   1. 逐级自举 s1 → s2 → s3 → s4(GSC 不支持 -sc,须在独立目录内构建后改名,严禁产出 玄铁.exe 于仓库根)
 #   2. 打印各级大小与 md5
 #   3. DDC 硬门禁:s3 与 s4 必须逐字节一致(固定点),否则非零退出
@@ -84,6 +86,26 @@ echo "[自举门禁] 环境: SCRATCH=$SCRATCH"
 echo "[自举门禁] 环境: clang=$(command -v clang || echo '(未找到)')  gcc=$(command -v gcc || echo '(未找到)')"
 echo "[自举门禁] 环境: 平台=$(uname -s)  DDC=$( [ "$DDC_SOFT" = "1" ] && echo '软判(平台链接器注入 LC_UUID/调试段,不阻断)' || echo '硬判(逐字节一致)' )"
 { clang --version 2>&1 | head -1; gcc --version 2>&1 | head -1; } || true
+
+# ── 运行时目标文件预编译(阶段零之前,一次做完后续全部复用)────────────────────
+# 编译器找运行时的顺序是"自身目录/runtime/xt_runtime.o 优先",而链上各级二进制都在 $BUILD;
+# 把 .o 放这里,链的每一级、两段冒烟、以及后续全量回归的每个用例都直接吃 .o ——
+# 否则每个编译单元都要现场 clang 编 xt_runtime.c(160KB)+3 个伴随源文件,实测每次约 3.2 秒:
+# 一行程序总耗时 4322ms → 1100ms;回归 130+ 用例即约 7 分钟白花在重复编译同一份 C 源上。
+# 用与发行包相同的 -O2(见 release/make_pkg.sh):门禁/回归链接到的运行时与用户拿到的发行包一致。
+echo "[自举门禁] 阶段零·预备:预编译运行时目标文件(各级链接与回归复用,免逐次现编 C 源)"
+mkdir -p "$BUILD/runtime"
+if uname | grep -qiE "MINGW|MSYS|CYGWIN"; then
+    XT_CLANG_TARGET="-target x86_64-w64-windows-gnu"
+else
+    XT_CLANG_TARGET=""
+fi
+for _rt in xt_runtime xt_threadpool xt_net xt_tls; do
+    [ -f "$ROOT/runtime/$_rt.c" ] || fail "未找到 runtime/$_rt.c"
+    clang $XT_CLANG_TARGET -O2 -c "$ROOT/runtime/$_rt.c" -o "$BUILD/runtime/$_rt.o" \
+        > "$SCRATCH/rt_$_rt.log" 2>&1 || { dump_log "$SCRATCH/rt_$_rt.log"; fail "预编译 runtime/$_rt.c 失败"; }
+done
+echo "  运行时目标文件已就绪: $(ls "$BUILD/runtime" | tr '\n' ' ')"
 
 echo "[自举门禁] 阶段零:工具链自检(GSC 编译并运行最小程序,隔离"工具链坏"与"大源码编译失败")"
 PROBE_SRC="$SCRATCH/probe.xt"
