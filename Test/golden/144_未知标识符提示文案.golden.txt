@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+PASS A 否则 → 提示『否』
+PASS B 等 → 提示『等待』(反向匹配)
+PASS C 长名字不提示(守卫生效)
+PASS D 关键字作变量名 → 定向提示
+144 PASS
