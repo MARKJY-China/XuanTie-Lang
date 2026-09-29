@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "铸造厂主窗口默认能力:核心事件 + 文件夹/文件选择对话框",
+  "windows": ["main"],
+  "permissions": ["core:default", "dialog:default"]
+}

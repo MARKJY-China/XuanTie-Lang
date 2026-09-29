@@ -1,0 +1,10 @@
+# 玄铁铸造厂 IDE — 依赖与构建产物
+# (根 .gitignore 已覆盖 *.exe / *.log / CLAUDE.md,此处只补本子工程特有的)
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+# 纯 Windows 桌面应用,移动端图标(tauri icon 自动生成)不入库
+src-tauri/icons/android/
+src-tauri/icons/ios/
+*.local

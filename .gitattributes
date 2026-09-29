@@ -24,4 +24,8 @@ docs/**                     linguist-documentation
 # 语义上它不是 vendored(第三方),而是"不计入本仓库语言统计",故用 detectable 关闭。
 句读/**                     linguist-detectable=false
 
+# ---- ⑤ 玄铁铸造厂 IDE(ide/:Tauri 2 + Monaco 独立子项目)----
+# 同 句读 口径:独立子项目不计入本仓库语言统计,detectable 关闭。
+ide/**                       linguist-detectable=false
+
 extensions/** linguist-vendored
