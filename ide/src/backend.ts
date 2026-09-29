@@ -83,6 +83,9 @@ export function toolLocate(name: string): Promise<string> {
 export function toolPaoSupport(xtcPath: string): Promise<boolean> {
   return invoke('tool_pao_support', { xtcPath });
 }
+export function toolVersion(path: string): Promise<string> {
+  return invoke('tool_version', { path });
+}
 export function runCacheDir(): Promise<string> {
   return invoke('run_cache_dir');
 }

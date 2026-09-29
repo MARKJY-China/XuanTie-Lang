@@ -22,6 +22,7 @@ pub struct AppState {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(AppState {
             lsp: Mutex::new(HashMap::new()),
             next_lsp_id: AtomicU32::new(1),
@@ -45,6 +46,7 @@ fn main() {
             pty::pty_kill,
             tools::tool_locate,
             tools::tool_pao_support,
+            tools::tool_version,
             tools::run_cache_dir,
             tools::settings_load,
             tools::settings_save,

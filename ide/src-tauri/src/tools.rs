@@ -49,6 +49,28 @@ pub async fn tool_pao_support(xtc_path: String) -> Result<bool, String> {
     Ok(text.contains("pao"))
 }
 
+// 读取工具自述版本:`<工具> -h` 首行(如「玄铁 (XuanTie) 编译器驱动 v1.0.0」)
+#[tauri::command]
+pub async fn tool_version(path: String) -> Result<String, String> {
+    let mut cmd = std::process::Command::new(&path);
+    cmd.arg("-h");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("运行 {} -h 失败: {}", path, e))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let first = text.lines().next().unwrap_or("").trim().to_string();
+    if first.is_empty() {
+        Err("无法读取版本信息".into())
+    } else {
+        Ok(first)
+    }
+}
+
 // 运行产物缓存目录(<app_cache>/run),旧版 xtc 的 tie+运行 回退产物放这里,不污染工程
 #[tauri::command]
 pub async fn run_cache_dir(app: AppHandle) -> Result<String, String> {

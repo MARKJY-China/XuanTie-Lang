@@ -3,6 +3,9 @@
 import * as monaco from 'monaco-editor';
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { open as pickDialog } from '@tauri-apps/plugin-dialog';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { getVersion } from '@tauri-apps/api/app';
+import '@vscode/codicons/dist/codicon.css';
 import { registerXtLanguage } from './lang/xt';
 import * as backend from './backend';
 import {
@@ -14,24 +17,39 @@ import {
 } from './settings';
 import { XtLspClient, type LspStatus } from './lsp/client';
 import { attachLspFeatures } from './lsp/features';
-import { buildLayout, initSplitters } from './ui/layout';
+import { buildLayout, initMenus, initSplitters, initWindowControls } from './ui/layout';
 import { TabManager } from './ui/tabs';
 import { FileTree } from './ui/filetree';
 import { ProblemsPanel } from './ui/problems';
 import {
   confirmBox,
+  CONTEXT_SEP,
   promptText,
   showContextMenu,
   showCustomModal,
   showToast,
-  type ContextMenuItem,
+  type ContextMenuEntry,
 } from './ui/dialogs';
 import { TerminalPane } from './term/terminal';
 import { Runner } from './run/run';
 import { Tiepm } from './tiepm/tiepm';
 import { PROJECT_TEMPLATES, createProject } from './templates';
-import { basename, dirname } from './util';
-import type { FileNode } from './types';
+import { basename, copyText, dirname, relativeTo } from './util';
+import { defaultSettings, type FileNode, type TreeDisplay } from './types';
+
+// 眼睛按钮三态:循环顺序 完全显示 → 半显示 → 不显示
+const EYE_ORDER: TreeDisplay[] = ['all', 'dim', 'hide'];
+const EYE_META: Record<TreeDisplay, { icon: string; title: string }> = {
+  all: { icon: 'codicon-eye', title: '文件树显示:完全显示(点击切换为半显示)' },
+  dim: { icon: 'codicon-preview', title: '文件树显示:半显示,其余文件淡化并置尾(点击切换为不显示)' },
+  hide: { icon: 'codicon-eye-closed', title: '文件树显示:仅认准文件(点击切换为完全显示)' },
+};
+
+function applyEye(): void {
+  const meta = EYE_META[getSettings().treeDisplay ?? defaultSettings().treeDisplay];
+  L.eyeIco.className = 'codicon ' + meta.icon;
+  L.btnEye.title = meta.title;
+}
 
 (self as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
   getWorker: () => new editorWorker(),
@@ -41,6 +59,7 @@ registerXtLanguage();
 
 const L = buildLayout(document.getElementById('app') as HTMLElement);
 initSplitters(L);
+initWindowControls(L);
 
 const editor = monaco.editor.create(L.monacoHost, {
   model: null,
@@ -157,7 +176,7 @@ async function startLsp(): Promise<void> {
 async function reloadTree(): Promise<void> {
   if (!workspace) return;
   try {
-    fileTree.setTree(await backend.fsListTree(workspace));
+    fileTree.setTree(await backend.fsListTree(workspace), workspace);
   } catch (err) {
     showToast(`刷新文件树失败: ${String(err)}`, 'err');
   }
@@ -165,7 +184,7 @@ async function reloadTree(): Promise<void> {
 
 async function openWorkspace(dir: string): Promise<void> {
   try {
-    fileTree.setTree(await backend.fsListTree(dir));
+    fileTree.setTree(await backend.fsListTree(dir), dir);
   } catch (err) {
     showToast(`读取目录失败: ${String(err)}`, 'err');
     return;
@@ -204,13 +223,41 @@ async function pickFile(title: string): Promise<string | null> {
   return typeof r === 'string' ? r : null;
 }
 
-// ---- 文件树右键 ----
-function showTreeMenu(e: MouseEvent, node: FileNode): void {
-  const items: ContextMenuItem[] = [];
+// ---- 文件树右键(node 为 null = 空白区域,对工程根操作) ----
+function showTreeMenu(e: MouseEvent, node: FileNode | null): void {
+  if (!node) {
+    const items: ContextMenuEntry[] = [
+      { label: '新建文件', action: () => void newFileIn(workspace) },
+      { label: '新建文件夹', action: () => void newDirIn(workspace) },
+      CONTEXT_SEP,
+      { label: '刷新', action: () => void reloadTree() },
+    ];
+    showContextMenu(e.clientX, e.clientY, items);
+    return;
+  }
+  const items: ContextMenuEntry[] = [];
   if (node.isDir) {
     items.push({ label: '新建文件', action: () => void newFileIn(node.path) });
     items.push({ label: '新建文件夹', action: () => void newDirIn(node.path) });
+    items.push(CONTEXT_SEP);
   }
+  items.push({
+    label: '复制相对路径',
+    action: () => {
+      void copyText(relativeTo(workspace, node.path)).then((ok) => {
+        showToast(ok ? '已复制相对路径' : '复制失败', ok ? 'ok' : 'err');
+      });
+    },
+  });
+  items.push({
+    label: '复制完整路径',
+    action: () => {
+      void copyText(node.path).then((ok) => {
+        showToast(ok ? '已复制完整路径' : '复制失败', ok ? 'ok' : 'err');
+      });
+    },
+  });
+  items.push(CONTEXT_SEP);
   items.push({ label: '重命名', action: () => void renameNode(node) });
   items.push({ label: '删除', danger: true, action: () => void deleteNode(node) });
   showContextMenu(e.clientX, e.clientY, items);
@@ -351,68 +398,98 @@ function newProjectModal(): Promise<void> {
 // ---- 设置 ----
 function settingsModal(): Promise<void> {
   const s = getSettings();
-  return showCustomModal('设置 —— 工具链路径(留空自动按 PATH 探测)', (body, close) => {
-    const rows: Array<{ key: string; label: string; probe: string; value: string }> = [
-      { key: 'lsp', label: 'xt_lsp.exe(LSP 服务器)', probe: 'xt_lsp', value: s.lspServerPath },
-      { key: 'xtc', label: 'xtc.exe(编译器)', probe: 'xtc', value: s.xtcPath },
-      { key: 'tiepm', label: 'tiepm.exe(铁铺包管理器)', probe: 'tiepm', value: s.tiepmPath },
-    ];
-    const inputs = new Map<string, HTMLInputElement>();
-    for (const row of rows) {
-      const r = document.createElement('div');
-      r.className = 'mrow';
-      r.appendChild(document.createElement('label')).textContent = row.label;
-      const line = document.createElement('div');
-      line.className = 'rowline';
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.value = row.value;
-      input.placeholder = '自动探测';
-      inputs.set(row.key, input);
-      const btnProbe = document.createElement('button');
-      btnProbe.className = 'mbtn';
-      btnProbe.textContent = '探测';
-      btnProbe.addEventListener('click', () => {
-        backend
-          .toolLocate(row.probe)
-          .then((p) => {
-            input.value = p;
-            showToast(`在 PATH 找到:${p}`, 'ok');
-          })
-          .catch((err: unknown) => showToast(`PATH 里没有 ${row.probe}: ${String(err)}`, 'err'));
-      });
-      const btnPick = document.createElement('button');
-      btnPick.className = 'mbtn';
-      btnPick.textContent = '选…';
-      btnPick.addEventListener('click', () => {
-        void pickFile(`选择 ${row.probe}.exe`).then((p) => {
-          if (p) input.value = p;
+  return showCustomModal(
+    '设置',
+    (body, close) => {
+      const rows: Array<{ key: string; label: string; probe: string; value: string }> = [
+        { key: 'lsp', label: 'xt_lsp.exe(LSP 服务器)', probe: 'xt_lsp', value: s.lspServerPath },
+        { key: 'xtc', label: 'xtc.exe(编译器)', probe: 'xtc', value: s.xtcPath },
+        { key: 'tiepm', label: 'tiepm.exe(铁铺包管理器)', probe: 'tiepm', value: s.tiepmPath },
+      ];
+      const inputs = new Map<string, HTMLInputElement>();
+      for (const row of rows) {
+        const r = document.createElement('div');
+        r.className = 'mrow';
+        r.appendChild(document.createElement('label')).textContent = row.label;
+        const line = document.createElement('div');
+        line.className = 'rowline';
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = row.value;
+        input.placeholder = '自动探测';
+        inputs.set(row.key, input);
+        const btnProbe = document.createElement('button');
+        btnProbe.className = 'mbtn';
+        btnProbe.textContent = '探测';
+        btnProbe.addEventListener('click', () => {
+          backend
+            .toolLocate(row.probe)
+            .then((p) => {
+              input.value = p;
+              showToast(`在 PATH 找到:${p}`, 'ok');
+            })
+            .catch((err: unknown) => showToast(`PATH 里没有 ${row.probe}: ${String(err)}`, 'err'));
+        });
+        const btnPick = document.createElement('button');
+        btnPick.className = 'mbtn';
+        btnPick.textContent = '选…';
+        btnPick.addEventListener('click', () => {
+          void pickFile(`选择 ${row.probe}.exe`).then((p) => {
+            if (p) input.value = p;
+          });
+        });
+        line.append(input, btnProbe, btnPick);
+        r.appendChild(line);
+        body.appendChild(r);
+      }
+
+      // 文件树显示由侧栏眼睛按钮控制并持久化,设置弹窗不再重复
+      // 编译产物目录(「编译」菜单用)
+      const rBuild = document.createElement('div');
+      rBuild.className = 'mrow';
+      rBuild.appendChild(document.createElement('label')).textContent = '编译产物目录(留空 = 工程文件夹\\build)';
+      const lineBuild = document.createElement('div');
+      lineBuild.className = 'rowline';
+      const inBuild = document.createElement('input');
+      inBuild.type = 'text';
+      inBuild.value = s.buildDir;
+      inBuild.placeholder = '留空 = 工程文件夹\\build';
+      inputs.set('buildDir', inBuild);
+      const btnBuildPick = document.createElement('button');
+      btnBuildPick.className = 'mbtn';
+      btnBuildPick.textContent = '选…';
+      btnBuildPick.addEventListener('click', () => {
+        void pickDir('选择编译产物目录').then((d) => {
+          if (d) inBuild.value = d;
         });
       });
-      line.append(input, btnProbe, btnPick);
-      r.appendChild(line);
-      body.appendChild(r);
-    }
-    const foot = document.createElement('div');
-    foot.className = 'm-foot';
-    const cancel = document.createElement('button');
-    cancel.className = 'mbtn';
-    cancel.textContent = '取消';
-    const ok = document.createElement('button');
-    ok.className = 'mbtn primary';
-    ok.textContent = '保存';
-    cancel.addEventListener('click', () => close());
-    ok.addEventListener('click', () => {
-      close({
-        lsp: inputs.get('lsp')?.value.trim() ?? '',
-        xtc: inputs.get('xtc')?.value.trim() ?? '',
-        tiepm: inputs.get('tiepm')?.value.trim() ?? '',
+      lineBuild.append(inBuild, btnBuildPick);
+      rBuild.appendChild(lineBuild);
+      body.appendChild(rBuild);
+
+      const foot = document.createElement('div');
+      foot.className = 'm-foot';
+      const cancel = document.createElement('button');
+      cancel.className = 'mbtn';
+      cancel.textContent = '取消';
+      const ok = document.createElement('button');
+      ok.className = 'mbtn primary';
+      ok.textContent = '保存';
+      cancel.addEventListener('click', () => close());
+      ok.addEventListener('click', () => {
+        close({
+          lsp: inputs.get('lsp')?.value.trim() ?? '',
+          xtc: inputs.get('xtc')?.value.trim() ?? '',
+          tiepm: inputs.get('tiepm')?.value.trim() ?? '',
+          buildDir: inputs.get('buildDir')?.value.trim() ?? '',
+        });
       });
-    });
-    foot.append(cancel, ok);
-    body.appendChild(foot);
-  }).then(async (result) => {
-    const r = result as { lsp?: string; xtc?: string; tiepm?: string } | undefined;
+      foot.append(cancel, ok);
+      body.appendChild(foot);
+    },
+    '工具链路径留空则按 PATH 自动探测',
+  ).then(async (result) => {
+    const r = result as { lsp?: string; xtc?: string; tiepm?: string; buildDir?: string } | undefined;
     if (!r) return;
     try {
       await saveSettings({
@@ -420,6 +497,7 @@ function settingsModal(): Promise<void> {
         lspServerPath: r.lsp ?? '',
         xtcPath: r.xtc ?? '',
         tiepmPath: r.tiepm ?? '',
+        buildDir: r.buildDir ?? '',
       });
       showToast('设置已保存', 'ok');
       if (workspace) await startLsp();
@@ -464,22 +542,280 @@ async function runActive(): Promise<void> {
   }
 }
 
-// ---- 工具栏 / 快捷键 ----
+// ---- 编译(「编译」菜单:产物入 工程build 目录,位置可在设置自定义) ----
+async function ensureBuildDir(): Promise<string | null> {
+  if (!workspace) {
+    showToast('先打开工程文件夹', 'err');
+    return null;
+  }
+  const s = getSettings();
+  const dir = s.buildDir && s.buildDir.trim() ? s.buildDir.trim() : backend.joinPath(workspace, 'build');
+  try {
+    if (!(await backend.fsExists(dir))) await backend.fsCreateDir(dir);
+  } catch (err) {
+    showToast(`创建编译目录失败: ${String(err)}`, 'err');
+    return null;
+  }
+  return dir;
+}
+
+async function compileTo(xtc: string, src: string, out: string, title: string): Promise<void> {
+  await tabs.saveAll();
+  setBottomVisible(true);
+  setBottomTab('term');
+  await term.runCommand(title, workspace, xtc, ['tie', src, '-sc', out], () => {
+    // 编译进程退出即刷新文件树:build 目录里的新产物立即可见
+    void reloadTree();
+  });
+}
+
+async function buildCurrent(): Promise<void> {
+  const p = tabs.getActivePath();
+  if (!p || !p.toLowerCase().endsWith('.xt')) {
+    showToast('没有打开的 .xt 文件', 'err');
+    return;
+  }
+  if (workspace && !p.startsWith(workspace)) {
+    showToast('当前文件不在工程目录内', 'err');
+    return;
+  }
+  const dir = await ensureBuildDir();
+  if (!dir) return;
+  const xtc = await resolveXtc();
+  if (!xtc) {
+    showToast('未找到 xtc:请在设置里配置,或加入 PATH', 'err');
+    return;
+  }
+  const base = basename(p).replace(/\.xt$/i, '');
+  await compileTo(xtc, p, backend.joinPath(dir, `${base}.exe`), `编译 · ${basename(p)}`);
+}
+
+async function buildProject(): Promise<void> {
+  if (!workspace) {
+    showToast('先打开工程文件夹', 'err');
+    return;
+  }
+  if (!entryFile) {
+    showToast('未在 玄铁.配置.toml 找到 [项目] 入口,无法编译整个项目', 'err');
+    return;
+  }
+  const dir = await ensureBuildDir();
+  if (!dir) return;
+  const xtc = await resolveXtc();
+  if (!xtc) {
+    showToast('未找到 xtc:请在设置里配置,或加入 PATH', 'err');
+    return;
+  }
+  const entryPath = backend.joinPath(workspace, entryFile);
+  if (!(await backend.fsExists(entryPath))) {
+    showToast(`入口文件不存在: ${entryFile}`, 'err');
+    return;
+  }
+  const base = basename(entryFile).replace(/\.xt$/i, '');
+  await compileTo(xtc, entryPath, backend.joinPath(dir, `${base}.exe`), `编译 · 工程 ${basename(workspace)}`);
+}
+
+// ---- 查看(底部面板/侧栏开关) ----
+let sidebarVisible = true;
+
+function setSidebarVisible(v: boolean): void {
+  sidebarVisible = v;
+  L.sidebar.style.display = v ? '' : 'none';
+  L.sidebarSplit.style.display = v ? '' : 'none';
+}
+
+// ---- 帮助 / 关于 ----
+async function aboutModal(): Promise<void> {
+  let ver = '';
+  try {
+    ver = await getVersion();
+  } catch {
+    ver = '未知';
+  }
+  const xtc = await resolveXtc();
+  let xtcLine: string;
+  if (!xtc) {
+    xtcLine = '未找到 xtc(可在设置里指定)';
+  } else {
+    try {
+      xtcLine = await backend.toolVersion(xtc);
+    } catch (err) {
+      xtcLine = `读取失败: ${String(err)}`;
+    }
+  }
+  await showCustomModal(
+    '关于',
+    (body, close) => {
+      const add = (label: string, value: string | HTMLElement): void => {
+        const r = document.createElement('div');
+        r.className = 'mrow';
+        r.appendChild(document.createElement('label')).textContent = label;
+        if (typeof value === 'string') {
+          const span = document.createElement('span');
+          span.textContent = value;
+          r.appendChild(span);
+        } else {
+          r.appendChild(value);
+        }
+        body.appendChild(r);
+      };
+      add('版本', `v${ver || '?'}`);
+      add('版权', '© 2026 MARKJY · 玄铁铸造厂');
+      const repo = document.createElement('span');
+      repo.className = 'linkish';
+      repo.textContent = 'github.com/MARKJY-China/XuanTie-Lang';
+      repo.addEventListener('click', () => {
+        void openUrl('https://github.com/MARKJY-China/XuanTie-Lang');
+      });
+      add('开源仓库', repo);
+      add('官方文档', 'xt.markjy.com');
+      add('当前编译器', xtcLine);
+      const foot = document.createElement('div');
+      foot.className = 'm-foot';
+      const ok = document.createElement('button');
+      ok.className = 'mbtn primary';
+      ok.textContent = '确定';
+      ok.addEventListener('click', () => close());
+      foot.appendChild(ok);
+      body.appendChild(foot);
+    },
+    '玄铁语言官方 IDE(Tauri 2 + Monaco 过渡壳)',
+  );
+}
+
+// ---- 工具栏 / 菜单栏 / 快捷键 ----
 function bindUi(): void {
+  // WebView2 原生右键菜单是英文:除编辑器(Monaco 自带中文菜单)与输入框外一律禁用。
+  // Monaco 在自己的节点上已 preventDefault,这里只兜其余区域。
+  document.addEventListener('contextmenu', (e) => {
+    if (e.defaultPrevented) return;
+    const t = e.target as HTMLElement | null;
+    if (t?.closest('input, textarea')) return;
+    e.preventDefault();
+  });
+
   const openFolder = (): void => {
     void pickDir('选择玄铁工程文件夹').then((d) => {
       if (d) void openWorkspace(d);
     });
   };
-  byId('btn-open').addEventListener('click', openFolder);
+
+  // VSCode 式菜单栏:只放铸造厂支持的功能
+  initMenus(
+    [
+      {
+        btn: L.menubarFileBtn,
+        items: [
+          { act: 'open-folder', label: '打开文件夹…' },
+          { act: 'new-project', label: '新建工程…' },
+          { act: 'sep', label: '' },
+          { act: 'save', label: '保存', shortcut: 'Ctrl+S' },
+          { act: 'save-all', label: '全部保存' },
+          { act: 'sep', label: '' },
+          { act: 'refresh-tree', label: '刷新文件树' },
+        ],
+      },
+      {
+        btn: L.menubarEditBtn,
+        items: [
+          { act: 'undo', label: '撤销', shortcut: 'Ctrl+Z' },
+          { act: 'redo', label: '重做', shortcut: 'Ctrl+Y' },
+          { act: 'sep', label: '' },
+          { act: 'find', label: '查找', shortcut: 'Ctrl+F' },
+          { act: 'replace', label: '替换', shortcut: 'Ctrl+H' },
+          { act: 'sep', label: '' },
+          { act: 'comment', label: '切换行注释', shortcut: 'Ctrl+/' },
+        ],
+      },
+      {
+        btn: L.menubarViewBtn,
+        items: [
+          { act: 'view-bottom', label: '切换终端面板', shortcut: 'Ctrl+`' },
+          { act: 'view-sidebar', label: '切换文件树侧栏' },
+        ],
+      },
+      {
+        btn: L.menubarBuildBtn,
+        items: [
+          { act: 'build-file', label: '编译当前文件', shortcut: 'Ctrl+Shift+B' },
+          { act: 'build-project', label: '编译整个项目' },
+        ],
+      },
+      {
+        btn: L.menubarTermBtn,
+        items: [
+          { act: 'term-new', label: '新建终端', shortcut: 'Ctrl+Shift+`' },
+          { act: 'term-clear', label: '清空当前终端' },
+          { act: 'term-close', label: '关闭当前会话' },
+        ],
+      },
+      {
+        btn: L.menubarHelpBtn,
+        items: [
+          { act: 'help-docs', label: '官方文档 (xt.markjy.com)' },
+          { act: 'sep', label: '' },
+          { act: 'help-about', label: '关于铸造厂…' },
+        ],
+      },
+    ],
+    (act) => {
+      if (act === 'open-folder') openFolder();
+      else if (act === 'new-project') void newProjectModal();
+      else if (act === 'save') void saveActive();
+      else if (act === 'save-all') void tabs.saveAll().catch((err: unknown) => showToast(`保存失败: ${String(err)}`, 'err'));
+      else if (act === 'refresh-tree') void reloadTree();
+      else if (act === 'undo') editor.trigger('menubar', 'undo', null);
+      else if (act === 'redo') editor.trigger('menubar', 'redo', null);
+      else if (act === 'find') {
+        editor.focus();
+        editor.trigger('menubar', 'actions.find', null);
+      } else if (act === 'replace') {
+        editor.focus();
+        editor.trigger('menubar', 'editor.action.startFindReplaceAction', null);
+      } else if (act === 'comment') editor.trigger('menubar', 'editor.action.commentLine', null);
+      else if (act === 'view-bottom') {
+        setBottomVisible(L.bottomPanel.classList.contains('hidden'));
+      } else if (act === 'view-sidebar') {
+        setSidebarVisible(!sidebarVisible);
+      } else if (act === 'build-file') {
+        void buildCurrent();
+      } else if (act === 'build-project') {
+        void buildProject();
+      } else if (act === 'term-new') {
+        if (!workspace) {
+          showToast('先打开工程文件夹再新建终端', 'err');
+          return;
+        }
+        setBottomVisible(true);
+        setBottomTab('term');
+        void term.newSession(workspace);
+      } else if (act === 'term-clear') {
+        term.clearActive();
+      } else if (act === 'term-close') {
+        void term.closeActive();
+      } else if (act === 'help-docs') {
+        void openUrl('https://xt.markjy.com');
+      } else if (act === 'help-about') {
+        void aboutModal();
+      }
+    },
+  );
+
   byId('wl-open').addEventListener('click', openFolder);
-  byId('btn-new').addEventListener('click', () => void newProjectModal());
   byId('wl-new').addEventListener('click', () => void newProjectModal());
   byId('btn-run').addEventListener('click', () => void runActive());
   byId('btn-stop').addEventListener('click', () => {
     if (!term.stopRun()) showToast('没有正在运行的会话');
   });
   L.btnRefreshTree.addEventListener('click', () => void reloadTree());
+  L.btnEye.addEventListener('click', () => {
+    const cur = getSettings().treeDisplay ?? defaultSettings().treeDisplay;
+    const next = EYE_ORDER[(EYE_ORDER.indexOf(cur) + 1) % EYE_ORDER.length];
+    fileTree.setDisplay(next);
+    void saveSettings({ ...getSettings(), treeDisplay: next })
+      .then(applyEye)
+      .catch(() => applyEye());
+  });
   byId('btn-settings').addEventListener('click', () => void settingsModal());
   L.btabTerm.addEventListener('click', () => setBottomTab('term'));
   L.btabProblems.addEventListener('click', () => setBottomTab('problems'));
@@ -512,7 +848,19 @@ function bindUi(): void {
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyS') {
       e.preventDefault();
       void saveActive();
-    } else if (e.ctrlKey && e.code === 'Backquote') {
+    } else if (e.ctrlKey && e.shiftKey && !e.altKey && e.code === 'KeyB') {
+      e.preventDefault();
+      void buildCurrent();
+    } else if (e.ctrlKey && e.shiftKey && e.code === 'Backquote') {
+      e.preventDefault();
+      if (!workspace) {
+        showToast('先打开工程文件夹再新建终端', 'err');
+        return;
+      }
+      setBottomVisible(true);
+      setBottomTab('term');
+      void term.newSession(workspace);
+    } else if (e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
       e.preventDefault();
       setBottomVisible(L.bottomPanel.classList.contains('hidden'));
     } else if (e.code === 'F5') {
@@ -529,6 +877,8 @@ function bindUi(): void {
 
 async function boot(): Promise<void> {
   await loadSettings();
+  fileTree.setDisplay(getSettings().treeDisplay ?? defaultSettings().treeDisplay);
+  applyEye();
   const s = getSettings();
   if (s.lastWorkspace) {
     L.welcomeRec.textContent = `最近打开:${s.lastWorkspace}`;

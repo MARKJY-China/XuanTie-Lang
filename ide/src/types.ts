@@ -52,13 +52,26 @@ export interface SymbolInfoDto {
   location: LocationDto;
 }
 
+// 文件树显示模式(眼睛按钮三态):all=完全显示;dim=仅认准类型原位,其余淡化并整组置树尾;hide=仅认准类型
+export type TreeDisplay = 'all' | 'dim' | 'hide';
+
 export interface AppSettings {
   lspServerPath: string;
   xtcPath: string;
   tiepmPath: string;
   lastWorkspace: string;
+  treeDisplay: TreeDisplay;
+  // IDE 编译产物目录(「编译」菜单);留空 = 当前工程文件夹\build
+  buildDir: string;
 }
 
 export function defaultSettings(): AppSettings {
-  return { lspServerPath: '', xtcPath: '', tiepmPath: '', lastWorkspace: '' };
+  return {
+    lspServerPath: '',
+    xtcPath: '',
+    tiepmPath: '',
+    lastWorkspace: '',
+    treeDisplay: 'dim',
+    buildDir: '',
+  };
 }

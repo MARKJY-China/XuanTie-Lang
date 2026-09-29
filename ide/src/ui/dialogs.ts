@@ -11,10 +11,11 @@ function modalRoot(): HTMLElement {
   return document.getElementById('modal-root') as HTMLElement;
 }
 
-// 通用模态:bodyBuilder 拿到 body 与 close;close(result) 结束 Promise
+// 通用模态:title 主标题;subtitle 可选副标题(小字弱化,换行显示,不用破折号拼接)
 export function showCustomModal(
   title: string,
   bodyBuilder: (body: HTMLElement, close: (result?: unknown) => void) => void,
+  subtitle?: string,
 ): Promise<unknown> {
   return new Promise((resolve) => {
     const root = modalRoot();
@@ -22,6 +23,7 @@ export function showCustomModal(
     root.innerHTML = '<div class="overlay"></div>';
     const card = el('div', 'modal');
     card.appendChild(el('div', 'm-head', title));
+    if (subtitle) card.appendChild(el('div', 'm-subtitle', subtitle));
     const body = el('div', 'm-body');
     card.appendChild(body);
     root.appendChild(card);
@@ -82,12 +84,19 @@ export interface ContextMenuItem {
   action: () => void;
 }
 
-export function showContextMenu(x: number, y: number, items: ContextMenuItem[]): void {
+// 菜单项数组元素:分隔符用 CONTEXT_SEP
+export type ContextMenuEntry = ContextMenuItem | typeof CONTEXT_SEP;
+
+export function showContextMenu(x: number, y: number, items: ContextMenuEntry[]): void {
   const root = document.getElementById('ctx-root') as HTMLElement;
   root.classList.add('open');
   root.innerHTML = '';
   const menu = el('div', 'ctx-menu');
   for (const item of items) {
+    if (item === CONTEXT_SEP) {
+      menu.appendChild(el('div', 'ctx-sep'));
+      continue;
+    }
     const row = el('div', 'ctx-item' + (item.danger ? ' danger' : ''), item.label);
     row.addEventListener('click', () => {
       closeContextMenu();
@@ -102,6 +111,9 @@ export function showContextMenu(x: number, y: number, items: ContextMenuItem[]):
   root.addEventListener('click', closeContextMenu, { once: true });
   root.addEventListener('contextmenu', closeContextMenu, { once: true });
 }
+
+// 菜单分隔符哨兵(类型安全,避免调用方塞 undefined)
+export const CONTEXT_SEP: unique symbol = Symbol('sep');
 
 export function closeContextMenu(): void {
   const root = document.getElementById('ctx-root') as HTMLElement;

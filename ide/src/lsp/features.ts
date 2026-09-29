@@ -45,6 +45,38 @@ function modelPath(model: monaco.editor.ITextModel): string {
   return uriToPath(model.uri.toString());
 }
 
+// 静态符号兜底:逐行提取顶层 函/型/口/设/常 声明(LSP 不可用或请求失败时,大纲仍然可用)
+const SYM_LINE_RE =
+  /^\s*(?:(?:公|私|护|覆)\s+)*(?:(异步)\s+)?(函|型|口|设|常)\s+([^\s({=:.]+)/;
+
+function staticSymbols(model: monaco.editor.ITextModel): monaco.languages.DocumentSymbol[] {
+  const out: monaco.languages.DocumentSymbol[] = [];
+  const lines = model.getLinesContent();
+  for (let i = 0; i < lines.length; i++) {
+    const m = SYM_LINE_RE.exec(lines[i]);
+    if (!m) continue;
+    const kindMap: Record<string, monaco.languages.SymbolKind> = {
+      函: monaco.languages.SymbolKind.Function,
+      型: monaco.languages.SymbolKind.Class,
+      口: monaco.languages.SymbolKind.Interface,
+      设: monaco.languages.SymbolKind.Variable,
+      常: monaco.languages.SymbolKind.Constant,
+    };
+    const line = i + 1;
+    const col = lines[i].indexOf(m[3]) + 1;
+    const range = new monaco.Range(line, col, line, col + m[3].length);
+    out.push({
+      name: m[3],
+      detail: m[2] + (m[1] ? '(异步)' : ''),
+      kind: kindMap[m[2]] ?? monaco.languages.SymbolKind.Variable,
+      range,
+      selectionRange: range,
+      tags: [],
+    });
+  }
+  return out;
+}
+
 export function attachLspFeatures(
   client: XtLspClient,
   editor: monaco.editor.IStandaloneCodeEditor,
@@ -63,7 +95,8 @@ export function attachLspFeatures(
             textDocument: { uri: pathToUri(modelPath(model)) },
             position: { line: position.lineNumber - 1, character: position.column - 1 },
           });
-        } catch {
+        } catch (err) {
+          console.error('[补全] LSP completion 失败:', err);
           return { suggestions: [] };
         }
         const items = (Array.isArray(result) ? result : []) as CompletionItemDto[];
@@ -105,7 +138,8 @@ export function attachLspFeatures(
             textDocument: { uri: pathToUri(modelPath(model)) },
             position: { line: position.lineNumber - 1, character: position.column - 1 },
           });
-        } catch {
+        } catch (err) {
+          console.error('[悬停] LSP hover 失败:', err);
           return null;
         }
         const hover = result as HoverDto | null;
@@ -118,34 +152,38 @@ export function attachLspFeatures(
   disposables.push(
     monaco.languages.registerDocumentSymbolProvider(XT_LANGUAGE_ID, {
       async provideDocumentSymbols(model) {
-        if (!client.connected) return [];
-        let result: unknown;
-        try {
-          result = await client.request('textDocument/documentSymbol', {
-            textDocument: { uri: pathToUri(modelPath(model)) },
-          });
-        } catch {
-          return [];
+        if (client.connected) {
+          try {
+            const result = await client.request('textDocument/documentSymbol', {
+              textDocument: { uri: pathToUri(modelPath(model)) },
+            });
+            const syms = (Array.isArray(result) ? result : []) as SymbolInfoDto[];
+            if (syms.length > 0) {
+              return syms.map((s) => {
+                const r = s.location.range;
+                const range = new monaco.Range(
+                  r.start.line + 1,
+                  r.start.character + 1,
+                  r.end.line + 1,
+                  r.end.character + 1,
+                );
+                // LSP SymbolKind 1 起,monaco.languages.SymbolKind 0 起,数值差 1
+                return {
+                  name: s.name,
+                  detail: '',
+                  kind: (s.kind - 1) as monaco.languages.SymbolKind,
+                  range,
+                  selectionRange: range,
+                  tags: [],
+                };
+              });
+            }
+          } catch (err) {
+            // 报错优于静默:留下线索(Ctrl+Shift+I 可见),同时走静态兜底
+            console.error('[符号] LSP documentSymbol 失败,走静态兜底:', err);
+          }
         }
-        const syms = (Array.isArray(result) ? result : []) as SymbolInfoDto[];
-        return syms.map((s) => {
-          const r = s.location.range;
-          const range = new monaco.Range(
-            r.start.line + 1,
-            r.start.character + 1,
-            r.end.line + 1,
-            r.end.character + 1,
-          );
-          // LSP SymbolKind 1 起,monaco.languages.SymbolKind 0 起,数值差 1
-          return {
-            name: s.name,
-            detail: '',
-            kind: (s.kind - 1) as monaco.languages.SymbolKind,
-            range,
-            selectionRange: range,
-            tags: [],
-          };
-        });
+        return staticSymbols(model);
       },
     }),
   );

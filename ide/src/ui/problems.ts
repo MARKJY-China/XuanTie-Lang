@@ -52,7 +52,9 @@ export class ProblemsPanel {
       el.className = 'problem-row ' + (isErr ? 'err' : 'warn');
       const icon = document.createElement('span');
       icon.className = 'picon';
-      icon.textContent = isErr ? '⛔' : '⚠';
+      const ico = document.createElement('i');
+      ico.className = 'codicon ' + (isErr ? 'codicon-error' : 'codicon-warning');
+      icon.appendChild(ico);
       const msg = document.createElement('span');
       msg.className = 'pmsg';
       msg.textContent = row.diag.message;

@@ -1,4 +1,4 @@
-/* 玄铁铸造厂 — 全局样式(暗色,零框架,直接操作 DOM) */
+/* 玄铁铸造厂 — 全局样式(暗色,零框架,图标一律 codicon/ico,禁 Emoji) */
 :root {
   --bg: #1e1e1e;
   --bg-panel: #252526;
@@ -30,34 +30,43 @@ body {
 
 #app { display: flex; flex-direction: column; }
 
-/* ============ 工具栏 ============ */
+/* ============ 工具栏 + 菜单栏 ============ */
 #toolbar {
-  height: 40px; flex: 0 0 40px;
+  height: 38px; flex: 0 0 38px;
   display: flex; align-items: center; gap: 6px;
   padding: 0 10px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
 }
-#toolbar .logo {
-  font-weight: 600; color: var(--accent); margin-right: 10px;
-  letter-spacing: 1px; white-space: nowrap;
-}
-#toolbar .sep { width: 1px; height: 20px; background: var(--border); margin: 0 6px; }
+.titlebar-ico { width: 18px; height: 18px; }
+#toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
 #toolbar .spacer { flex: 1; }
-.tbtn {
-  height: 26px; padding: 0 12px;
+
+/* 自绘标题栏窗口控制(与工具栏一体,VSCode 式) */
+#win-controls { display: flex; align-items: stretch; height: 100%; }
+.winbtn {
+  width: 42px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: none; color: var(--fg-dim);
+  cursor: pointer; border-radius: 0;
+}
+.winbtn .codicon { font-size: 15px; }
+.winbtn:hover { background: var(--bg-hover); color: var(--fg); }
+.winbtn-close:hover { background: #e81123; color: #fff; }
+
+/* VSCode 式菜单栏:文字标题,悬停/点击出下拉 */
+.menubar { display: flex; align-items: center; gap: 2px; }
+.menu-btn {
+  height: 26px; padding: 0 10px;
   background: transparent; color: var(--fg);
-  border: 1px solid transparent; border-radius: 4px;
+  border: none; border-radius: 4px;
   cursor: pointer; font-size: 13px; font-family: inherit;
   white-space: nowrap;
 }
-.tbtn:hover { background: var(--bg-hover); }
-.tbtn:disabled { opacity: 0.45; cursor: default; }
-.tbtn:disabled:hover { background: transparent; }
-.tbtn.primary { border-color: var(--accent-dim); color: var(--accent); font-weight: 600; }
-.tbtn.primary:hover { background: rgba(232, 132, 44, 0.12); }
-
-.menu-anchor { position: relative; }
+.menu-btn:hover, .menu-btn.open { background: var(--bg-hover); }
+.menu-anchor, .menubar > .menu-wrap { position: relative; }
+.menu-btn { position: relative; }
+.menudrop { top: 30px; left: 0; }
 .dropdown {
   position: absolute; top: 30px; left: 0; z-index: 300;
   min-width: 170px;
@@ -69,8 +78,27 @@ body {
 .dropdown.open { display: block; }
 .dropdown .dd-item {
   padding: 6px 12px; border-radius: 4px; cursor: pointer; white-space: nowrap;
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
 }
 .dropdown .dd-item:hover { background: var(--bg-active); }
+.dropdown .dd-item .shortcut { color: var(--fg-dim); font-size: 12px; margin-left: auto; }
+.dd-item .codicon { margin-right: 6px; }
+
+.tbtn {
+  height: 26px; padding: 0 10px;
+  display: inline-flex; align-items: center; gap: 5px;
+  background: transparent; color: var(--fg);
+  border: 1px solid transparent; border-radius: 4px;
+  cursor: pointer; font-size: 13px; font-family: inherit;
+  white-space: nowrap;
+}
+.tbtn .codicon { font-size: 15px; }
+.tbtn .codicon.caret { font-size: 12px; color: var(--fg-dim); }
+.tbtn:hover { background: var(--bg-hover); }
+.tbtn:disabled { opacity: 0.45; cursor: default; }
+.tbtn:disabled:hover { background: transparent; }
+.tbtn.primary { border-color: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.tbtn.primary:hover { background: rgba(232, 132, 44, 0.12); }
 
 /* ============ 主区 ============ */
 #main-row { flex: 1 1 0; display: flex; min-height: 0; }
@@ -84,15 +112,17 @@ body {
   height: 32px; flex: 0 0 32px;
   display: flex; align-items: center; gap: 4px;
   padding: 0 8px;
-  color: var(--fg-dim); font-size: 12px; text-transform: none;
+  color: var(--fg-dim); font-size: 12px;
   border-bottom: 1px solid var(--border);
 }
 #sidebar-head .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ibtn {
-  width: 22px; height: 22px; line-height: 20px; text-align: center;
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
   background: transparent; border: none; border-radius: 4px;
   color: var(--fg-dim); cursor: pointer; font-size: 14px;
 }
+.ibtn .codicon { font-size: 14px; }
 .ibtn:hover { background: var(--bg-hover); color: var(--fg); }
 #file-tree { flex: 1; overflow: auto; padding: 4px 0; }
 
@@ -102,10 +132,18 @@ body {
   cursor: pointer; white-space: nowrap;
 }
 .tree-row:hover { background: var(--bg-hover); }
-.tree-row .twist { width: 12px; flex: 0 0 12px; text-align: center; color: var(--fg-dim); font-size: 10px; }
-.tree-row .ficon { flex: 0 0 auto; font-size: 12px; }
+.tree-row .twist { width: 14px; flex: 0 0 14px; display: inline-flex; align-items: center; justify-content: center; color: var(--fg-dim); }
+.tree-row .twist .codicon { font-size: 13px; }
+.tree-row .codicon, .tree-row .ico-img { flex: 0 0 auto; font-size: 15px; width: 15px; height: 15px; }
+.tree-row .ico-img { object-fit: contain; }
+/* 工程锚 玄铁.配置.toml 的专属橙色齿轮(同 toml 齿轮,仅着色) */
+.tree-row .codicon.proj-config { color: var(--accent); }
 .tree-row .fname { overflow: hidden; text-overflow: ellipsis; }
 .tree-row.xt-file .fname { color: #e8b76a; }
+/* 二进制/未知文本:整行淡化 */
+.tree-row.dim { opacity: 0.5; }
+.tree-row.dim .fname { color: var(--fg-dim); }
+.tree-row.tree-group .fname { color: var(--fg-dim); font-size: 12px; }
 
 #sidebar-split {
   width: 3px; flex: 0 0 3px; cursor: col-resize;
@@ -135,9 +173,11 @@ body {
 .tab .dirty { color: var(--accent); display: none; }
 .tab.dirty .dirty { display: inline; }
 .tab .tclose {
-  width: 16px; height: 16px; line-height: 15px; text-align: center;
-  border-radius: 3px; font-size: 14px; color: var(--fg-dim);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  border-radius: 3px; color: var(--fg-dim);
 }
+.tab .tclose .codicon { font-size: 13px; }
 .tab .tclose:hover { background: var(--bg-active); color: var(--fg); }
 
 #editor-host { flex: 1 1 0; position: relative; min-height: 0; }
@@ -186,9 +226,11 @@ body {
 }
 .btab {
   height: 30px; padding: 0 12px; line-height: 28px;
+  display: inline-flex; align-items: center; gap: 5px;
   background: transparent; border: none; border-bottom: 2px solid transparent;
   color: var(--fg-dim); cursor: pointer; font-size: 12.5px; font-family: inherit;
 }
+.btab .codicon { font-size: 14px; }
 .btab.active { color: var(--fg); border-bottom-color: var(--accent); }
 #bottom-tabs .spacer { flex: 1; }
 #term-session-bar {
@@ -202,7 +244,11 @@ body {
   color: var(--fg-dim); cursor: pointer; font-size: 11.5px; white-space: nowrap;
 }
 .ses-tab.active { color: var(--fg); border-color: var(--accent-dim); }
-.ses-tab .sclose { width: 13px; height: 13px; line-height: 12px; text-align: center; border-radius: 3px; font-size: 12px; }
+.ses-tab .sclose {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 13px; height: 13px; border-radius: 3px;
+}
+.ses-tab .sclose .codicon { font-size: 11px; }
 .ses-tab .sclose:hover { background: var(--bg-active); }
 
 #term-host { flex: 1; min-height: 0; position: relative; padding: 2px 4px; }
@@ -216,7 +262,8 @@ body {
   height: 24px; padding: 0 12px; cursor: pointer; white-space: nowrap;
 }
 .problem-row:hover { background: var(--bg-hover); }
-.problem-row .picon { flex: 0 0 14px; text-align: center; }
+.problem-row .picon { flex: 0 0 16px; display: inline-flex; }
+.problem-row .picon .codicon { font-size: 14px; }
 .problem-row.err .picon { color: var(--err); }
 .problem-row.warn .picon { color: var(--warn); }
 .problem-row .pmsg { overflow: hidden; text-overflow: ellipsis; }
@@ -228,7 +275,6 @@ body {
   height: 24px; flex: 0 0 24px;
   display: flex; align-items: center; gap: 14px;
   padding: 0 12px;
-  background: #007acc0d;
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
   color: var(--fg-dim); font-size: 12px;
@@ -252,9 +298,13 @@ body {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
 }
 .modal .m-head {
-  padding: 12px 16px; font-size: 14px; font-weight: 600;
+  padding: 12px 16px 2px; font-size: 14px; font-weight: 600;
+}
+.modal .m-subtitle {
+  padding: 0 16px 10px; font-size: 12px; color: var(--fg-dim);
   border-bottom: 1px solid var(--border);
 }
+.modal .m-head + .m-body { border-top: none; }
 .modal .m-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 12px; }
 .modal .m-foot { padding: 10px 16px 14px; display: flex; justify-content: flex-end; gap: 8px; }
 .mrow { display: flex; flex-direction: column; gap: 5px; }
@@ -268,6 +318,9 @@ body {
 .mrow input[type="text"]:focus, .mrow select:focus { border-color: var(--accent-dim); }
 .mrow .rowline { display: flex; gap: 6px; }
 .mrow .rowline input { flex: 1; }
+.mrow .checkline { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.mrow .checkline input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--accent-dim); cursor: pointer; }
+.mrow .checkline span { color: var(--fg); font-size: 13px; }
 .mbtn {
   height: 30px; padding: 0 16px;
   background: var(--bg-deep); color: var(--fg);
@@ -277,11 +330,13 @@ body {
 .mbtn:hover { border-color: var(--fg-dim); }
 .mbtn.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
 .mbtn.primary:hover { background: var(--accent); border-color: var(--accent); }
+.linkish { color: var(--accent); cursor: pointer; }
+.linkish:hover { text-decoration: underline; }
 
 #ctx-root { position: fixed; inset: 0; z-index: 950; display: none; }
 #ctx-root.open { display: block; }
 .ctx-menu {
-  position: absolute; min-width: 150px;
+  position: absolute; min-width: 170px;
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: 5px;
   padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
 }

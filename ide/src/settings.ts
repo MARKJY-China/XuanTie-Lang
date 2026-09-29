@@ -1,7 +1,7 @@
 // 设置缓存与工具链路径解析(设置 → PATH → 工作区约定位置 → xtc 锚定位置)
 import * as backend from './backend';
 import { dirname } from './util';
-import { defaultSettings, type AppSettings } from './types';
+import { defaultSettings, type AppSettings, type TreeDisplay } from './types';
 
 let cache: AppSettings = defaultSettings();
 
@@ -29,6 +29,10 @@ export async function saveSettings(next: AppSettings): Promise<void> {
 async function valid(p: string | undefined): Promise<string | null> {
   if (p && p.length > 0 && (await backend.fsExists(p))) return p;
   return null;
+}
+
+export function treeDisplay(): TreeDisplay {
+  return cache.treeDisplay;
 }
 
 export async function resolveXtc(): Promise<string | null> {

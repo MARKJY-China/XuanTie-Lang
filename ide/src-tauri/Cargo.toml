@@ -1,6 +1,6 @@
 [package]
 name = "xuantie-foundry"
-version = "0.1.0"
+version = "0.2.0"
 description = "玄铁铸造厂 —— 玄铁语言 IDE"
 edition = "2021"
 
@@ -11,8 +11,9 @@ tauri-build = { version = "2", features = [] }
 portable-pty = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["devtools"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
 trash = "5"
 
 # 发行构建必须启用(内嵌前端资源):cargo build --release --features custom-protocol

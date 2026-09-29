@@ -16,6 +16,8 @@ interface TermSession {
   tabEl: HTMLElement;
   alive: boolean;
   isMain: boolean;
+  // 进程退出回调(编译等动作借此感知完成时机)
+  onExit?: () => void;
 }
 
 const TERM_OPTIONS = {
@@ -88,7 +90,9 @@ export class TerminalPane {
     tname.title = title;
     const sclose = document.createElement('span');
     sclose.className = 'sclose';
-    sclose.textContent = '×';
+    const scloseIco = document.createElement('i');
+    scloseIco.className = 'codicon codicon-close';
+    sclose.appendChild(scloseIco);
     tabEl.append(tname, sclose);
     tabEl.addEventListener('click', () => this.activate(id));
     sclose.addEventListener('click', (e) => {
@@ -123,6 +127,7 @@ export class TerminalPane {
         await listen<void>(`pty-exit-${s.id}`, () => {
           s.alive = false;
           this.writeSession(s, '\r\n\x1b[90m[进程已退出,点 × 关闭]\x1b[0m\r\n');
+          s.onExit?.();
         }),
       );
       this.unlisten.set(s.id, un);
@@ -136,12 +141,14 @@ export class TerminalPane {
     program: string | null,
     args: string[] | null,
     isMain = false,
+    onExit?: () => void,
   ): Promise<void> {
     if (this.sessions.has(id)) {
       this.activate(id);
       return;
     }
     const s = this.buildSession(id, title, isMain);
+    s.onExit = onExit;
     this.sessions.set(id, s);
     this.activate(id);
     await this.registerStreams(s);
@@ -163,10 +170,39 @@ export class TerminalPane {
     await this.spawn('main', '终端', cwd, null, null, true);
   }
 
-  async runCommand(title: string, cwd: string, program: string, args: string[]): Promise<void> {
+  getActiveId(): string | null {
+    return this.activeId;
+  }
+
+  // 菜单「新建终端」:独立常驻会话(与运行会话同类,不经 shell 拉起 PowerShell)
+  async newSession(cwd: string): Promise<void> {
+    const id = `term-${++this.seq}`;
+    const title = `终端 ${this.seq}`;
+    await this.spawn(id, title, cwd, null, null);
+  }
+
+  async closeActive(): Promise<void> {
+    if (this.activeId) await this.closeSession(this.activeId);
+  }
+
+  clearActive(): void {
+    const s = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    if (s) {
+      s.term.clear();
+      s.term.focus();
+    }
+  }
+
+  async runCommand(
+    title: string,
+    cwd: string,
+    program: string,
+    args: string[],
+    onExit?: () => void,
+  ): Promise<void> {
     this.pruneDeadRuns();
     const id = `run-${++this.seq}`;
-    await this.spawn(id, title, cwd, program, args);
+    await this.spawn(id, title, cwd, program, args, false, onExit);
   }
 
   stopRun(): boolean {

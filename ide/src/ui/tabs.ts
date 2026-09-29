@@ -168,7 +168,9 @@ export class TabManager {
     dot.textContent = '●';
     const closeBtn = document.createElement('span');
     closeBtn.className = 'tclose';
-    closeBtn.textContent = '×';
+    const closeIco = document.createElement('i');
+    closeIco.className = 'codicon codicon-close';
+    closeBtn.appendChild(closeIco);
     tab.append(name, dot, closeBtn);
     tab.addEventListener('click', () => this.activate(path));
     closeBtn.addEventListener('click', (e) => {

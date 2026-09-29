@@ -1,13 +1,22 @@
 # 玄铁铸造厂 —— 作用域纪律(对任何 AI / 贡献者永久生效)
 
-## v0.1 范围(只许有这些,一个不多)
+## UI 永久纪律
 
-- 文件树
-- Monaco 编辑器(玄铁高亮 + LSP 全家桶:补全 / 悬停 / 跳定义 / 大纲 / 诊断)
+- **禁止 Emoji 图标**:界面图标一律 `@vscode/codicons`(MIT);`.xt` 文件图标用 VSIX 同款玄铁
+  `.ico`(`src/assets/xuantie.ico`)。新增图标先用 `grep "codicon-名字" node_modules/@vscode/codicons/dist/codicon.css`
+  核实存在,禁止凭记忆写类名。
+- **禁止"——"拼接式标题**:主标题 + 小字副标题两行呈现(见设置弹窗 m-subtitle 模式)。
+
+## v0.2 范围(只许有这些,一个不多)
+
+- 文件树(眼睛三态显示:完全/半显示/不显示,build 目录豁免,右键复制路径与空白区新建)
+- Monaco 编辑器(玄铁高亮 + LSP 全家桶:补全 / 悬停 / 跳定义 / 大纲(含静态兜底) / 诊断)+ 全面中文 UI
 - 一键运行(探测 pao,旧编译器自动回退 tie+运行)
-- 内嵌终端(ConPTY + xterm.js)
+- 编译菜单(当前文件 Ctrl+Shift+B / 整个项目,产物入 工程build 目录,位置可设置)
+- 菜单栏(文件/编辑/查看/编译/终端/帮助)+ 自绘一体化标题栏(窗口控制内嵌)
+- 内嵌终端(ConPTY + xterm.js,新建/清空/关闭会话)
 - 铁铺入口(`tiepm az/ss/lc/ql`)
-- 新建工程模板
+- 新建工程模板 + 关于弹窗(版本/版权/仓库/XTC 版本)
 
 ## 永久禁令(未经用户明确批准,不得实现,不得"顺手"做)
 
@@ -46,6 +55,10 @@
 - definition 返回的 uri 是 `file:///` + `:`→`%3A` + 多字节逐字节百分号编码
   (lsp/xt_lsp.xt 的 路径转URI),客户端解码必须 decodeURIComponent 兜底。
 - 运行会话直连程序不经 shell:PowerShell 带引号路径要 `&` 前缀而 cmd 不要——直连把两者都绕开。
+- **Monaco 汉化机制**:vite 插件把 monaco 内部对 `vs/nls.js` 的解析重定向到 `src/monaco/nls-zh.ts`
+  (同签名 shim + `nls-zh-table.ts` 精确查表,查不到回落英文)。改表后必须跑
+  `node temp/check_nls_coverage.mjs` 校验键名(临时脚本在仓库 temp/,清掉前先移到别处或重写)。
+  键必须与 monaco esm 源码的英文默认值逐字符一致——新增翻译一律从源码提取,严禁凭记忆写键。
 - **发行 exe 必须带 custom-protocol**:`cargo build --release --features custom-protocol`(或 `npx tauri build`)。
   裸 `cargo build --release` 产出的是开发壳——WebView 去 连 localhost:5173 白屏,资源不内嵌(体积也小 1MB+)。
   前端资源是编译期内嵌的:改前端后必须 `npm run build` 再编 Rust。
