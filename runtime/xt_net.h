@@ -38,6 +38,10 @@ int xt_net_listen(int port, void (*callback)(void* stream));
 // 原版只传 func_ptr,捕获环境的闭包被调用时 env 槽位是 socket 指针,必崩(自举/服务端库实测)
 int xt_net_listen_fn(int port, XTValue fn_val);
 
+// 指定绑定地址版:bind_addr 为 NULL/空串时绑回环 127.0.0.1;对外监听必须显式传 "0.0.0.0"。
+// 默认回环是刻意的安全默认——监听默认对外等于在开发机上随手一句就给整个局域网开门。
+int xt_net_listen_fn_ex(int port, XTValue fn_val, const char* bind_addr);
+
 // 以 env 感知约定调用一元闭包(供 C 侧回调 trampoline 使用)
 XTValue xt_closure_call1(XTValue fn_val, XTValue arg);
 

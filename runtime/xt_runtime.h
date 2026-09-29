@@ -472,7 +472,8 @@ void xt_net_close_obj(struct XTSocket* s);
 
 // ---/// 核心网络与系统原语 (v0.16.4+) ---
 XTValue xt_http_request(XTValue url_val);
-XTValue xt_listen(XTValue port_val, XTValue callback_val);
+// 第三个参数是绑定地址(XTString):空/0 时绑回环 127.0.0.1,对外须显式传 "0.0.0.0"
+XTValue xt_listen(XTValue port_val, XTValue callback_val, XTValue addr_val);
 XTValue xt_connect(XTValue addr_val);
 XTValue xt_execute(XTValue cmd_val);
 

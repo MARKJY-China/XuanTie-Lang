@@ -3030,18 +3030,30 @@ XTValue xt_closure_call1(XTValue fn_val, XTValue arg) {
     return ((cb_plain)f->func_ptr)(arg);
 }
 
-XTValue xt_listen(XTValue port_val, XTValue callback_val) {
+XTValue xt_listen(XTValue port_val, XTValue callback_val, XTValue addr_val) {
     int64_t port = xt_to_int(port_val);
     if (!xt_is_real_ptr(callback_val)) {
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("回调函数无效"));
     }
+    // 绑定地址:缺省(0/空)绑回环 127.0.0.1 —— 刻意不对外,要对外必须显式写 "0.0.0.0"。
+    // 传了非字符串按明确错误处理,不静默回退(静默回退等于把"对外开门"当默认值)。
+    const char* host = "127.0.0.1";
+    if (addr_val != 0) {
+        if (xt_is_real_ptr(addr_val) && ((XTObject*)addr_val)->type_id == XT_TYPE_STRING) {
+            const char* s = ((XTString*)addr_val)->data;
+            if (s && s[0]) host = s;
+        } else {
+            return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(
+                "绑定地址必须是字符串(如 \"127.0.0.1\" 仅本机 / \"0.0.0.0\" 对外)"));
+        }
+    }
     // 闭包整对象传递(支持捕获环境):C 侧经 xt_closure_call1 按 env 调用
     xt_retain(callback_val);  // 监听常驻,函数对象由监听持有
-    int rc = xt_net_listen_fn((int)port, callback_val);
+    int rc = xt_net_listen_fn_ex((int)port, callback_val, host);
     if (rc < 0) {
         xt_release(callback_val);
-        char err[64];
-        snprintf(err, sizeof(err), "监听端口 %d 失败", (int)port);
+        char err[192];
+        snprintf(err, sizeof(err), "监听 %s:%d 失败(地址不可用或端口被占用)", host, (int)port);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err));
     }
     return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);

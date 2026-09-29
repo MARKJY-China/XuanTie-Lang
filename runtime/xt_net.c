@@ -785,28 +785,44 @@ static void* accept_thread(void* arg) {
     return NULL;
 }
 
-static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val);
+static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val, const char* bind_addr);
 
 int xt_net_listen(int port, void (*callback)(void* stream)) {
-    return xt_net_listen_impl(port, callback, 0);
+    return xt_net_listen_impl(port, callback, 0, NULL);
 }
 
 // 闭包版:直接收 XTFunction,由 conn_handler 走 xt_closure_call1(带 env)
 int xt_net_listen_fn(int port, XTValue fn_val) {
-    return xt_net_listen_impl(port, NULL, fn_val);
+    return xt_net_listen_impl(port, NULL, fn_val, NULL);
 }
 
-static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val) {
+// 指定绑定地址版:bind_addr 为 NULL/空串时绑回环 127.0.0.1(与语言层默认一致)。
+// 对外监听必须显式传 "0.0.0.0":监听默认对外是个静默的安全缺口——服务在开发机上随手一跑
+// 就等于对整个局域网开门,而默认值不可见,没人会去审计它。
+int xt_net_listen_fn_ex(int port, XTValue fn_val, const char* bind_addr) {
+    return xt_net_listen_impl(port, NULL, fn_val, bind_addr);
+}
+
+static int xt_net_listen_impl(int port, void (*callback)(void*), XTValue fn_val, const char* bind_addr) {
     xt_sock_t listen_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_sock == XT_INVALID_SOCK) return -1;
 
     int opt = 1;
     setsockopt(listen_sock, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
 
+    // 绑定地址:数字 IPv4 字面量(0.0.0.0 / 127.0.0.1 等)直接解析、不经 DNS;否则走 resolve_host。
+    // 两者都失败即明确返回失败——绝不静默回退成 0.0.0.0(那正是本次要修掉的隐患)。
+    const char* host = (bind_addr && bind_addr[0]) ? bind_addr : "127.0.0.1";
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    unsigned long numeric = inet_addr(host);
+    if (numeric != INADDR_NONE) {
+        addr.sin_addr.s_addr = numeric;
+    } else if (resolve_host(host, &addr) != 0) {
+        xt_sock_close(listen_sock);
+        return -1;
+    }
     addr.sin_port = htons((unsigned short)port);
 
     if (bind(listen_sock, (struct sockaddr*)&addr, sizeof(addr)) != 0) { xt_sock_close(listen_sock); return -1; }
