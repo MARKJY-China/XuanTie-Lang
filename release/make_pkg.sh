@@ -139,9 +139,54 @@ xtc.exe 跑 hello.xt           # 编译并立即运行(透传参数与退出码)
   (`引 "数组"` 裸包名直接可用;渲染已内置 libraylib.a 与预编译渲染桥,开箱即用)
 - `tools/` 自带极简 LLVM-clang 与 TDM-GCC 子集(仅编译期使用)
 - `GUIDE/` 语言手册(参考手册 + 01~12 指南 + 关键字速查 + UI 库文档)
+- `MANIFEST.txt` 构建清单:编译器与自举链各级 md5、对应提交哈希、包内全部文件 md5
+  (敲 `xtc.exe -h` 会打印其中「编译器自述」段——版本号是常量不随提交移动,核验请看这份清单)
 - `@@VSIX@@` VSCode 插件(已内置 LSP 语言服务器):双击安装,或 `code --install-extension @@VSIX@@`
 EOF
 sed -i "s/@@UI_VER@@/$UI_VER/; s/@@XU_VER@@/$XU_VER/; s/@@VSIX@@/$(basename "$VSIX")/" $PKG/README.md
+
+# ── 7. 构建清单 MANIFEST.txt(第三方核验"二进制是否对应这份源码"的唯一凭据)──
+# 动机:版本号是源码里的一行常量,v1.0-rc.2 窗口内的任意一次提交产出的二进制都自称 v1.0-rc.2;
+# 而发行物此前不记录任何指纹 → 任何人都无法核验对应关系,只能猜(已发生过一次误判)。
+# 这里把编译器 md5、自举链各级 md5、提交哈希、包内全部文件 md5 一并落盘;
+# 其中「编译器自述」段由 xtc.exe -h 原样打印,故裸 exe 也能自证。
+PKG_VER=$("$PKG/xtc.exe" -h 2>/dev/null | head -1 | sed 's/.*驱动 //' | tr -d '\r')
+XTC_MD5=$(md5sum "$PKG/xtc.exe" | cut -d' ' -f1)
+XTC_SIZE=$(stat -c%s "$PKG/xtc.exe")
+COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "(非 git 工作区,无法记录提交)")
+DIRTY=$(git -C "$ROOT" status --porcelain 2>/dev/null | head -1 || true)
+DDC3=$(md5sum "$ROOT/build/xtc_s3.exe" 2>/dev/null | cut -d' ' -f1 || echo "(缺)")
+DDC4=$(md5sum "$ROOT/build/xtc_s4.exe" 2>/dev/null | cut -d' ' -f1 || echo "(缺)")
+CLANG_V=$(clang --version 2>/dev/null | head -1 || echo "(未知)")
+GCC_V=$(gcc --version 2>/dev/null | head -1 || echo "(未知)")
+{
+  echo "玄铁发行包构建清单 (MANIFEST)"
+  echo "生成时间: $(date '+%Y-%m-%d %H:%M:%S %z')"
+  echo
+  echo "# 以下「编译器自述」段由 xtc.exe -h 原样打印(裸 exe 也能自证),标记行格式请勿改动"
+  echo "[编译器自述]"
+  echo "版本: $PKG_VER"
+  echo "提交: $COMMIT"
+  echo "编译器: xtc.exe  $XTC_SIZE 字节  md5=$XTC_MD5"
+  echo "自举定点: s3=$DDC3  s4=$DDC4  $([ "$DDC3" = "$DDC4" ] && echo '逐字节一致' || echo '不一致(异常)')"
+  echo "构建工具链: $CLANG_V | $GCC_V"
+  echo "[/编译器自述]"
+  echo
+  echo "[自举链各级产物]"
+  for _n in 1 2 3 4; do
+    if [ -f "$ROOT/build/xtc_s$_n.exe" ]; then
+      echo "s$_n: md5=$(md5sum "$ROOT/build/xtc_s$_n.exe" | cut -d' ' -f1)  $(stat -c%s "$ROOT/build/xtc_s$_n.exe") 字节"
+    fi
+  done
+  echo
+  echo "[包内全部文件]      # path  md5  字节数"
+  (cd "$PKG" && find . -type f ! -name "MANIFEST.txt" | sed 's|^\./||' | sort | while read -r _f; do
+    echo "$_f  $(md5sum "$_f" | cut -d' ' -f1)  $(stat -c%s "$_f")"
+  done)
+  echo
+  echo "[工作区状态] $( [ -n "$DIRTY" ] && echo '有未提交改动 —— 包内文件可能含未进任何提交的内容,发布前请先提交' || echo '干净(包内容全部对应上面记录的提交)' )"
+} > $PKG/MANIFEST.txt
+echo "清单: MANIFEST.txt($(grep -c . $PKG/MANIFEST.txt) 行, 含 $(grep -c '  ' $PKG/MANIFEST.txt) 条含哈希记录)"
 
 echo "=== payload 就绪 ==="
 du -sh $PKG
