@@ -52,6 +52,21 @@ typedef struct {
 #define IS_PTR(v)       (((uintptr_t)(v) & 0x1) == 0 && (v) > 4096)
 #define IS_INT(v)       (((uintptr_t)(v) & 0x1) == 1)
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 外函返回值编码约定(所有 外 函 实现必须遵守;issue #44)
+//
+// 玄铁侧只认三种返回值:
+//   ① 玄铁对象指针(xt_string_new 等,带 XTObject 头与 magic)——ARC 可 retain/release
+//   ② 标记整数 XT_FROM_INT(n) —— 标量,ARC 不碰
+//   ③ 真/假/空 小常量(XT_TRUE/XTFALSE/0)
+//
+// **不得返回裸 C 指针**:它 LSB=0 且 >4096,玄铁侧 ARC 会按 ① 去校验 magic,
+// 读到的若是 C 结构体(raylib 的 Sound/Music/Texture 等)即误报"堆损坏或非法指针访问"并退出。
+//
+// 资源句柄一律"槽位池 + XT_FROM_INT(槽号+1)",**0 表示失败**(调用方可可靠判断)。
+// 本文件四处实现:纹理(32 槽)、字体(8 槽)、音效(32 槽)、音乐流(32 槽)。
+// ═══════════════════════════════════════════════════════════════════════════
+
 // 提取字符串: 如果是对象指针则返回 data，否则返回空串
 static const char* xt_get_cstr(uintptr_t v) {
     if (IS_PTR(v) && v != 0) {
@@ -643,6 +658,10 @@ uintptr_t XT_LoadTexture(uintptr_t filename) {
             UnloadImage(img);
         }
     }
+    // 解码失败/文件缺失/不支持格式 → 返回 0 且不占槽位。
+    // 旧实现照样 marked used 并返回非 0 句柄 → 调用方用 != 0 判断成败会误判成功,
+    // 之后拿着空纹理绘制(issue #44 评论实测:句柄非 0 但尺寸为 0)。
+    if (tex.id == 0) return XT_FROM_INT(0);
     xt_tex_pool[slot] = tex;
     xt_tex_used[slot] = 1;
     return XT_FROM_INT(slot + 1);
@@ -943,57 +962,86 @@ void XT_CloseAudioDevice(void) {
     CloseAudioDevice();
 }
 
+// 音频句柄与纹理/字体统一:槽位池 + XT_FROM_INT(槽号+1),0 表示失败。
+// 历史缺陷(issue #44):这里原先把 calloc 出来的 Sound*/Music* 直接当句柄返回 —— 那是裸 C 指针
+// (LSB=0 且 >4096),玄铁侧 ARC 会把它当堆对象去校验 magic,读到的却是 raylib 结构体,
+// 于是加载任意 wav 都误报"堆损坏或非法指针访问"并退出。句柄是"资源编号"不是"内存地址",
+// 必须走标记整数,这条约定对同库所有句柄外函适用。
+static Sound xt_snd_pool[32];
+static int   xt_snd_used[32];
+static Music xt_mus_pool[32];
+static int   xt_mus_used[32];
+
+static int xt_snd_alloc(void) { for (int i = 0; i < 32; i++) if (!xt_snd_used[i]) return i; return -1; }
+static int xt_mus_alloc(void) { for (int i = 0; i < 32; i++) if (!xt_mus_used[i]) return i; return -1; }
+
+static Sound* xt_get_snd(uintptr_t v) {
+    if (!IS_INT(v)) return NULL;
+    int64_t idx = XT_TO_INT(v);
+    if (idx < 1 || idx > 32 || !xt_snd_used[idx - 1]) return NULL;
+    return &xt_snd_pool[idx - 1];
+}
+
+static Music* xt_get_mus(uintptr_t v) {
+    if (!IS_INT(v)) return NULL;
+    int64_t idx = XT_TO_INT(v);
+    if (idx < 1 || idx > 32 || !xt_mus_used[idx - 1]) return NULL;
+    return &xt_mus_pool[idx - 1];
+}
+
+// 加载音效,返回 1-32 的标记整数句柄;文件缺失/解码失败/池满 → 0(调用方可可靠判断)
 uintptr_t XT_LoadSound(uintptr_t filename) {
+    int slot = xt_snd_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
     Sound s = LoadSound(xt_get_cstr(filename));
-    Sound* p = (Sound*)calloc(1, sizeof(Sound));
-    *p = s;
-    return (uintptr_t)p;
+    if (s.stream.buffer == NULL || s.frameCount == 0) return XT_FROM_INT(0);
+    xt_snd_pool[slot] = s;
+    xt_snd_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
 }
 
-void XT_UnloadSound(uintptr_t sndPtr) {
-    if (IS_PTR(sndPtr) && sndPtr != 0) {
-        Sound* p = (Sound*)sndPtr;
-        UnloadSound(*p);
-        free((void*)p);
-    }
+void XT_UnloadSound(uintptr_t snd) {
+    Sound* p = xt_get_snd(snd);
+    if (!p) return;
+    UnloadSound(*p);
+    xt_snd_used[XT_TO_INT(snd) - 1] = 0;
 }
 
-void XT_PlaySound(uintptr_t sndPtr) {
-    if (IS_PTR(sndPtr) && sndPtr != 0) {
-        PlaySound(*(Sound*)sndPtr);
-    }
+void XT_PlaySound(uintptr_t snd) {
+    Sound* p = xt_get_snd(snd);
+    if (p) PlaySound(*p);
 }
 
 uintptr_t XT_LoadMusicStream(uintptr_t filename) {
+    int slot = xt_mus_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
     Music m = LoadMusicStream(xt_get_cstr(filename));
-    Music* p = (Music*)calloc(1, sizeof(Music));
-    *p = m;
-    return (uintptr_t)p;
+    if (m.stream.buffer == NULL || m.frameCount == 0) return XT_FROM_INT(0);
+    xt_mus_pool[slot] = m;
+    xt_mus_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
 }
 
-void XT_PlayMusicStream(uintptr_t musicPtr) {
-    if (IS_PTR(musicPtr) && musicPtr != 0) {
-        PlayMusicStream(*(Music*)musicPtr);
-    }
+void XT_PlayMusicStream(uintptr_t mus) {
+    Music* p = xt_get_mus(mus);
+    if (p) PlayMusicStream(*p);
 }
 
-void XT_UpdateMusicStream(uintptr_t musicPtr) {
-    if (IS_PTR(musicPtr) && musicPtr != 0) {
-        UpdateMusicStream(*(Music*)musicPtr);
-    }
+void XT_UpdateMusicStream(uintptr_t mus) {
+    Music* p = xt_get_mus(mus);
+    if (p) UpdateMusicStream(*p);
 }
 
-void XT_StopMusicStream(uintptr_t musicPtr) {
-    if (IS_PTR(musicPtr) && musicPtr != 0) {
-        StopMusicStream(*(Music*)musicPtr);
-    }
+void XT_StopMusicStream(uintptr_t mus) {
+    Music* p = xt_get_mus(mus);
+    if (p) StopMusicStream(*p);
 }
 
-void XT_UnloadMusicStream(uintptr_t musicPtr) {
-    if (IS_PTR(musicPtr) && musicPtr != 0) {
-        UnloadMusicStream(*(Music*)musicPtr);
-        free((void*)musicPtr);
-    }
+void XT_UnloadMusicStream(uintptr_t mus) {
+    Music* p = xt_get_mus(mus);
+    if (!p) return;
+    UnloadMusicStream(*p);
+    xt_mus_used[XT_TO_INT(mus) - 1] = 0;
 }
 
 // ============================================================

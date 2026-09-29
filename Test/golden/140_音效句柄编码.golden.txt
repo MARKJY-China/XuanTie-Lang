@@ -1,0 +1,13 @@
+compile_ok=True
+exit=0
+--- 140 音效/音乐句柄编码 开始 ---
+WARNING: FILEIO: [__不存在的音效__.wav] Failed to open file
+PASS A 缺失音效返回 0
+PASS B 音效句柄可安全入容器(无 ARC 误判)
+WARNING: FILEIO: [__不存在的音乐__.ogg] Music file could not be opened
+PASS C 缺失音乐流返回 0
+PASS C2 音乐句柄可安全入容器
+PASS D 缺失纹理返回 0
+PASS E 句柄为 0 或标记整数
+140 PASS
+--- 140 音效/音乐句柄编码 结束 ---
