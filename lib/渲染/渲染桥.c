@@ -12,6 +12,9 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <glob.h>   // POSIX:运行时 glob 探测系统字体路径(如 AssetsV2 动态 asset 目录)
+#endif
 
 // === XuanTie 运行时类型（精简版，避免依赖完整 xt_runtime.h） ===
 // 标记值操作
@@ -1062,6 +1065,88 @@ static Font* xt_get_font(uintptr_t fontVal) {
     return &xt_font_pool[idx - 1];
 }
 
+// TTC 容器取首 face 偏移（ttcf 头 + 大端表偏移表；raylib 的 ".ttf" 加载路径不处理 ttc 集合，
+// stb_truetype 从 offset 0 读 ttc 会失败并静默回退默认字体——见 issue #43 macOS 实测）。
+// 非 ttc 返回 0（原样加载）。
+static unsigned int xt_ttc_first_face_offset(const unsigned char* data, size_t size) {
+    if (size < 16 || memcmp(data, "ttcf", 4) != 0) return 0;
+    unsigned int numFonts = ((unsigned int)data[8] << 24) | ((unsigned int)data[9] << 16) |
+                            ((unsigned int)data[10] << 8) | (unsigned int)data[11];
+    if (numFonts < 1) return 0;
+    return ((unsigned int)data[12] << 24) | ((unsigned int)data[13] << 16) |
+           ((unsigned int)data[14] << 8) | (unsigned int)data[15];
+}
+
+/* Apple TTC 的表记录 offset 相对「文件头」而非「face 头」(与标准 sfnt 不同——实测确认,
+   issue #43)。stb_truetype 假设 offset 相对 face 头,直接把数据偏移到 face 无法加载。
+   方案:把首 face 重新组装为独立 ttf(表记录 offset 改写为相对新文件头),再由 raylib 加载。
+   返回 malloc 缓冲(调用方 free),失败返回 NULL。 */
+static unsigned char* xt_ttc_rebuild_face(const unsigned char* data, int size,
+                                          unsigned int faceOff, int* outSize) {
+    if (faceOff + 12 > (unsigned int)size) return NULL;
+    const unsigned char* face = data + faceOff;
+    unsigned int numTables = ((unsigned int)face[4] << 8) | (unsigned int)face[5];
+    if (numTables == 0 || numTables > 64) return NULL;
+    /* 表 offset 基准:Apple TTC 相对「文件头」,标准 TTC 相对「face 头」(实测确认差异——issue #43)。
+       用 head 表 magic(0x5F0F3CF5)+unitsPerEm 判断:试两种基准,命中 magic 的为正确基准。 */
+    int baseIsFile = 0;
+    unsigned int headOff = 0;
+    for (unsigned int i = 0; i < numTables; i++) {
+        if (memcmp(face + 12 + 16 * i, "head", 4) == 0) {
+            headOff = ((unsigned int)face[12+16*i+8] << 24) | ((unsigned int)face[12+16*i+9] << 16) |
+                      ((unsigned int)face[12+16*i+10] << 8) | (unsigned int)face[12+16*i+11];
+            break;
+        }
+    }
+    if (headOff) {
+        if (headOff + 32 <= (unsigned int)size) {
+            const unsigned char* h = data + headOff;
+            unsigned int magic = ((unsigned int)h[12]<<24)|((unsigned int)h[13]<<16)|((unsigned int)h[14]<<8)|(unsigned int)h[15];
+            unsigned int upm = ((unsigned int)h[18]<<8)|(unsigned int)h[19];
+            if (magic == 0x5F0F3CF5u && upm >= 16 && upm <= 16384) baseIsFile = 1;
+        }
+        if (!baseIsFile && faceOff + headOff + 32 <= (unsigned int)size) {
+            const unsigned char* h = data + faceOff + headOff;
+            unsigned int magic = ((unsigned int)h[12]<<24)|((unsigned int)h[13]<<16)|((unsigned int)h[14]<<8)|(unsigned int)h[15];
+            unsigned int upm = ((unsigned int)h[18]<<8)|(unsigned int)h[19];
+            if (magic == 0x5F0F3CF5u && upm >= 16 && upm <= 16384) baseIsFile = 0;
+        }
+        /* 都未命中:保持默认 face 基准(标准 TTC) */
+    }
+    /* 新布局:12 字节 sfnt 头 + 16*numTables 表记录 + 表数据 */
+    unsigned int dataStart = 12 + 16 * numTables;
+    unsigned int total = dataStart;
+    /* 先扫表记录:验证表数据在文件内,累计大小 */
+    struct { unsigned int oldOff; unsigned int len; } tabs[64];
+    for (unsigned int i = 0; i < numTables; i++) {
+        const unsigned char* rec = face + 12 + 16 * i;
+        unsigned int coff = ((unsigned int)rec[8] << 24) | ((unsigned int)rec[9] << 16) |
+                            ((unsigned int)rec[10] << 8) | (unsigned int)rec[11];
+        unsigned int clen = ((unsigned int)rec[12] << 24) | ((unsigned int)rec[13] << 16) |
+                            ((unsigned int)rec[14] << 8) | (unsigned int)rec[15];
+        unsigned int srcOff = baseIsFile ? coff : faceOff + coff;
+        if (srcOff + clen > (unsigned int)size) return NULL;
+        tabs[i].oldOff = srcOff; tabs[i].len = clen;
+        total += clen;
+    }
+    unsigned char* out = (unsigned char*)malloc(total);
+    if (!out) return NULL;
+    memcpy(out, face, 12);   /* sfnt 头(含 numTables/searchRange 等,stb 不依赖 searchRange) */
+    unsigned int pos = dataStart;
+    for (unsigned int i = 0; i < numTables; i++) {
+        const unsigned char* rec = face + 12 + 16 * i;
+        unsigned char* nrec = out + 12 + 16 * i;
+        memcpy(nrec, rec, 8);   /* tag + checksum */
+        nrec[8] = (unsigned char)(pos >> 24); nrec[9] = (unsigned char)(pos >> 16);
+        nrec[10] = (unsigned char)(pos >> 8); nrec[11] = (unsigned char)pos;
+        nrec[12] = rec[12]; nrec[13] = rec[13]; nrec[14] = rec[14]; nrec[15] = rec[15];
+        memcpy(out + pos, data + tabs[i].oldOff, tabs[i].len);
+        pos += tabs[i].len;
+    }
+    *outSize = (int)total;
+    return out;
+}
+
 // 返回整数句柄（1-8），失败返回 0
 uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     if (xt_font_count >= 8) return XT_FROM_INT(0);
@@ -1088,10 +1173,26 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     int dataSize = 0;
     unsigned char* data = xt_read_file_bytes(xt_get_cstr(filename), &dataSize);
     if (!data) { free(codepoints); return XT_FROM_INT(0); }
-    Font f = LoadFontFromMemory(".ttf", data, dataSize, (int)XT_TO_INT(fontSize), codepoints, cpCount);
+    /* ttc 容器:首 face 可能是 CFF(OTTO,stb 不支持——返 0 不崩)或 Apple 表基准(相对文件头,
+       需重组为独立 ttf 再加载)——issue #43 macOS 实测 */
+    unsigned char* loadData = data;
+    int loadSize = dataSize;
+    unsigned int ttcOff = xt_ttc_first_face_offset(data, (size_t)dataSize);
+    if (ttcOff) {
+        if (dataSize >= (int)ttcOff + 4 && memcmp(data + ttcOff, "OTTO", 4) == 0) {
+            free(data); free(codepoints); return XT_FROM_INT(0);
+        }
+        unsigned char* rebuilt = xt_ttc_rebuild_face(data, dataSize, ttcOff, &loadSize);
+        if (!rebuilt) { free(data); free(codepoints); return XT_FROM_INT(0); }
+        loadData = rebuilt;
+    }
+    Font f = LoadFontFromMemory(".ttf", loadData, loadSize, (int)XT_TO_INT(fontSize), codepoints, cpCount);
+    if (loadData != data) free(loadData);
     free(data);
     free(codepoints);
-    if (f.glyphCount == 0) f = GetFontDefault();
+    /* 真失败检测:glyphCount==0 或纹理即默认字体(加载失败时 raylib 静默回退默认字体,
+       glyphCount=224 非 0,旧检测失效——issue #43 实测伪成功)→ 返回 0,不占槽位 */
+    if (f.glyphCount == 0 || f.texture.id == GetFontDefault().texture.id) return XT_FROM_INT(0);
 
     xt_font_pool[xt_font_count] = f;
     xt_font_count++;
@@ -1131,10 +1232,24 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     int dataSizeEx = 0;
     unsigned char* dataEx = xt_read_file_bytes(xt_get_cstr(filename), &dataSizeEx);
     if (!dataEx) { free(codepoints); return XT_FROM_INT(0); }
-    Font f = LoadFontFromMemory(".ttf", dataEx, dataSizeEx, (int)XT_TO_INT(fontSize), codepoints, idx);
+    /* ttc 容器:同 XT_LoadFont(CFF 返 0 / Apple 表基准重组)——issue #43 */
+    unsigned char* loadDataEx = dataEx;
+    int loadSizeEx = dataSizeEx;
+    unsigned int ttcOffEx = xt_ttc_first_face_offset(dataEx, (size_t)dataSizeEx);
+    if (ttcOffEx) {
+        if (dataSizeEx >= (int)ttcOffEx + 4 && memcmp(dataEx + ttcOffEx, "OTTO", 4) == 0) {
+            free(dataEx); free(codepoints); return XT_FROM_INT(0);
+        }
+        unsigned char* rebuilt = xt_ttc_rebuild_face(dataEx, dataSizeEx, ttcOffEx, &loadSizeEx);
+        if (!rebuilt) { free(dataEx); free(codepoints); return XT_FROM_INT(0); }
+        loadDataEx = rebuilt;
+    }
+    Font f = LoadFontFromMemory(".ttf", loadDataEx, loadSizeEx, (int)XT_TO_INT(fontSize), codepoints, idx);
+    if (loadDataEx != dataEx) free(loadDataEx);
     free(dataEx);
     free(codepoints);
-    if (f.glyphCount == 0) f = GetFontDefault();
+    /* 真失败检测(同 XT_LoadFont:消除伪成功——issue #43) */
+    if (f.glyphCount == 0 || f.texture.id == GetFontDefault().texture.id) return XT_FROM_INT(0);
 
     xt_font_pool[xt_font_count] = f;
     xt_font_count++;
@@ -1559,6 +1674,39 @@ void XT_FontGDI_Unload(uintptr_t handle) {
    不静默假装成功。
    说明:本函数刻意放在平台宏之外 —— 表内路径由 #if 分区,函数体本身是共享代码,
    于是它在 Windows 构建里也会被编译,新代码的语法错误当场暴露(不必等 macOS 才知道)。 */
+#if defined(__APPLE__)
+/* 运行时 glob 取第一个命中路径(AssetsV2 字体 asset 目录 hash 随系统版本变化,不可写死) */
+static int xt_font_glob_first(const char* pattern, char* out, size_t outsz) {
+    glob_t g;
+    if (glob(pattern, 0, NULL, &g) == 0 && g.gl_pathc > 0) {
+        snprintf(out, outsz, "%s", g.gl_pathv[0]);
+        globfree(&g);
+        return 1;
+    }
+    globfree(&g);
+    return 0;
+}
+#endif
+
+/* 字体文件是否可被 raylib 加载:stb_truetype 不支持 CID-keyed CFF(Apple 苹方/冬青黑体等
+   OTTO 首 face 的 ttc 加载即断言崩溃——issue #43 macOS 实测);ttc 容器解析首 face magic
+   判断,glyf/TrueType 可用。非 ttc/单文件不做拦阻(单 .otf name-keyed CFF stb 可处理)。 */
+static int xt_font_path_usable(const char* path) {
+    FILE* fp = fopen(path, "rb");
+    if (!fp) return 0;
+    unsigned char h[16];
+    size_t n = fread(h, 1, 16, fp);
+    if (n >= 16 && memcmp(h, "ttcf", 4) == 0) {
+        unsigned int off = ((unsigned int)h[12] << 24) | ((unsigned int)h[13] << 16) |
+                           ((unsigned int)h[14] << 8) | (unsigned int)h[15];
+        if (fseek(fp, (long)off, SEEK_SET) == 0) {
+            unsigned char m[4];
+            if (fread(m, 1, 4, fp) == 4 && memcmp(m, "OTTO", 4) == 0) { fclose(fp); return 0; }
+        }
+    }
+    fclose(fp);
+    return 1;
+}
 static int xt_font_resolve_path(const char* name, char* out, size_t outsz) {
     static const struct { const char* key; const char* path; } cand[] = {
 #if defined(__APPLE__)
@@ -1569,8 +1717,8 @@ static int xt_font_resolve_path(const char* name, char* out, size_t outsz) {
         {"Heiti",    "/System/Library/Fonts/STHeiti Light.ttc"},
         {"冬青黑体",  "/System/Library/Fonts/Hiragino Sans GB.ttc"},
         {"Hiragino", "/System/Library/Fonts/Hiragino Sans GB.ttc"},
-        {"宋体",     "/System/Library/Fonts/Songti.ttc"},
-        {"Songti",   "/System/Library/Fonts/Songti.ttc"},
+        {"宋体",     "/System/Library/Fonts/Supplemental/Songti.ttc"},
+        {"Songti",   "/System/Library/Fonts/Supplemental/Songti.ttc"},
         {"楷体",     "/System/Library/Fonts/Kaiti.ttc"},
         {"Kaiti",    "/System/Library/Fonts/Kaiti.ttc"},
 #elif defined(__linux__)
@@ -1588,23 +1736,29 @@ static int xt_font_resolve_path(const char* name, char* out, size_t outsz) {
     if (strchr(name, '/') || strchr(name, '\\') ||
         strstr(name, ".ttf") || strstr(name, ".ttc") || strstr(name, ".otf") ||
         strstr(name, ".TTF") || strstr(name, ".TTC") || strstr(name, ".OTF")) {
-        FILE* fp = fopen(name, "rb");
-        if (!fp) return 0;
-        fclose(fp);
+        if (!xt_font_path_usable(name)) return 0;
         snprintf(out, outsz, "%s", name);
         return 1;
     }
     /* ② 按名字查表 */
     for (int i = 0; cand[i].key; i++) {
         if (strstr(name, cand[i].key)) {
-            FILE* fp = fopen(cand[i].path, "rb");
-            if (fp) { fclose(fp); snprintf(out, outsz, "%s", cand[i].path); return 1; }
+            if (xt_font_path_usable(cand[i].path)) { snprintf(out, outsz, "%s", cand[i].path); return 1; }
+#if defined(__APPLE__)
+            /* 苹方在 /System/Library/Fonts 下无固定路径(实际在 AssetsV2 动态 asset 目录,
+               目录 hash 随系统版本变化——issue #43 实测):表路径不在时运行时 glob 探测 */
+            if (strstr(cand[i].path, "PingFang.ttc")) {
+                if (xt_font_glob_first(
+                        "/System/Library/AssetsV2/com_apple_MobileAsset_Font8/*/AssetData/PingFang.ttc",
+                        out, outsz) && xt_font_path_usable(out)) return 1;
+                /* 命中但 CFF(OTTO,stb 不支持加载)→ 不返回,落 ③ 兜底到黑体 */
+            }
+#endif
         }
     }
-    /* ③ 名字没命中(或命中但文件不在):按顺序回退表内第一个存在的系统 CJK 字体 */
+    /* ③ 名字没命中(或命中但文件不可用):按顺序回退表内第一个可用的系统 CJK 字体 */
     for (int i = 0; cand[i].key; i++) {
-        FILE* fp = fopen(cand[i].path, "rb");
-        if (fp) { fclose(fp); snprintf(out, outsz, "%s", cand[i].path); return 1; }
+        if (xt_font_path_usable(cand[i].path)) { snprintf(out, outsz, "%s", cand[i].path); return 1; }
     }
     return 0;
 }
