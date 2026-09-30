@@ -1,5 +1,21 @@
 # 渲染库 Changelog
 
+## v1.2.7
+
+**修复**
+
+- **TTC 字体通道修复（issue #43；由 @k4m7v2pz 贡献 PR #48）**：`.ttc` 直载此前**必然失败**——raylib 硬编码 `stbtt_InitFont(..., 0)`（`rtext.c`），不识别 ttcf 容器；失败时静默回退 raylib 默认字体（glyphCount=224 非 0），形成「句柄非 0 但中文全是 `?`」的伪成功。现改为：解析 ttcf 容器 → 把首 face 重组为独立 ttf（表记录 offset 改写为相对新文件头；TTC 的 offset 以**文件头**为基准——OpenType 规范，Windows 14 款自带 TTC 与 Apple 实测一致，探测双基准兜底）→ 交 raylib 加载。**顺带修好 Windows/Linux 的 `.ttc` 加载**（同一根因）。
+  - 伪成功消除：失败检测改「`glyphCount == 0` 或纹理即默认字体」，真失败返回 0 且**不占句柄槽位**。
+  - CFF（CID-keyed，stb 不支持）拦截：苹方/冬青黑体这类 OTTO 首 face 的 ttc 直接返 0；名字命中时**自动兜底黑体**，不再崩。
+  - macOS 路径表修正：宋体 → `Supplemental/Songti.ttc`；苹方在 AssetsV2 动态 asset 目录（hash 随系统版本变）→ 运行时 glob 探测。
+- **畸形字体文件边界加固**：ttc 字段取自文件内容，伪造值可令原 32 位边界算式回绕而越界读——实测两处段错误（OTTO 探测处的 `(int)` 转换、重组函数三处无符号回绕带）；全部改用 `size_t` 安全比较，12 例畸形变体扫描全部优雅返回 0 不崩。
+- **更正 v1.2.6 的声明**：v1.2.6 changelog 与 `GUIDE/09` 写着「`.ttc` 可用」，该说法当时**未经运行时验证、实际不成立**（直载必失败，见上）；`.ttc` 真正可用自本版起。
+
+**验证**
+
+- Windows 侧以 raylib 6.0 同源 stb_truetype（v1.26）A/B：原始 ttc 走 offset 0 加载失败（`InitFont=0`，复现 raylib 行为）；重组产物 `InitFont=1` 且 `中/A/あ/韦` 字形命中（微软雅黑/宋体/微软正黑/游明朝四款实测）；重组产物 25/25 表与源逐字节一致、无越界。
+- macOS 侧由报告者在 macOS 26.6.2 / M3 实测：苹方/冬青黑体/STHeiti Light.ttc 中文正常（CFF 自动兜底黑体），不存在字体返 0（伪成功消除）。
+
 ## v1.2.6
 
 **修复**

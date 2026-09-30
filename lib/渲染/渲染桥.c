@@ -1065,8 +1065,9 @@ static Font* xt_get_font(uintptr_t fontVal) {
     return &xt_font_pool[idx - 1];
 }
 
-// TTC 容器取首 face 偏移（ttcf 头 + 大端表偏移表；raylib 的 ".ttf" 加载路径不处理 ttc 集合，
-// stb_truetype 从 offset 0 读 ttc 会失败并静默回退默认字体——见 issue #43 macOS 实测）。
+// TTC 容器取首 face 偏移（ttcf 头 + 大端表偏移表）。stb_truetype 本身支持 TTC
+// （stbtt_GetFontOffsetForIndex），但 raylib 硬编码 stbtt_InitFont(..., 0)（rtext.c），
+// 不识别 ttcf 容器 → 任何 TTC 直载都失败并静默回退默认字体（issue #43 实测）。
 // 非 ttc 返回 0（原样加载）。
 static unsigned int xt_ttc_first_face_offset(const unsigned char* data, size_t size) {
     if (size < 16 || memcmp(data, "ttcf", 4) != 0) return 0;
@@ -1077,19 +1078,20 @@ static unsigned int xt_ttc_first_face_offset(const unsigned char* data, size_t s
            ((unsigned int)data[14] << 8) | (unsigned int)data[15];
 }
 
-/* Apple TTC 的表记录 offset 相对「文件头」而非「face 头」(与标准 sfnt 不同——实测确认,
-   issue #43)。stb_truetype 假设 offset 相对 face 头,直接把数据偏移到 face 无法加载。
-   方案:把首 face 重新组装为独立 ttf(表记录 offset 改写为相对新文件头),再由 raylib 加载。
+/* TTC 的表记录 offset 以「文件头」为基准（OpenType 规范；Windows 14 款自带 TTC 与 Apple 实测一致），
+   而 raylib 按 offset 0 直读（见上），故必须重组。方案:把首 face 重新组装为独立 ttf
+   (表记录 offset 改写为相对新文件头),再由 raylib 加载。
+   所有边界比较用 size_t——字段取自文件内容,畸形值在原 32 位算式下回绕可越界读(实测段错误)。
    返回 malloc 缓冲(调用方 free),失败返回 NULL。 */
 static unsigned char* xt_ttc_rebuild_face(const unsigned char* data, int size,
                                           unsigned int faceOff, int* outSize) {
-    if (faceOff + 12 > (unsigned int)size) return NULL;
+    if (size < 12 || (size_t)faceOff + 12 > (size_t)size) return NULL;
     const unsigned char* face = data + faceOff;
     unsigned int numTables = ((unsigned int)face[4] << 8) | (unsigned int)face[5];
     if (numTables == 0 || numTables > 64) return NULL;
-    /* 表 offset 基准:Apple TTC 相对「文件头」,标准 TTC 相对「face 头」(实测确认差异——issue #43)。
-       用 head 表 magic(0x5F0F3CF5)+unitsPerEm 判断:试两种基准,命中 magic 的为正确基准。 */
-    int baseIsFile = 0;
+    /* 表 offset 基准:规范为「文件头」基准(Windows/Apple 实测一致)。探测仍双基准尝试兜底:
+       用 head 表 magic(0x5F0F3CF5)+unitsPerEm 判断,命中 magic 的为正确基准;都不命中按规范取文件基准。 */
+    int baseIsFile = 1;
     unsigned int headOff = 0;
     for (unsigned int i = 0; i < numTables; i++) {
         if (memcmp(face + 12 + 16 * i, "head", 4) == 0) {
@@ -1099,23 +1101,23 @@ static unsigned char* xt_ttc_rebuild_face(const unsigned char* data, int size,
         }
     }
     if (headOff) {
-        if (headOff + 32 <= (unsigned int)size) {
+        if ((size_t)headOff + 32 <= (size_t)size) {
             const unsigned char* h = data + headOff;
             unsigned int magic = ((unsigned int)h[12]<<24)|((unsigned int)h[13]<<16)|((unsigned int)h[14]<<8)|(unsigned int)h[15];
             unsigned int upm = ((unsigned int)h[18]<<8)|(unsigned int)h[19];
             if (magic == 0x5F0F3CF5u && upm >= 16 && upm <= 16384) baseIsFile = 1;
         }
-        if (!baseIsFile && faceOff + headOff + 32 <= (unsigned int)size) {
+        if (!baseIsFile && (size_t)faceOff + headOff + 32 <= (size_t)size) {
             const unsigned char* h = data + faceOff + headOff;
             unsigned int magic = ((unsigned int)h[12]<<24)|((unsigned int)h[13]<<16)|((unsigned int)h[14]<<8)|(unsigned int)h[15];
             unsigned int upm = ((unsigned int)h[18]<<8)|(unsigned int)h[19];
             if (magic == 0x5F0F3CF5u && upm >= 16 && upm <= 16384) baseIsFile = 0;
         }
-        /* 都未命中:保持默认 face 基准(标准 TTC) */
+        /* 都未命中:保持默认文件基准(规范) */
     }
     /* 新布局:12 字节 sfnt 头 + 16*numTables 表记录 + 表数据 */
     unsigned int dataStart = 12 + 16 * numTables;
-    unsigned int total = dataStart;
+    size_t total = dataStart;
     /* 先扫表记录:验证表数据在文件内,累计大小 */
     struct { unsigned int oldOff; unsigned int len; } tabs[64];
     for (unsigned int i = 0; i < numTables; i++) {
@@ -1124,11 +1126,12 @@ static unsigned char* xt_ttc_rebuild_face(const unsigned char* data, int size,
                             ((unsigned int)rec[10] << 8) | (unsigned int)rec[11];
         unsigned int clen = ((unsigned int)rec[12] << 24) | ((unsigned int)rec[13] << 16) |
                             ((unsigned int)rec[14] << 8) | (unsigned int)rec[15];
-        unsigned int srcOff = baseIsFile ? coff : faceOff + coff;
-        if (srcOff + clen > (unsigned int)size) return NULL;
-        tabs[i].oldOff = srcOff; tabs[i].len = clen;
+        size_t srcOff = baseIsFile ? (size_t)coff : (size_t)faceOff + coff;
+        if (srcOff + clen > (size_t)size) return NULL;
+        tabs[i].oldOff = (unsigned int)srcOff; tabs[i].len = clen;
         total += clen;
     }
+    if (total > 0x7FFFFFFFu) return NULL;   /* outSize 为 int;真字体远达不到 */
     unsigned char* out = (unsigned char*)malloc(total);
     if (!out) return NULL;
     memcpy(out, face, 12);   /* sfnt 头(含 numTables/searchRange 等,stb 不依赖 searchRange) */
@@ -1173,13 +1176,15 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     int dataSize = 0;
     unsigned char* data = xt_read_file_bytes(xt_get_cstr(filename), &dataSize);
     if (!data) { free(codepoints); return XT_FROM_INT(0); }
-    /* ttc 容器:首 face 可能是 CFF(OTTO,stb 不支持——返 0 不崩)或 Apple 表基准(相对文件头,
-       需重组为独立 ttf 再加载)——issue #43 macOS 实测 */
+    /* ttc 容器:首 face 可能是 CFF(OTTO,stb 不支持——返 0 不崩)或 TTC 表基准(相对文件头,
+       需重组为独立 ttf 再加载)——issue #43 实测 */
     unsigned char* loadData = data;
     int loadSize = dataSize;
     unsigned int ttcOff = xt_ttc_first_face_offset(data, (size_t)dataSize);
     if (ttcOff) {
-        if (dataSize >= (int)ttcOff + 4 && memcmp(data + ttcOff, "OTTO", 4) == 0) {
+        /* 边界用 size_t:ttcOff 取自文件字段,畸形值令 (int)ttcOff+4 变负而绕过校验(实测段错误) */
+        if ((size_t)dataSize >= 4 && ttcOff <= (size_t)dataSize - 4 &&
+            memcmp(data + ttcOff, "OTTO", 4) == 0) {
             free(data); free(codepoints); return XT_FROM_INT(0);
         }
         unsigned char* rebuilt = xt_ttc_rebuild_face(data, dataSize, ttcOff, &loadSize);
@@ -1232,12 +1237,14 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     int dataSizeEx = 0;
     unsigned char* dataEx = xt_read_file_bytes(xt_get_cstr(filename), &dataSizeEx);
     if (!dataEx) { free(codepoints); return XT_FROM_INT(0); }
-    /* ttc 容器:同 XT_LoadFont(CFF 返 0 / Apple 表基准重组)——issue #43 */
+    /* ttc 容器:同 XT_LoadFont(CFF 返 0 / TTC 表基准重组)——issue #43 */
     unsigned char* loadDataEx = dataEx;
     int loadSizeEx = dataSizeEx;
     unsigned int ttcOffEx = xt_ttc_first_face_offset(dataEx, (size_t)dataSizeEx);
     if (ttcOffEx) {
-        if (dataSizeEx >= (int)ttcOffEx + 4 && memcmp(dataEx + ttcOffEx, "OTTO", 4) == 0) {
+        /* 边界用 size_t(同 XT_LoadFont:畸形 ttcOff 的 (int) 转换可绕过校验) */
+        if ((size_t)dataSizeEx >= 4 && ttcOffEx <= (size_t)dataSizeEx - 4 &&
+            memcmp(dataEx + ttcOffEx, "OTTO", 4) == 0) {
             free(dataEx); free(codepoints); return XT_FROM_INT(0);
         }
         unsigned char* rebuilt = xt_ttc_rebuild_face(dataEx, dataSizeEx, ttcOffEx, &loadSizeEx);
