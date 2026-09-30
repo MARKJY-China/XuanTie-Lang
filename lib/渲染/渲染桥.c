@@ -78,6 +78,8 @@ static const char* xt_get_cstr(uintptr_t v) {
 
 // runtime 字符串构造(剪贴板读取等需返回玄铁字符串对象的桥函数用)
 extern void* xt_string_new(const char*);
+// runtime ARC 释放:桥内自建的临时对象(如系统字体名解析出的路径串)用完要还回去,否则每次调用漏一个
+extern void xt_release(uintptr_t);
 
 // 提取浮点数: 如果是 XTFloat 对象则返回 value
 static double xt_get_float(uintptr_t v) {
@@ -1548,12 +1550,86 @@ void XT_FontGDI_Unload(uintptr_t handle) {
 }
 #endif /* _WIN32 */
 
+/* ── 系统字体名 → 字体文件路径(POSIX 用;issue #43)─────────────────────────────
+   Windows 的系统字体走 GDI 光栅化,不需要文件;macOS/Linux 没有 GDI,只能由 raylib 从
+   ttf/ttc 载入 —— 本条把「系统字体名」映射到实际文件,让 加载系统字体 在两平台对等。
+   规则:①名字里带路径分隔符或字体扩展名 → 当路径直用;②按名字查表(包含匹配,允许
+   "PingFang SC" 这类写法);③都没命中 → 按表内顺序取第一个存在的系统 CJK 字体兜底
+   (与 Windows 的字体回落同义);④一个都不存在 → 返回 0,调用方回退 raylib 默认字体,
+   不静默假装成功。
+   说明:本函数刻意放在平台宏之外 —— 表内路径由 #if 分区,函数体本身是共享代码,
+   于是它在 Windows 构建里也会被编译,新代码的语法错误当场暴露(不必等 macOS 才知道)。 */
+static int xt_font_resolve_path(const char* name, char* out, size_t outsz) {
+    static const struct { const char* key; const char* path; } cand[] = {
+#if defined(__APPLE__)
+        {"苹方",     "/System/Library/Fonts/PingFang.ttc"},
+        {"PingFang", "/System/Library/Fonts/PingFang.ttc"},
+        {"pingfang", "/System/Library/Fonts/PingFang.ttc"},
+        {"黑体",     "/System/Library/Fonts/STHeiti Light.ttc"},
+        {"Heiti",    "/System/Library/Fonts/STHeiti Light.ttc"},
+        {"冬青黑体",  "/System/Library/Fonts/Hiragino Sans GB.ttc"},
+        {"Hiragino", "/System/Library/Fonts/Hiragino Sans GB.ttc"},
+        {"宋体",     "/System/Library/Fonts/Songti.ttc"},
+        {"Songti",   "/System/Library/Fonts/Songti.ttc"},
+        {"楷体",     "/System/Library/Fonts/Kaiti.ttc"},
+        {"Kaiti",    "/System/Library/Fonts/Kaiti.ttc"},
+#elif defined(__linux__)
+        {"文泉驿",   "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"},
+        {"wqy",      "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"},
+        {"Noto",     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"},
+        {"noto",     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"},
+        {"思源",     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"},
+        {"黑体",     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"},
+#endif
+        {NULL, NULL}
+    };
+    if (!name || !name[0]) name = "苹方";
+    /* ① 名字本身就是路径 */
+    if (strchr(name, '/') || strchr(name, '\\') ||
+        strstr(name, ".ttf") || strstr(name, ".ttc") || strstr(name, ".otf") ||
+        strstr(name, ".TTF") || strstr(name, ".TTC") || strstr(name, ".OTF")) {
+        FILE* fp = fopen(name, "rb");
+        if (!fp) return 0;
+        fclose(fp);
+        snprintf(out, outsz, "%s", name);
+        return 1;
+    }
+    /* ② 按名字查表 */
+    for (int i = 0; cand[i].key; i++) {
+        if (strstr(name, cand[i].key)) {
+            FILE* fp = fopen(cand[i].path, "rb");
+            if (fp) { fclose(fp); snprintf(out, outsz, "%s", cand[i].path); return 1; }
+        }
+    }
+    /* ③ 名字没命中(或命中但文件不在):按顺序回退表内第一个存在的系统 CJK 字体 */
+    for (int i = 0; cand[i].key; i++) {
+        FILE* fp = fopen(cand[i].path, "rb");
+        if (fp) { fclose(fp); snprintf(out, outsz, "%s", cand[i].path); return 1; }
+    }
+    return 0;
+}
+
+/* POSIX 版「系统字体名 → 字体句柄」的实现体。刻意放在平台宏之外(与解析函数同理):
+   它只用到 XT_LoadFont/xt_string_new/xt_release 这些共享 API,于是 Windows 构建也会编译它,
+   语法错误当场暴露;Windows 上它不参与链接(GDI 版另有实现),故加 unused 抑制告警。 */
+__attribute__((unused))
+static uintptr_t xt_font_create_from_name(uintptr_t faceVal, uintptr_t sizeVal) {
+    if (!IS_PTR(faceVal)) return XT_FROM_INT(0);
+    char path[512];
+    if (!xt_font_resolve_path(xt_get_cstr(faceVal), path, sizeof(path))) return XT_FROM_INT(0);
+    uintptr_t pathStr = (uintptr_t)xt_string_new(path);   /* XT_LoadFont 只读,不接管所有权 */
+    if (!IS_PTR(pathStr)) return XT_FROM_INT(0);
+    uintptr_t h = XT_LoadFont(pathStr, sizeVal);
+    xt_release(pathStr);
+    return h;
+}
+
 #if !defined(_WIN32)
-/* 非 Windows 平台：GDI 系统字体光栅化暂不支持（macOS/Linux 走 raylib 字体路径）。
-   返回 0 = 创建失败；调用方（加载系统字体）拿到 0 后，绘制路径回退 raylib 默认字体/无操作。 */
+/* 非 Windows 平台:无 GDI,改为「系统字体名 → ttf/ttc 路径 → raylib 载入」,与 Windows 对等(issue #43)。
+   载入走既有的 XT_LoadFont(同一套 CJK 码点集),因此句柄语义、绘制、释放路径完全一致。
+   取不到字体文件时返回 0 = 创建失败,调用方(加载系统字体)拿到 0 后回退 raylib 默认字体/无操作。 */
 uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
-    (void)faceVal; (void)sizeVal;
-    return XT_FROM_INT(0);
+    return xt_font_create_from_name(faceVal, sizeVal);
 }
 #endif
 
