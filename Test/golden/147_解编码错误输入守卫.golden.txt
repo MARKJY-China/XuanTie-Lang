@@ -1,0 +1,8 @@
+compile_ok=True
+exit=0
+--- 147_解编码错误输入守卫 开始 ---
+PASS[--child=urlbad]: 守卫触发(退出码 1 + 提示含「非法转义」)
+PASS[--child=urltail]: 守卫触发(退出码 1 + 提示含「不是合法 UTF-8」)
+PASS[--child=bytesbad]: 守卫触发(退出码 1 + 提示含「不是合法 UTF-8」)
+PASS[--child=bytesin]: 守卫触发(退出码 1 + 提示含「收到非字节输入」)
+--- 147_解编码错误输入守卫 结束 ---

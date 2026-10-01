@@ -350,6 +350,13 @@ XTValue xt_string_char_count(XTValue str_val);
 XTValue xt_string_to_hex_string(XTValue str_val);
 XTString* xt_string_next_char(XTString* s, int64_t* offset);
 
+/// URL 百分号编码(RFC 3986:unreserved 直通,其余按 UTF-8 字节转 %XX 大写)
+XTValue xt_url_encode(XTValue str_val);
+/// URL 百分号解码(%XX → 原字节,'+' 原样保留;转义非法/结果非 UTF-8 明确报错退出)
+XTValue xt_url_decode(XTValue str_val);
+/// 字节流 → 字符串(UTF-8 严格校验;非法字节或非字节输入明确报错退出)
+XTValue xt_bytes_to_string(XTValue bytes_val);
+
 /// 创建指定容量的空数组
 XTValue xt_array_new(size_t capacity);
 /// 向数组末尾追加元素

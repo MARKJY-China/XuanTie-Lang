@@ -42,6 +42,7 @@ n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 // --- 前置内部函数声明 ---
 static void print_pool_stats();
 static int xt_is_real_ptr(XTValue val);
+static const char* xt_type_label_zh(XTValue v);   // URL/字节内置的报错文案要用(定义在文件后部)
 
 /**
  * @struct XTArena
@@ -890,6 +891,128 @@ XTValue xt_string_to_hex_string(XTValue str_val) {
     XTString* res = xt_string_new_len(buf, new_len);
     free(buf);
     return (XTValue)res;
+}
+
+/* ── URL 编解码与字节→字符串(内置:URL编码 / URL解码 / 字节到字符串)───────────────
+   设计纪律(与 解() 的非字符串守卫同规):类型不对/转义非法/UTF-8 非法一律明确报错退出,
+   绝不静默产出坏字符串——字符串类型契约是 UTF-8,放坏字节进去会污染后续 字符/截取/分割。 */
+
+/* UTF-8 严格校验:全合法返回 (size_t)-1;否则返回首个非法字节的偏移。
+   拒绝:0x80-0xC1 / 0xF5-0xFF 首字节、续字节不足或格式错、E0/F0 过长编码、
+        F4 超界(>U+10FFFF)、ED A0-BF 代理区。 */
+static size_t xt_utf8_bad_offset(const uint8_t* p, size_t n) {
+    size_t i = 0;
+    while (i < n) {
+        uint8_t c = p[i];
+        if (c < 0x80) { i += 1; continue; }
+        size_t need;
+        uint32_t cp, lo, hi;
+        if (c >= 0xC2 && c <= 0xDF)      { need = 1; cp = c & 0x1Fu; lo = 0x80;    hi = 0x7FF; }
+        else if (c >= 0xE0 && c <= 0xEF) { need = 2; cp = c & 0x0Fu; lo = 0x800;   hi = 0xFFFF; }
+        else if (c >= 0xF0 && c <= 0xF4) { need = 3; cp = c & 0x07u; lo = 0x10000; hi = 0x10FFFF; }
+        else return i;                                    /* 非法首字节 */
+        if (i + need >= n) return i;                      /* 续字节缺失 */
+        for (size_t k = 1; k <= need; k++) {
+            if ((p[i + k] & 0xC0) != 0x80) return i;      /* 续字节格式错 */
+            cp = (cp << 6) | (uint32_t)(p[i + k] & 0x3F);
+        }
+        if (cp < lo || cp > hi) return i;                 /* 过长编码 / 超出 Unicode 范围 */
+        if (cp >= 0xD800 && cp <= 0xDFFF) return i;       /* 代理区码点 */
+        i += need + 1;
+    }
+    return (size_t)-1;
+}
+
+/* 十六进制字符值;非十六进制返回 -1 */
+static int xt_hex_val(unsigned char c) {
+    if (c >= '0' && c <= '9') return (int)(c - '0');
+    if (c >= 'a' && c <= 'f') return (int)(c - 'a') + 10;
+    if (c >= 'A' && c <= 'F') return (int)(c - 'A') + 10;
+    return -1;
+}
+
+/* URL 百分号编码(RFC 3986):unreserved(A-Z a-z 0-9 - _ . ~)直通,其余按 UTF-8 字节转 %XX(大写)。
+   空格 → %20(非 form 的 +);空串 → 空串。 */
+XTValue xt_url_encode(XTValue str_val) {
+    xt_string_guard(str_val, "URL编码");
+    XTString* s = (XTString*)str_val;
+    char* buf = (char*)malloc(s->length * 3 + 1);
+    if (!buf) { fprintf(stderr, "运行时错误: URL编码 内存不足\n"); exit(1); }
+    static const char* hex = "0123456789ABCDEF";
+    size_t o = 0;
+    for (size_t i = 0; i < s->length; i++) {
+        unsigned char c = (unsigned char)s->data[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            buf[o++] = (char)c;
+        } else {
+            buf[o++] = '%'; buf[o++] = hex[c >> 4]; buf[o++] = hex[c & 0x0F];
+        }
+    }
+    buf[o] = '\0';
+    XTString* res = xt_string_new_len(buf, o);
+    free(buf);
+    return (XTValue)res;
+}
+
+/* URL 百分号解码:%XX(十六进制大小写均可)→ 原字节;'+' 原样保留(RFC 3986,不做 form 的空格还原)。
+   转义不完整或非十六进制 → 报错退出;解码结果须为合法 UTF-8(否则报错退出,偏移含在提示里)。 */
+XTValue xt_url_decode(XTValue str_val) {
+    xt_string_guard(str_val, "URL解码");
+    XTString* s = (XTString*)str_val;
+    uint8_t* buf = (uint8_t*)malloc(s->length + 1);
+    if (!buf) { fprintf(stderr, "运行时错误: URL解码 内存不足\n"); exit(1); }
+    size_t o = 0, i = 0;
+    while (i < s->length) {
+        unsigned char c = (unsigned char)s->data[i];
+        if (c == '%') {
+            if (i + 3 > s->length) {
+                fprintf(stderr, "运行时错误: URL解码 转义不完整(%% 后需两位十六进制)\n");
+                fprintf(stderr, "  偏移: %zu(字符串总长 %zu)。原文: %s\n", i, s->length, s->data);
+                exit(1);
+            }
+            int h1 = xt_hex_val((unsigned char)s->data[i + 1]);
+            int h2 = xt_hex_val((unsigned char)s->data[i + 2]);
+            if (h1 < 0 || h2 < 0) {
+                fprintf(stderr, "运行时错误: URL解码 非法转义(%%%c%c 不是十六进制)\n",
+                        s->data[i + 1], s->data[i + 2]);
+                fprintf(stderr, "  偏移: %zu。原文: %s\n", i, s->data);
+                exit(1);
+            }
+            buf[o++] = (uint8_t)(h1 * 16 + h2);
+            i += 3;
+        } else {
+            buf[o++] = c;
+            i += 1;
+        }
+    }
+    size_t bad = xt_utf8_bad_offset(buf, o);
+    if (bad != (size_t)-1) {
+        fprintf(stderr, "运行时错误: URL解码 结果不是合法 UTF-8(解码后第 %zu 字节起)\n", bad);
+        fprintf(stderr, "  提示: %%XX 序列按字节解码;若确要任意二进制,请用 字节 流承载。\n");
+        exit(1);
+    }
+    XTString* res = xt_string_new_len((const char*)buf, o);
+    free(buf);
+    return (XTValue)res;
+}
+
+/* 字节流 → 字符串:按 UTF-8 严格校验;非法字节(或非字节输入)明确报错退出,不静默产出坏字符串。 */
+XTValue xt_bytes_to_string(XTValue bytes_val) {
+    if (!XT_IS_REAL_PTR(bytes_val) || ((XTObject*)bytes_val)->type_id != XT_TYPE_BYTES) {
+        fprintf(stderr, "运行时错误: 字节到字符串 收到非字节输入(实际类型: %s)\n",
+                xt_type_label_zh(bytes_val));
+        fprintf(stderr, "  提示: 只接受 字节 流;文本请直接用作 字。\n");
+        exit(1);
+    }
+    XTBytes* b = (XTBytes*)bytes_val;
+    size_t bad = xt_utf8_bad_offset(b->data, b->length);
+    if (bad != (size_t)-1) {
+        fprintf(stderr, "运行时错误: 字节到字符串 输入不是合法 UTF-8(第 %zu 字节起)\n", bad);
+        fprintf(stderr, "  提示: 若为任意二进制,请勿转字符串;十六进制可用 转为十六进制。\n");
+        exit(1);
+    }
+    return (XTValue)xt_string_new_len((const char*)b->data, b->length);
 }
 
 /**

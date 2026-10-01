@@ -143,6 +143,10 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	c.declaredGlobals["文件.删"] = true
 	c.symbolTable["道"] = SymbolInfo{AddrReg: "@\"xt_channel_new\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["道"] = true
+	// 字节(容量):字节流缓冲构造。XTC 侧有专门实例化分支(GSC 此前缺 → 字节(...) 会编译成
+	// 对未定义符号 @字节 的调用,实测报错);此处映射到 xt_bytes_new(容量),与 XTC 行为对齐。
+	c.symbolTable["字节"] = SymbolInfo{AddrReg: "@\"xt_bytes_new\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["字节"] = true
 	c.symbolTable["数学.随机"] = SymbolInfo{AddrReg: "@\"xt_math_random\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["数学.随机"] = true
 	c.symbolTable["数学.平方根"] = SymbolInfo{AddrReg: "@\"xt_math_sqrt\"", IsGlobal: true, Type: "i64"}
@@ -177,6 +181,13 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	c.declaredGlobals["化"] = true
 	c.symbolTable["解"] = SymbolInfo{AddrReg: "@\"xt_json_deserialize\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["解"] = true
+	// URL 编解码与字节→字符串(与自举编译器一侧对齐;运行时严格校验,非法输入明确报错退出)
+	c.symbolTable["URL编码"] = SymbolInfo{AddrReg: "@\"xt_url_encode\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["URL编码"] = true
+	c.symbolTable["URL解码"] = SymbolInfo{AddrReg: "@\"xt_url_decode\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["URL解码"] = true
+	c.symbolTable["字节到字符串"] = SymbolInfo{AddrReg: "@\"xt_bytes_to_string\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["字节到字符串"] = true
 	c.symbolTable["求"] = SymbolInfo{AddrReg: "@\"xt_http_request\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["求"] = true
 	c.symbolTable["输"] = SymbolInfo{AddrReg: "@\"xt_input\"", IsGlobal: true, Type: "i64"}
@@ -268,6 +279,11 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare i64 @xt_string_byte_length(i64)\n")
 	res.WriteString("declare i64 @xt_string_char_count(i64)\n")
 	res.WriteString("declare i64 @xt_string_to_hex_string(i64)\n")
+	res.WriteString("declare i64 @xt_url_encode(i64)\n")
+	res.WriteString("declare i64 @xt_url_decode(i64)\n")
+	res.WriteString("declare i64 @xt_bytes_to_string(i64)\n")
+	res.WriteString("declare i64 @xt_bytes_new(i64)\n")
+	res.WriteString("declare void @xt_bytes_append(i64, i8)\n")
 	res.WriteString("declare %XTString* @xt_string_from_char(i8)\n")
 	res.WriteString("declare %XTString* @xt_string_next_char(%XTString*, i64*)\n")
 	res.WriteString("declare i64 @xt_array_new(i64)\n")
@@ -2187,7 +2203,32 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		} else if e.Member.Value == "追加" {
 			argReg, argType, _ := c.compileExpression(e.Arguments[0])
 			argXt := c.ensureI64(argReg, argType)
+			// 运行时按类型分派(与 XTC 侧同款):数组(type_id 5)→ xt_array_append;
+			// 字节流 → xt_bytes_append(取低 8 位)。此前只走数组路径,字节缓冲 追加 会被
+			// xt_require_array 误报"接收者是 字节,不是数组"(实测),与 XTC 行为不对齐。
+			objPtr := c.nextReg()
+			c.emit("  %s = inttoptr i64 %s to %%XTObject*", objPtr, objXt)
+			typeIdPtr := c.nextReg()
+			c.emit("  %s = getelementptr %%XTObject, %%XTObject* %s, i32 0, i32 2", typeIdPtr, objPtr)
+			typeId := c.nextReg()
+			c.emit("  %s = load i32, i32* %s", typeId, typeIdPtr)
+			isArr := c.nextReg()
+			c.emit("  %s = icmp eq i32 %s, 5", isArr, typeId)
+			arrLabel := c.nextLabel("append.arr")
+			bytesLabel := c.nextLabel("append.bytes")
+			appendEnd := c.nextLabel("append.end")
+			c.emit("  br i1 %s, label %%%s, label %%%s", isArr, arrLabel, bytesLabel)
+			c.emit("%s:", arrLabel)
 			c.emit("  call void @xt_array_append(i64 %s, i64 %s)", objXt, argXt)
+			c.emit("  br label %%%s", appendEnd)
+			c.emit("%s:", bytesLabel)
+			rawByte := c.nextReg()
+			c.emit("  %s = ashr i64 %s, 1", rawByte, argXt)
+			truncByte := c.nextReg()
+			c.emit("  %s = trunc i64 %s to i8", truncByte, rawByte)
+			c.emit("  call void @xt_bytes_append(i64 %s, i8 %s)", objXt, truncByte)
+			c.emit("  br label %%%s", appendEnd)
+			c.emit("%s:", appendEnd)
 			c.emit("  call void @xt_release(i64 %s)", argXt)
 			c.emit("  store i64 0, i64* %s", resAddr)
 			c.emit("  br label %%%s", mergeLabel)
