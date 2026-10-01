@@ -66,7 +66,7 @@ jobs:
           ls "$DEST/渲染" | head -5
           ls "$DEST/UI" | head -5
 
-      - name: 铁铺 CLI 冒烟(issue #49:构建 + lc 硬判 + ql)
+      - name: "铁铺 CLI 冒烟(issue #49:构建 + lc 硬判 + ql)"
         shell: bash
         run: |
           set -e
@@ -121,7 +121,7 @@ jobs:
         shell: bash
         run: bash tools/bootstrap_check.sh
 
-      - name: 铁铺 CLI 冒烟(issue #49:POSIX 分支真跑一次——构建 + lc 硬判 + ql)
+      - name: "铁铺 CLI 冒烟(issue #49:POSIX 分支真跑一次——构建 + lc 硬判 + ql)"
         shell: bash
         run: |
           set -e
@@ -132,7 +132,7 @@ jobs:
           ./tiepm_smoke.exe ql
           rm -f tiepm_smoke.exe tiepm_lc.log
 
-      - name: TLS 冒烟(issue #51:darwin 编译版 求() 走系统原生 SecureTransport)
+      - name: "TLS 冒烟(issue #51:darwin 编译版 求() 走系统原生 SecureTransport)"
         shell: bash
         run: |
           set -e
@@ -159,5 +159,154 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: bootstrap-logs-darwin
+          path: temp/_bootstrap_scratch/
+          if-no-files-found: ignore
+
+  # Linux 门禁:编译器有 linux 目标、运行时/铁铺有 POSIX 分支,此前从未在 Linux 上跑过。
+  # linux 上 DDC 为硬判(逐字节一致),与 Windows 同口径;POSIX 与 darwin 共享大部分分支,
+  # Linux 专属(sha256sum、GNU tar、glibc 环境)由此覆盖。
+  gate-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 工具链与系统版本
+        run: |
+          clang --version | head -2
+          gcc --version | head -1
+          uname -a
+
+      - name: 构建种子编译器 GSC
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(linux:硬判逐字节一致)
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: "铁铺 CLI 冒烟(issue #49:POSIX 分支——含 Linux 专属 sha256sum 取哈希通道)"
+        shell: bash
+        run: |
+          set -e
+          ./build/xtc_s4.exe 铁 tiepm/铁铺.xt -sc tiepm_smoke
+          ./tiepm_smoke lc | tee tiepm_lc.log
+          grep -q "已安装的铁器" tiepm_lc.log
+          grep -q "玄铁内置" tiepm_lc.log
+          ./tiepm_smoke ql
+          rm -f tiepm_smoke tiepm_lc.log
+
+      - name: "TLS 存根冒烟(issue #51:linux 无系统 TLS——https 须明确失败而非崩溃/挂死)"
+        shell: bash
+        run: |
+          set -e
+          cat > /tmp/tls_stub_smoke.xt <<'XTEOF'
+          设 响 = 求("https://example.com/")
+          设 被拒 = 非 响.成功 或 响.值.包含?("TLS 握手失败")
+          若 被拒 {
+              示("TLS 存根 PASS: linux 无系统 TLS 通道,https 明确失败")
+          } 否 {
+              示("TLS 存根 FAIL: linux 无 TLS 通道,https 竟取回结果"); 终 1
+          }
+          XTEOF
+          ./build/xtc_s4.exe 铁 /tmp/tls_stub_smoke.xt -sc /tmp/tls_stub_smoke
+          /tmp/tls_stub_smoke
+
+      - name: 失败时上传自举日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-logs-linux
+          path: temp/_bootstrap_scratch/
+          if-no-files-found: ignore
+
+  # Windows ARM64 门禁:ARM64 自举/架构探测代码此前从未在真 ARM64 硬件上跑过(macOS 侧虽是
+  # arm64,但 Windows 的 PROCESSOR_ARCHITECTURE 探测、arm64-w64-windows-gnu 目标三元组、
+  # 门禁的运行时 .o 预编译是另一条路,必须真机验证)。
+  # 工具链:MSYS2 CLANGARM64(原生 LLVM);gcc 由 gcc-compat 别名提供 —— 与编译器"找 gcc 链接"
+  # 的发现逻辑对上(先 _自身目录/tools/mingw/bin/aarch64-w64-mingw32-gcc.exe,再 PATH 的 gcc)。
+  # 门禁 XT_CLANG_TARGET 已按 uname -m / PROCESSOR_ARCHITECTURE 双源判定架构。
+  gate-win-arm64:
+    runs-on: windows-11-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANGARM64
+          update: false
+          install: >-
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-gcc-compat
+
+      - name: 工具链 PATH 与自检(CLANGARM64 的 clang/gcc 暴露给 cmd(执) 与 bash)
+        shell: bash
+        run: |
+          set -e
+          echo 'C:\msys64\clangarm64\bin' >> "$GITHUB_PATH"
+          export PATH="/c/msys64/clangarm64/bin:$PATH"
+          uname -m
+          echo "PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE:-}"
+          clang --version | head -2
+          gcc --version | head -2
+          # clang 的 MinGW 驱动默认找 ld;CLANGARM64 只有 ld.lld —— 备好别名(存在则跳过)
+          if [ ! -f /c/msys64/clangarm64/bin/ld.exe ] && [ -f /c/msys64/clangarm64/bin/ld.lld.exe ]; then
+            cp /c/msys64/clangarm64/bin/ld.lld.exe /c/msys64/clangarm64/bin/ld.exe
+            echo "已备 ld.exe → ld.lld.exe 别名"
+          fi
+
+      - name: 构建种子编译器 GSC
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(win-arm64:硬判逐字节一致)
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: 铁铺 CLI 冒烟(Windows 分支在 ARM64 上的回归)
+        shell: bash
+        run: |
+          set -e
+          ./build/xtc_s4.exe 铁 tiepm/铁铺.xt -sc tiepm_smoke.exe
+          ./tiepm_smoke.exe lc | tee tiepm_lc.log
+          grep -q "已安装的铁器" tiepm_lc.log
+          grep -q "玄铁内置" tiepm_lc.log
+          ./tiepm_smoke.exe ql
+          rm -f tiepm_smoke.exe tiepm_lc.log
+
+      - name: TLS 冒烟(Schannel 在 ARM64 上的正/反例,同 darwin 口径)
+        shell: bash
+        run: |
+          set -e
+          cat > /tmp/tls_smoke.xt <<'XTEOF'
+          设 响 = 求("https://example.com/")
+          若 响.成功 {
+              若 响.值.包含?("Example Domain") { 示("TLS 正例 PASS") } 否 { 示("TLS 正例 FAIL: 正文异常"); 终 1 }
+          } 否 {
+              示("TLS 正例 FAIL: " & 响.错误); 终 1
+          }
+          设 坏 = 求("https://wrong.host.badssl.com/")
+          设 被拒 = 非 坏.成功 或 坏.值.包含?("TLS 握手失败")
+          若 被拒 {
+              示("TLS 反例 PASS: 证书与主机名不符已被拒绝")
+          } 否 {
+              示("TLS 反例 FAIL: 证书与主机名不符竟被接受(校验缺失,安全缺陷)"); 终 1
+          }
+          XTEOF
+          ./build/xtc_s4.exe 铁 /tmp/tls_smoke.xt -sc /tmp/tls_smoke.exe
+          /tmp/tls_smoke.exe
+
+      - name: 失败时上传自举日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-logs-win-arm64
           path: temp/_bootstrap_scratch/
           if-no-files-found: ignore

@@ -96,7 +96,13 @@ echo "[自举门禁] 环境: 平台=$(uname -s)  DDC=$( [ "$DDC_SOFT" = "1" ] &&
 echo "[自举门禁] 阶段零·预备:预编译运行时目标文件(各级链接与回归复用,免逐次现编 C 源)"
 mkdir -p "$BUILD/runtime"
 if uname | grep -qiE "MINGW|MSYS|CYGWIN"; then
-    XT_CLANG_TARGET="-target x86_64-w64-windows-gnu"
+    # Windows:预编译目标架构必须跟随宿主(x86_64 与 arm64 各一套运行时 .o),
+    # 否则链上程序用 x86_64 .o 去连 arm64 目标必然失败。uname -m 与
+    # PROCESSOR_ARCHITECTURE 双源取"任一报 arm64 即 arm64"(模拟/原生两种 Git Bash 都兜住)。
+    case "$(uname -m)${PROCESSOR_ARCHITECTURE:-}" in
+        *aarch64*|*arm64*|*ARM64*) XT_CLANG_TARGET="-target arm64-w64-windows-gnu" ;;
+        *)                         XT_CLANG_TARGET="-target x86_64-w64-windows-gnu" ;;
+    esac
 else
     XT_CLANG_TARGET=""
 fi
