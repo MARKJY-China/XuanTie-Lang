@@ -79,12 +79,21 @@ resolve_exe() {
 [ -f "$SRC" ] || fail "未找到编译器源码 $SRC"
 mkdir -p "$BUILD" "$SCRATCH"
 
+# 显式架构(CI 用;空=照旧自动判定):在"x64 模拟 shell 的 ARM64 Windows 宿主"上,
+# uname -m 与 PROCESSOR_ARCHITECTURE 都被模拟层报成 x86_64/AMD64 —— 编译器自测会得出
+# amd64,与真机不符。此时由 CI 设 XT_ARCH=arm64:运行时 .o 预编译目标与链上各级
+# (GSC/XTC 均透传 --架构)保持一致,避免"arm64 目标去链 x86_64 .o"的格式错配。
+XT_ARCH_WANT="${XT_ARCH:-}"
+case "$XT_ARCH_WANT" in arm64|ARM64|aarch64) XT_ARCH_WANT="arm64" ;; *) XT_ARCH_WANT="" ;; esac
+ARCH_FLAG=""
+if [ -n "$XT_ARCH_WANT" ]; then ARCH_FLAG="--架构 $XT_ARCH_WANT"; fi
+
 # 环境自述:CI 首跑曾在此阶段失败而日志无上下文,故把关键路径与工具链版本前置打印
 echo "[自举门禁] 环境: ROOT=$ROOT"
 echo "[自举门禁] 环境: SRC=$(W "$SRC")"
 echo "[自举门禁] 环境: SCRATCH=$SCRATCH"
 echo "[自举门禁] 环境: clang=$(command -v clang || echo '(未找到)')  gcc=$(command -v gcc || echo '(未找到)')"
-echo "[自举门禁] 环境: 平台=$(uname -s)  DDC=$( [ "$DDC_SOFT" = "1" ] && echo '软判(平台链接器注入 LC_UUID/调试段,不阻断)' || echo '硬判(逐字节一致)' )"
+echo "[自举门禁] 环境: 平台=$(uname -s)  显式架构=${XT_ARCH_WANT:-（自动判定）}  DDC=$( [ "$DDC_SOFT" = "1" ] && echo '软判(平台链接器注入 LC_UUID/调试段,不阻断)' || echo '硬判(逐字节一致)' )"
 { clang --version 2>&1 | head -1; gcc --version 2>&1 | head -1; } || true
 
 # ── 运行时目标文件预编译(阶段零之前,一次做完后续全部复用)────────────────────
@@ -97,9 +106,9 @@ echo "[自举门禁] 阶段零·预备:预编译运行时目标文件(各级链�
 mkdir -p "$BUILD/runtime"
 if uname | grep -qiE "MINGW|MSYS|CYGWIN"; then
     # Windows:预编译目标架构必须跟随宿主(x86_64 与 arm64 各一套运行时 .o),
-    # 否则链上程序用 x86_64 .o 去连 arm64 目标必然失败。uname -m 与
-    # PROCESSOR_ARCHITECTURE 双源取"任一报 arm64 即 arm64"(模拟/原生两种 Git Bash 都兜住)。
-    case "$(uname -m)${PROCESSOR_ARCHITECTURE:-}" in
+    # 否则链上程序用 x86_64 .o 去连 arm64 目标必然失败。判定源:显式 XT_ARCH 优先,
+    # 其次 uname -m 与 PROCESSOR_ARCHITECTURE 双源(任一报 arm64 即 arm64)。
+    case "$XT_ARCH_WANT$(uname -m)${PROCESSOR_ARCHITECTURE:-}" in
         *aarch64*|*arm64*|*ARM64*) XT_CLANG_TARGET="-target arm64-w64-windows-gnu" ;;
         *)                         XT_CLANG_TARGET="-target x86_64-w64-windows-gnu" ;;
     esac
@@ -117,7 +126,7 @@ echo "[自举门禁] 阶段零:工具链自检(GSC 编译并运行最小程序,�
 PROBE_SRC="$SCRATCH/probe.xt"
 printf '示("工具链自检通过")\n' > "$PROBE_SRC"
 rm -f "$SCRATCH/probe.exe" "$SCRATCH/probe"
-( cd "$SCRATCH" && "$GSC" 铁 "$(W "$PROBE_SRC")" ) > "$SCRATCH/probe.log" 2>&1 \
+( cd "$SCRATCH" && "$GSC" 铁 "$(W "$PROBE_SRC")" $ARCH_FLAG ) > "$SCRATCH/probe.log" 2>&1 \
     || { dump_log "$SCRATCH/probe.log"; fail "工具链自检:GSC 编译最小程序失败(clang/gcc 链路问题)"; }
 PROBE_BIN=$(resolve_exe "$SCRATCH/probe")
 [ -n "$PROBE_BIN" ] || { dump_log "$SCRATCH/probe.log"; fail "工具链自检:GSC 未产出 probe 可执行文件(probe.exe 与 probe 均不存在)"; }
@@ -134,7 +143,7 @@ cp -f "$ROOT"/xuantie_compiler/*.xt "$SCRATCH/src/"
 ENTRY="$SCRATCH/src/xentry.xt"
 cp -f "$ROOT/xuantie_compiler/玄铁.xt" "$ENTRY"
 rm -f "$SCRATCH/src/xentry.exe" "$SCRATCH/xentry.exe" "$SCRATCH/src/xentry" "$SCRATCH/xentry"
-( cd "$SCRATCH" && "$GSC" 铁 "$(W "$ENTRY")" ) > "$SCRATCH/s1.log" 2>&1 || { dump_log "$SCRATCH/s1.log"; fail "GSC 编译 s1 失败"; }
+( cd "$SCRATCH" && "$GSC" 铁 "$(W "$ENTRY")" $ARCH_FLAG ) > "$SCRATCH/s1.log" 2>&1 || { dump_log "$SCRATCH/s1.log"; fail "GSC 编译 s1 失败"; }
 S1_BIN=$(resolve_exe "$SCRATCH/xentry")
 [ -n "$S1_BIN" ] || { dump_log "$SCRATCH/s1.log"; fail "GSC 未产出 xentry 可执行文件(探测 xentry.exe 与 xentry 均不存在)"; }
 mv -f "$S1_BIN" "$BUILD/xtc_s1.exe"
@@ -143,7 +152,7 @@ echo "[自举门禁] 阶段二:逐级自举 s1 → s2 → s3 → s4"
 for pair in "1 2" "2 3" "3 4"; do
     set -- $pair
     parent="$1"; child="$2"
-    "$BUILD/xtc_s$parent.exe" 铁 "$(W "$SRC")" -sc "$(W "$BUILD/xtc_s$child.exe")" \
+    "$BUILD/xtc_s$parent.exe" 铁 "$(W "$SRC")" $ARCH_FLAG -sc "$(W "$BUILD/xtc_s$child.exe")" \
         > "$SCRATCH/s$child.log" 2>&1 || { dump_log "$SCRATCH/s$child.log"; fail "s$parent → s$child 失败"; }
     [ -f "$BUILD/xtc_s$child.exe" ] || { dump_log "$SCRATCH/s$child.log"; fail "s$parent → s$child 未产出产物"; }
 done
@@ -177,7 +186,7 @@ for pair in "1 2" "2 3" "3 4"; do
             printf '示("ddc")\n' > "$DDC_FIX"
             for n in 3 4; do
                 rm -f "$SCRATCH/自举输出.ll" "$SCRATCH/ddc_s$n.ll"
-                ( cd "$SCRATCH" && "$BUILD/xtc_s$n.exe" 铁 "$(W "$DDC_FIX")" -bl -sc "$(W "$SCRATCH/ddc_s$n.exe")" ) \
+                ( cd "$SCRATCH" && "$BUILD/xtc_s$n.exe" 铁 "$(W "$DDC_FIX")" $ARCH_FLAG -bl -sc "$(W "$SCRATCH/ddc_s$n.exe")" ) \
                     > "$SCRATCH/ddc_s$n.log" 2>&1 || { dump_log "$SCRATCH/ddc_s$n.log"; fail "DDC 补判:s$n 编译 fixture 失败"; }
                 [ -f "$SCRATCH/自举输出.ll" ] || { dump_log "$SCRATCH/ddc_s$n.log"; fail "DDC 补判:s$n 未保留 IR(-bl)"; }
                 mv -f "$SCRATCH/自举输出.ll" "$SCRATCH/ddc_s$n.ll"
@@ -197,7 +206,7 @@ done
 echo "[自举门禁] 阶段五:链顶冒烟(s4 编译并运行 Test/01_基础测试.xt)"
 SMOKE_EXE="$SCRATCH/smoke01.exe"
 rm -f "$SMOKE_EXE"
-"$BUILD/xtc_s4.exe" 铁 "$(W "$ROOT/Test/01_基础测试.xt")" -sc "$(W "$SMOKE_EXE")" > "$SCRATCH/smoke.log" 2>&1 \
+"$BUILD/xtc_s4.exe" 铁 "$(W "$ROOT/Test/01_基础测试.xt")" $ARCH_FLAG -sc "$(W "$SMOKE_EXE")" > "$SCRATCH/smoke.log" 2>&1 \
     || { dump_log "$SCRATCH/smoke.log"; fail "s4 编译冒烟用例失败"; }
 ( cd "$ROOT" && "$SMOKE_EXE" ) > "$SCRATCH/smoke_run.log" 2>&1 \
     || { dump_log "$SCRATCH/smoke_run.log"; fail "s4 产物运行失败(退出码非零)"; }
@@ -208,12 +217,12 @@ PAO_SRC="$SCRATCH/pao_probe.xt"
 PAO_LOG="$SCRATCH/pao.log"
 printf '示("pao 冒烟通过")
 ' > "$PAO_SRC"
-( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" pao "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1 || { dump_log "$PAO_LOG"; fail "pao 运行失败"; }
+( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" pao "$(W "$PAO_SRC")" $ARCH_FLAG ) > "$PAO_LOG" 2>&1 || { dump_log "$PAO_LOG"; fail "pao 运行失败"; }
 grep -q "pao 冒烟通过" "$PAO_LOG" || { dump_log "$PAO_LOG"; fail "pao 输出异常(未见程序输出)"; }
 if grep -q "原生编译完成" "$PAO_LOG"; then dump_log "$PAO_LOG"; fail "pao 不该打印编译完成噪声(对齐 go run)"; fi
 printf '终 3
 ' > "$PAO_SRC"
-( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" 跑 "$(W "$PAO_SRC")" ) > "$PAO_LOG" 2>&1
+( cd "$SCRATCH" && "$BUILD/xtc_s4.exe" 跑 "$(W "$PAO_SRC")" $ARCH_FLAG ) > "$PAO_LOG" 2>&1
 pao_rc=$?
 [ "$pao_rc" = "3" ] || { dump_log "$PAO_LOG"; fail "pao 退出码未透传(得到 $pao_rc,期望 3)"; }
 # pao/跑 的临时产物落在编译器缓存目录(Windows: %TEMP%\XuanTie\Cache;POSIX: $TMPDIR|/tmp/XuanTie/Cache),

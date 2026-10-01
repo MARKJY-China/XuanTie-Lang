@@ -223,15 +223,17 @@ jobs:
           path: temp/_bootstrap_scratch/
           if-no-files-found: ignore
 
-  # Windows ARM64 门禁:ARM64 自举/架构探测代码此前从未在真 ARM64 硬件上跑过(macOS 侧虽是
-  # arm64,但 Windows 的 PROCESSOR_ARCHITECTURE 探测、arm64-w64-windows-gnu 目标三元组、
-  # 门禁的运行时 .o 预编译是另一条路,必须真机验证)。
-  # 工具链:MSYS2 CLANGARM64(原生 LLVM);gcc 由 gcc-compat 别名提供 —— 与编译器"找 gcc 链接"
-  # 的发现逻辑对上(先 _自身目录/tools/mingw/bin/aarch64-w64-mingw32-gcc.exe,再 PATH 的 gcc)。
-  # 门禁 XT_CLANG_TARGET 已按 uname -m / PROCESSOR_ARCHITECTURE 双源判定架构。
+  # Windows ARM64 门禁:ARM64 自举/架构探测代码此前从未在真 ARM64 硬件上跑过。
+  # 关键事实(首跑实测):该 runner 的 shell 工具链是 x64 模拟(Git Bash uname -m=x86_64、
+  # PROCESSOR_ARCHITECTURE=AMD64),镜像自带 x64 MinGW 与 LLVM —— 编译器自测会把架构判成
+  # amd64。故:① 工具链相关步骤走 MSYS2 CLANGARM64 环境 shell(原生 aarch64 clang/gcc,
+  # gcc 由 gcc-compat 提供);② 顶层设 XT_ARCH=arm64 让门禁把运行时 .o 预编译成 arm64 并给
+  # 链上各级(GSC/XTC 支持 --架构)显式透传,冒烟编译同样带 --架构。
   gate-win-arm64:
     runs-on: windows-11-arm
     timeout-minutes: 120
+    env:
+      XT_ARCH: arm64
     steps:
       - uses: actions/checkout@v4
 
@@ -243,38 +245,46 @@ jobs:
         with:
           msystem: CLANGARM64
           update: false
+          path-type: inherit
           install: >-
             mingw-w64-clang-aarch64-clang
             mingw-w64-clang-aarch64-gcc-compat
 
-      - name: 工具链 PATH 与自检(CLANGARM64 的 clang/gcc 暴露给 cmd(执) 与 bash)
-        shell: bash
+      - name: 工具链自检与别名兜底(CLANGARM64 环境)
+        shell: msys2 {0}
         run: |
           set -e
-          echo 'C:\msys64\clangarm64\bin' >> "$GITHUB_PATH"
-          export PATH="/c/msys64/clangarm64/bin:$PATH"
-          uname -m
-          echo "PROCESSOR_ARCHITECTURE=${PROCESSOR_ARCHITECTURE:-}"
+          export PATH="/clangarm64/bin:$PATH"
+          echo "MSYSTEM=$MSYSTEM"
+          which -a clang gcc | head -6
           clang --version | head -2
           gcc --version | head -2
+          BIN=/clangarm64/bin
           # clang 的 MinGW 驱动默认找 ld;CLANGARM64 只有 ld.lld —— 备好别名(存在则跳过)
-          if [ ! -f /c/msys64/clangarm64/bin/ld.exe ] && [ -f /c/msys64/clangarm64/bin/ld.lld.exe ]; then
-            cp /c/msys64/clangarm64/bin/ld.lld.exe /c/msys64/clangarm64/bin/ld.exe
-            echo "已备 ld.exe → ld.lld.exe 别名"
+          if [ ! -f "$BIN/ld.exe" ] && [ -f "$BIN/ld.lld.exe" ]; then
+            cp "$BIN/ld.lld.exe" "$BIN/ld.exe"; echo "已备 ld.exe → ld.lld.exe 别名"
           fi
+          if [ ! -f "$BIN/gcc.exe" ] && [ -f "$BIN/aarch64-w64-mingw32-gcc.exe" ]; then
+            cp "$BIN/aarch64-w64-mingw32-gcc.exe" "$BIN/gcc.exe"; echo "已备 gcc.exe 别名"
+          fi
+          ls "$BIN" | grep -iE "^(gcc|clang|ld)" | head -8
 
       - name: 构建种子编译器 GSC
+        shell: bash
         run: go build -o xt_gsc.exe .
 
-      - name: 自举链 + DDC 门禁(win-arm64:硬判逐字节一致)
-        shell: bash
-        run: bash tools/bootstrap_check.sh
+      - name: 自举链 + DDC 门禁(win-arm64:硬判逐字节一致,XT_ARCH=arm64 显式指定)
+        shell: msys2 {0}
+        run: |
+          export PATH="/clangarm64/bin:$PATH"
+          bash tools/bootstrap_check.sh
 
       - name: 铁铺 CLI 冒烟(Windows 分支在 ARM64 上的回归)
-        shell: bash
+        shell: msys2 {0}
         run: |
           set -e
-          ./build/xtc_s4.exe 铁 tiepm/铁铺.xt -sc tiepm_smoke.exe
+          export PATH="/clangarm64/bin:$PATH"
+          ./build/xtc_s4.exe 铁 tiepm/铁铺.xt --架构 $XT_ARCH -sc tiepm_smoke.exe
           ./tiepm_smoke.exe lc | tee tiepm_lc.log
           grep -q "已安装的铁器" tiepm_lc.log
           grep -q "玄铁内置" tiepm_lc.log
@@ -282,10 +292,11 @@ jobs:
           rm -f tiepm_smoke.exe tiepm_lc.log
 
       - name: TLS 冒烟(Schannel 在 ARM64 上的正/反例,同 darwin 口径)
-        shell: bash
+        shell: msys2 {0}
         run: |
           set -e
-          cat > /tmp/tls_smoke.xt <<'XTEOF'
+          export PATH="/clangarm64/bin:$PATH"
+          cat > tls_smoke.xt <<'XTEOF'
           设 响 = 求("https://example.com/")
           若 响.成功 {
               若 响.值.包含?("Example Domain") { 示("TLS 正例 PASS") } 否 { 示("TLS 正例 FAIL: 正文异常"); 终 1 }
@@ -300,8 +311,9 @@ jobs:
               示("TLS 反例 FAIL: 证书与主机名不符竟被接受(校验缺失,安全缺陷)"); 终 1
           }
           XTEOF
-          ./build/xtc_s4.exe 铁 /tmp/tls_smoke.xt -sc /tmp/tls_smoke.exe
-          /tmp/tls_smoke.exe
+          ./build/xtc_s4.exe 铁 tls_smoke.xt --架构 $XT_ARCH -sc tls_smoke.exe
+          ./tls_smoke.exe
+          rm -f tls_smoke.xt tls_smoke.exe
 
       - name: 失败时上传自举日志
         if: failure()
