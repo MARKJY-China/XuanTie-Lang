@@ -20,7 +20,7 @@ void xt_net_cleanup(void);
 // url: "http://host:port/path" 或 "https://host/path"（HTTPS 走 Schannel 系统 TLS）
 void* xt_net_http_get(const char* url);
 
-// TLS(Schannel)客户端接口 — runtime/xt_tls.c 实现
+// TLS 客户端接口 — runtime/xt_tls.c 实现(Windows=Schannel / macOS=SecureTransport,均系统原生零外部依赖)
 int xt_tls_handshake(uintptr_t sock, const char* hostname, void** ctx_out);
 int xt_tls_send(void* ctx, const char* data, int len);
 int xt_tls_recv(void* ctx, char* out, int cap);

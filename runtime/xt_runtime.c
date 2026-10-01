@@ -3004,10 +3004,12 @@ XTValue xt_http_request(XTValue url_val) {
     XTString* url = (XTString*)url_val;
     void* result = xt_net_http_get(url->data);
     // xt_net_http_get 返回 char*：成功时是响应体，失败时是错误信息
-    // 用简单启发式判断：以 "不支持的" 或 "无法" 或 "HTTP" 开头的是错误
+    // 用简单启发式判断开头是错误文案(http_fetch_raw 的错误前缀清单需全覆盖——
+    // "TLS 握手失败"/"响应为空" 曾漏网:证书/网络失败被当成功正文返回,实测 issue #51)
     const char* resp = (const char*)result;
     if (!resp) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("请求失败"));
-    if (strncmp(resp, "不支持", 9) == 0 || strncmp(resp, "无法", 6) == 0 || strncmp(resp, "HTTP", 4) == 0 || strncmp(resp, "发送", 6) == 0) {
+    if (strncmp(resp, "不支持", 9) == 0 || strncmp(resp, "无法", 6) == 0 || strncmp(resp, "HTTP", 4) == 0 ||
+        strncmp(resp, "发送", 6) == 0 || strncmp(resp, "TLS 握手失败", 16) == 0 || strncmp(resp, "响应为空", 12) == 0) {
         XTString* err = xt_string_new(resp);
         free(result);
         return (XTValue)xt_result_new(0, NULL, (void*)err);

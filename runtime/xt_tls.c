@@ -1,12 +1,12 @@
 /**
  * @file xt_tls.c
- * @brief 玄铁运行时 TLS 客户端(Schannel/SSPI 实现)
+ * @brief 玄铁运行时 TLS 客户端(对上层只暴露 握手/发送/接收/关闭 四个原语)
  *
- * 设计目标:
- * 1. 零新增依赖——使用 Windows 系统自带 Schannel(secur32.dll),不引入 OpenSSL/mbedTLS,
- *    发行包重量零增长,无 llvm/gcc 环境的机器即装即用。
- * 2. 对上层只暴露 握手/发送/接收/关闭 四个原语,xt_net.c 的 https:// 路由调用。
- *
+ * 平台通道:
+ * - Windows: Schannel/SSPI(secur32.dll,系统原生,零外部依赖)
+ * - macOS:   SecureTransport(Security.framework,系统原生;dlopen 取符号 → 零链接依赖,
+ *            编译器的链接命令不必加 -framework Security)
+ * - 其它(linux 等): 存根,明确返回失败(不静默假装成功)
  * 仅实现客户端模式(玄铁作为 HTTPS 客户端拉取索引/下载包)。
  */
 
@@ -328,10 +328,178 @@ void xt_tls_close(void* ctx) {
     free(c);
 }
 
+#elif defined(__APPLE__)
+/* ── macOS:系统原生 SecureTransport（issue #51）─────────────────────────────
+   与 Windows 的 Schannel 通道同构:系统原生、零外部依赖。为保持"零链接依赖"
+   (编译器的链接命令不加 -framework Security),此处用 dlopen 动态取符号;
+   Big Sur+ 系统框架实体在 dyld 共享缓存,dlopen 该路径由 dyld 直接命中。
+   证书链校验走系统默认(AUTO 语义,与 Schannel 的 SCH_CRED_AUTO_CRED_VALIDATION 对齐);
+   SSLSetPeerDomainName 提供 SNI 与主机名校验依据。
+   (SecureTransport 自 macOS 10.15 起被标记弃用——官方引导转向 Network.framework,
+   系统仍长期提供;与 Schannel 同为"OS 自带"路径,不引入新依赖。) */
+
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <Security/SecureTransport.h>
+
+typedef struct {
+    SSLContextRef ctx;
+    int fd;
+} xt_tls_conn;
+
+/* dlopen 取符号(进程内解析一次);全部齐备才算通道可用 */
+static void* xt_sec_handle = NULL;
+static OSStatus (*xtp_SSLNewContext)(unsigned char, SSLContextRef*) = NULL;  /* Boolean 的 ABI 等价形,免依赖 MacTypes 是否被传递包含 */
+static OSStatus (*xtp_SSLDisposeContext)(SSLContextRef) = NULL;
+static OSStatus (*xtp_SSLSetIOFuncs)(SSLContextRef, SSLReadFunc, SSLWriteFunc) = NULL;
+static OSStatus (*xtp_SSLSetConnection)(SSLContextRef, SSLConnectionRef) = NULL;
+static OSStatus (*xtp_SSLSetPeerDomainName)(SSLContextRef, const char*, size_t) = NULL;
+static OSStatus (*xtp_SSLSetProtocolVersionMin)(SSLContextRef, SSLProtocol) = NULL;
+static OSStatus (*xtp_SSLHandshake)(SSLContextRef) = NULL;
+static OSStatus (*xtp_SSLRead)(SSLContextRef, void*, size_t, size_t*) = NULL;
+static OSStatus (*xtp_SSLWrite)(SSLContextRef, const void*, size_t, size_t*) = NULL;
+static OSStatus (*xtp_SSLClose)(SSLContextRef) = NULL;
+
+static int xt_tls_load(void) {
+    if (xtp_SSLHandshake) return 0;
+    if (!xt_sec_handle) {
+        xt_sec_handle = dlopen("/System/Library/Frameworks/Security.framework/Security",
+                               RTLD_LAZY | RTLD_LOCAL);
+    }
+    if (!xt_sec_handle) return -1;
+    xtp_SSLNewContext          = (OSStatus (*)(unsigned char, SSLContextRef*))dlsym(xt_sec_handle, "SSLNewContext");
+    xtp_SSLDisposeContext      = (OSStatus (*)(SSLContextRef))dlsym(xt_sec_handle, "SSLDisposeContext");
+    xtp_SSLSetIOFuncs          = (OSStatus (*)(SSLContextRef, SSLReadFunc, SSLWriteFunc))dlsym(xt_sec_handle, "SSLSetIOFuncs");
+    xtp_SSLSetConnection       = (OSStatus (*)(SSLContextRef, SSLConnectionRef))dlsym(xt_sec_handle, "SSLSetConnection");
+    xtp_SSLSetPeerDomainName   = (OSStatus (*)(SSLContextRef, const char*, size_t))dlsym(xt_sec_handle, "SSLSetPeerDomainName");
+    xtp_SSLSetProtocolVersionMin = (OSStatus (*)(SSLContextRef, SSLProtocol))dlsym(xt_sec_handle, "SSLSetProtocolVersionMin");
+    xtp_SSLHandshake           = (OSStatus (*)(SSLContextRef))dlsym(xt_sec_handle, "SSLHandshake");
+    xtp_SSLRead                = (OSStatus (*)(SSLContextRef, void*, size_t, size_t*))dlsym(xt_sec_handle, "SSLRead");
+    xtp_SSLWrite               = (OSStatus (*)(SSLContextRef, const void*, size_t, size_t*))dlsym(xt_sec_handle, "SSLWrite");
+    xtp_SSLClose               = (OSStatus (*)(SSLContextRef))dlsym(xt_sec_handle, "SSLClose");
+    if (!xtp_SSLNewContext || !xtp_SSLDisposeContext || !xtp_SSLSetIOFuncs ||
+        !xtp_SSLSetConnection || !xtp_SSLSetPeerDomainName || !xtp_SSLSetProtocolVersionMin ||
+        !xtp_SSLHandshake || !xtp_SSLRead || !xtp_SSLWrite) {
+        return -1;
+    }
+    return 0;
+}
+
+/* SecureTransport 的 I/O 回调(阻塞式:循环到填满/发完)。
+   套接字带 SO_RCVTIMEO/SO_SNDTIMEO(xt_net.c 设的 30s 静默上限),超时按 errSSLWouldBlock
+   上报并被上层截断为失败——与 Windows 侧"recv 超时即握手失败"的语义对齐。 */
+static OSStatus xt_tls_read_cb(SSLConnectionRef conn, void* data, size_t* dataLength) {
+    xt_tls_conn* c = (xt_tls_conn*)conn;
+    size_t want = *dataLength, got = 0;
+    char* p = (char*)data;
+    while (got < want) {
+        ssize_t n = recv(c->fd, p + got, want - got, 0);
+        if (n > 0) { got += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        *dataLength = got;
+        if (n == 0) return errSSLClosedGraceful;
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? errSSLWouldBlock : errSSLInternal;
+    }
+    *dataLength = got;
+    return noErr;
+}
+
+static OSStatus xt_tls_write_cb(SSLConnectionRef conn, const void* data, size_t* dataLength) {
+    xt_tls_conn* c = (xt_tls_conn*)conn;
+    size_t want = *dataLength, sent = 0;
+    const char* p = (const char*)data;
+    while (sent < want) {
+        ssize_t n = send(c->fd, p + sent, want - sent, 0);
+        if (n > 0) { sent += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        *dataLength = sent;
+        return (errno == EAGAIN || errno == EWOULDBLOCK) ? errSSLWouldBlock : errSSLInternal;
+    }
+    *dataLength = sent;
+    return noErr;
+}
+
+/**
+ * 建立 TLS 会话。成功返回 0,失败返回 -1。
+ * hostname 用于 SNI 与证书校验(证书链由系统信任库自动校验)。
+ */
+int xt_tls_handshake(uintptr_t sock_v, const char* hostname, void** ctx_out) {
+    *ctx_out = NULL;
+    if (xt_tls_load() != 0) return -1;
+
+    xt_tls_conn* c = (xt_tls_conn*)calloc(1, sizeof(xt_tls_conn));
+    if (!c) return -1;
+    c->fd = (int)sock_v;
+
+    SSLContextRef ctx = NULL;
+    if (xtp_SSLNewContext(0, &ctx) != noErr || !ctx) { free(c); return -1; }
+    c->ctx = ctx;
+
+    if (xtp_SSLSetIOFuncs(ctx, xt_tls_read_cb, xt_tls_write_cb) != noErr ||
+        xtp_SSLSetConnection(ctx, (SSLConnectionRef)c) != noErr ||
+        xtp_SSLSetPeerDomainName(ctx, hostname, strlen(hostname)) != noErr ||
+        xtp_SSLSetProtocolVersionMin(ctx, kTLSProtocol12) != noErr) {
+        xtp_SSLDisposeContext(ctx);
+        free(c);
+        return -1;
+    }
+
+    OSStatus st = xtp_SSLHandshake(ctx);
+    if (st != noErr) {
+        /* errSSLWouldBlock=套接字静默超时;其余为握手/证书错误(对齐 Windows 侧:一律失败) */
+        xtp_SSLDisposeContext(ctx);
+        free(c);
+        return -1;
+    }
+    *ctx_out = c;
+    return 0;
+}
+
+/** TLS 加密发送。成功返回 0,失败 -1。 */
+int xt_tls_send(void* ctx, const char* data, int len) {
+    xt_tls_conn* c = (xt_tls_conn*)ctx;
+    size_t off = 0;
+    while (off < (size_t)len) {
+        size_t processed = 0;
+        OSStatus st = xtp_SSLWrite(c->ctx, data + off, (size_t)len - off, &processed);
+        off += processed;
+        if (processed == 0) return -1;   /* noErr 且零进度=契约外;wouldBlock=超时——均按失败 */
+        if (st != noErr && st != errSSLWouldBlock) return -1;
+    }
+    return 0;
+}
+
+/**
+ * TLS 接收并解密。返回读取字节数;0=连接关闭/读超时;-1=错误。
+ * (读超时按 0 返回:与 Windows 版 recv 超时返回 0 的语义一致,读循环据此终止。)
+ */
+int xt_tls_recv(void* ctx, char* out, int cap) {
+    xt_tls_conn* c = (xt_tls_conn*)ctx;
+    size_t processed = 0;
+    OSStatus st = xtp_SSLRead(c->ctx, out, (size_t)cap, &processed);
+    if (processed > 0) return (int)processed;
+    if (st == errSSLClosedGraceful || st == errSSLClosedNoNotify) return 0;
+    if (st == errSSLWouldBlock) return 0;
+    return -1;
+}
+
+void xt_tls_close(void* ctx) {
+    xt_tls_conn* c = (xt_tls_conn*)ctx;
+    if (!c) return;
+    if (c->ctx) {
+        if (xtp_SSLClose) xtp_SSLClose(c->ctx);   /* 尽力发 close_notify,失败不管 */
+        if (xtp_SSLDisposeContext) xtp_SSLDisposeContext(c->ctx);
+    }
+    free(c);
+}
+
 #else
-// 非 Windows 平台：暂不支持 HTTPS/TLS（Schannel/SSPI 为 Windows 专用）。
-// 与 evaluator/ffi_other.go 的平台隔离模式一致——提供明确的"暂不支持"存根，
-// 使 macOS/Linux 上整套运行时可完整编译链接，HTTPS 请求运行时返回错误而非崩溃。
+// 其它平台(linux 等):暂无系统原生 TLS 通道——提供明确的"暂不支持"存根,
+// 使整套运行时可完整编译链接,HTTPS 请求运行时返回失败而非崩溃(不静默假装成功)。
 #include <stdint.h>
 #include <stddef.h>
 
