@@ -66,6 +66,17 @@ jobs:
           ls "$DEST/渲染" | head -5
           ls "$DEST/UI" | head -5
 
+      - name: 铁铺 CLI 冒烟(issue #49:构建 + lc 硬判 + ql)
+        shell: bash
+        run: |
+          set -e
+          ./build/xtc_s4.exe 铁 tiepm/铁铺.xt -sc tiepm_smoke.exe
+          ./tiepm_smoke.exe lc | tee tiepm_lc.log
+          grep -q "已安装的铁器" tiepm_lc.log
+          grep -q "玄铁内置" tiepm_lc.log
+          ./tiepm_smoke.exe ql
+          rm -f tiepm_smoke.exe tiepm_lc.log
+
       - name: 全量回归(跳过 96/97/98 弹窗类:CI 无显示服务; 跳过 77 压力对抗:低核 runner 上机器相关耗时 >300s)
         env:
           PYTHONUTF8: "1"
@@ -109,6 +120,17 @@ jobs:
       - name: 自举链 + DDC 门禁(darwin:链接器差异隔离为 IR 补判)
         shell: bash
         run: bash tools/bootstrap_check.sh
+
+      - name: 铁铺 CLI 冒烟(issue #49:POSIX 分支真跑一次——构建 + lc 硬判 + ql)
+        shell: bash
+        run: |
+          set -e
+          ./build/xtc_s4.exe 铁 tiepm/铁铺.xt -sc tiepm_smoke.exe
+          ./tiepm_smoke.exe lc | tee tiepm_lc.log
+          grep -q "已安装的铁器" tiepm_lc.log
+          grep -q "玄铁内置" tiepm_lc.log
+          ./tiepm_smoke.exe ql
+          rm -f tiepm_smoke.exe tiepm_lc.log
 
       - name: 失败时上传自举日志
         if: failure()

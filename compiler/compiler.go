@@ -1351,8 +1351,12 @@ func getTiePMInstallDir() string {
 	if dir := os.Getenv("TIEPM_HOME"); dir != "" {
 		return filepath.Join(dir, "已安装")
 	}
-	userProfile := os.Getenv("USERPROFILE")
-	return filepath.Join(userProfile, ".tiepm", "已安装")
+	// POSIX(macOS/Linux)无 USERPROFILE,回退 HOME(issue #49)
+	home := os.Getenv("USERPROFILE")
+	if home == "" {
+		home = os.Getenv("HOME")
+	}
+	return filepath.Join(home, ".tiepm", "已安装")
 }
 
 func resolveTiePMPackagePath(pkgName string) string {
