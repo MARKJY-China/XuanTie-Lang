@@ -246,6 +246,10 @@ jobs:
           msystem: CLANGARM64
           update: false
           path-type: inherit
+          # 关包缓存:该 action 的缓存保存环节会调 paccache(实测在 arm64 runner 上缺工具,
+          # 退出码 127 直接把整个作业判失败)——本作业不产归档,缓存只省包下载时间,
+          # 不值得留这个偶发必红的故障模式。
+          cache: false
           install: >-
             mingw-w64-clang-aarch64-clang
             mingw-w64-clang-aarch64-gcc-compat
