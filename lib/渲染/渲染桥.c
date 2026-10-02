@@ -143,6 +143,9 @@ extern __declspec(dllimport) int WINAPI SetWindowPos(HWND hWnd, HWND hWndInsertA
 #define XT_SWP_NOMOVE       0x0002
 #define XT_SWP_NOZORDER     0x0004
 #define XT_SWP_FRAMECHANGED 0x0020
+// Per-Monitor DPI Aware V2(PMv2,Win10 1703+)——动态取符号,旧系统静默跳过(issue #22)
+extern __declspec(dllimport) HANDLE WINAPI GetModuleHandleA(const char* lpModuleName);
+extern __declspec(dllimport) void* WINAPI GetProcAddress(HANDLE hModule, const char* lpProcName);
 // 自管可调整状态(无边框还原时按它决定是否恢复厚边框)
 static int g_xt_resizable = 0;
 static void xt_apply_style(HWND hwnd) {
@@ -184,7 +187,21 @@ void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     // MSAA 4x:圆角矩形/斜边的 GPU 级抗锯齿(raylib 的 DrawRectangleRounded 是三角形扇
     // 拼合,不开多重采样时边缘台阶感严重)。须在 InitWindow 前设置;取不到多样本
     // 帧缓冲时 GLFW 自动降级,不影响功能。
-    SetConfigFlags(0x00000020); // FLAG_MSAA_4X_HINT
+    // HIGHDPI:macOS Retina/Linux 高分屏的 2x framebuffer(issue #22)。须与 MSAA 同批设置。
+    SetConfigFlags(0x00000020 | 0x00002000); // FLAG_MSAA_4X_HINT | FLAG_WINDOW_HIGHDPI
+#ifdef _WIN32
+    // Windows Per-Monitor DPI Aware V2(PMv2,Win10 1703+):窗口跨不同 DPI 显示器拖动时
+    // 由应用按当前显示器 DPI 自行重排,避免系统按缩放比例强制拉伸模糊。V1 及更老档位
+    // (unaware/system DPI aware)吃历史包袱,不作为设计参照(issue #22)。动态取符号:
+    // 旧系统无此接口时静默跳过,不引入链接依赖。
+    {
+        HANDLE user32 = GetModuleHandleA("user32.dll");
+        if (user32) {
+            void* (*fn)(HANDLE) = (void* (*)(HANDLE))GetProcAddress(user32, "SetProcessDpiAwarenessContext");
+            if (fn) fn((HANDLE)(intptr_t)-4); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+        }
+    }
+#endif
     InitWindow((int)XT_TO_INT(w), (int)XT_TO_INT(h), xt_get_cstr(title));
 }
 
