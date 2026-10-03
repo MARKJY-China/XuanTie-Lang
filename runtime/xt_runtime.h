@@ -491,6 +491,8 @@ XTValue xt_execute(XTValue cmd_val);
 void xt_run_inherit_exit(XTValue exe_val, XTValue args_val, XTValue cleanup_val);
 XTValue xt_input(XTValue prompt_val);
 XTValue xt_get_temp_path();
+/// 当前工作目录绝对路径(UTF-8;语义同 pwd;取不到返空串)
+XTValue xt_cwd();
 
 // --- JSON 支持 ---
 

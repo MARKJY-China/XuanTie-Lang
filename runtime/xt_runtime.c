@@ -8,10 +8,11 @@
  * 设计核心原则：
  * 1. 标记指针 (Tagged Pointer)：利用 64 位指针的最低位 (LSB) 区分整数和对象指针。
  * 2. 自动引用计数 (ARC)：通过对象头部的原子计数器实现自动内存管理。
-n// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
  * 3. 区域分配 (Arena)：为高性能自举编译提供批量内存分配和一次性回收能力。
  * 4. 跨 ABI 兼容性：专门针对 MinGW 工具链优化了变参 FFI 调用。
  */
+
+// xt_net.c 提供的函数（避免循环依赖，不在头文件中声明）
 
 #define __USE_MINGW_ANSI_STDIO 1 // 强制 MinGW 使用兼容 C99 的 stdio 实现，支持 %lld 和 UTF-8
 #include "xt_runtime.h"
@@ -519,6 +520,58 @@ XTValue xt_get_args() {
     }
     xt_retain(g_xt_args); // 增加引用计数，遵循玄铁的“返回即持有”原则
     return g_xt_args;
+}
+
+/**
+ * @brief 获取当前工作目录(CWD)的绝对路径 (供玄铁代码调用)
+ *
+ * 语义与 shell 的 pwd 一致。存在的理由:驱动层需要"从 CWD 向上找项目根"这一步,
+ * 而此前的实现是 spawn 子进程跑 cmd /c cd 或 pwd——多一次进程创建、且两条平台分支
+ * 靠调用方自己选对(驱动层把平台判断写在平台探测之前,Windows 上必然选错成 pwd,
+ * 命令不存在→执返回失败→.值读出空→错误被伪装成"未找到配置文件")。
+ * 直接问操作系统,既消掉子进程,也消掉"选分支"这个出错点。
+ * 返回玄铁字符串对象(UTF-8);取不到时返回空串(调用方据空串报错,不静默)。
+ */
+XTValue xt_cwd() {
+#ifdef _WIN32
+    // 先按固定缓冲取,路径超长(DWORD 回带所需长度)则按需扩容重取
+    DWORD cap = MAX_PATH;
+    wchar_t* wbuf = NULL;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        wbuf = (wchar_t*)malloc((size_t)cap * sizeof(wchar_t));
+        if (!wbuf) return (XTValue)xt_string_new("");
+        DWORD n = GetCurrentDirectoryW(cap, wbuf);
+        if (n == 0) { free(wbuf); return (XTValue)xt_string_new(""); }
+        if (n < cap) break;                     // 成功取到
+        free(wbuf); wbuf = NULL; cap = n + 1;   // 缓冲不足,按回带长度重来一次
+    }
+    if (!wbuf) return (XTValue)xt_string_new("");
+    int u8len = WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, NULL, 0, NULL, NULL);
+    if (u8len <= 0) { free(wbuf); return (XTValue)xt_string_new(""); }
+    char* u8 = (char*)malloc((size_t)u8len);
+    if (!u8) { free(wbuf); return (XTValue)xt_string_new(""); }
+    WideCharToMultiByte(CP_UTF8, 0, wbuf, -1, u8, u8len, NULL, NULL);
+    XTValue r = (XTValue)xt_string_new(u8);
+    free(u8);
+    free(wbuf);
+    return r;
+#else
+    // POSIX:getcwd 缓冲不足时返回 NULL 且 errno=ERANGE,故按需扩容重试
+    size_t cap = 512;
+    char* buf = NULL;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        buf = (char*)malloc(cap);
+        if (!buf) return (XTValue)xt_string_new("");
+        if (getcwd(buf, cap) != NULL) break;
+        free(buf); buf = NULL;
+        if (errno != ERANGE) return (XTValue)xt_string_new("");
+        cap *= 4;
+    }
+    if (!buf) return (XTValue)xt_string_new("");
+    XTValue r = (XTValue)xt_string_new(buf);
+    free(buf);
+    return r;
+#endif
 }
 
 /**
