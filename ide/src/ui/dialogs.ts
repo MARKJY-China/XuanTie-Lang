@@ -81,11 +81,37 @@ export function confirmBox(title: string, message: string): Promise<boolean> {
 export interface ContextMenuItem {
   label: string;
   danger?: boolean;
-  action: () => void;
+  /** 右侧打勾(KIMICODE 式单选菜单) */
+  checked?: boolean;
+  /** 分组标题:小灰字、不可点(菜单内分区用) */
+  header?: boolean;
+  action?: () => void;
 }
 
 // 菜单项数组元素:分隔符用 CONTEXT_SEP
 export type ContextMenuEntry = ContextMenuItem | typeof CONTEXT_SEP;
+
+/** 渲染一个菜单项(header=标题行 / checked=右侧 ✓ / 常规=可点行);两个菜单共用 */
+function renderMenuEntry(menu: HTMLElement, item: ContextMenuItem): void {
+  if (item.header) {
+    menu.appendChild(el('div', 'ctx-header', item.label));
+    return;
+  }
+  const row = el('div', 'ctx-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : ''));
+  const label = document.createElement('span');
+  label.textContent = item.label;
+  row.appendChild(label);
+  if (item.checked) {
+    const ic = document.createElement('i');
+    ic.className = 'codicon codicon-check ctx-check';
+    row.appendChild(ic);
+  }
+  row.addEventListener('click', () => {
+    closeContextMenu();
+    item.action?.();
+  });
+  menu.appendChild(row);
+}
 
 export function showContextMenu(x: number, y: number, items: ContextMenuEntry[]): void {
   const root = document.getElementById('ctx-root') as HTMLElement;
@@ -97,12 +123,7 @@ export function showContextMenu(x: number, y: number, items: ContextMenuEntry[])
       menu.appendChild(el('div', 'ctx-sep'));
       continue;
     }
-    const row = el('div', 'ctx-item' + (item.danger ? ' danger' : ''), item.label);
-    row.addEventListener('click', () => {
-      closeContextMenu();
-      item.action();
-    });
-    menu.appendChild(row);
+    renderMenuEntry(menu, item);
   }
   root.appendChild(menu);
   const rect = menu.getBoundingClientRect();
@@ -114,6 +135,33 @@ export function showContextMenu(x: number, y: number, items: ContextMenuEntry[])
 
 // 菜单分隔符哨兵(类型安全,避免调用方塞 undefined)
 export const CONTEXT_SEP: unique symbol = Symbol('sep');
+
+/**
+ * 向上展开的下拉菜单(输入区底部按钮专用):菜单底边贴 anchor 顶边(留 4px),
+ * 左边缘对齐 anchor 左边缘(越界向右收),宽度至少与按钮同宽;点别处/右键关闭与
+ * showContextMenu 一致。
+ */
+export function showDropupMenu(anchor: HTMLElement, items: ContextMenuEntry[]): void {
+  const root = document.getElementById('ctx-root') as HTMLElement;
+  root.classList.add('open');
+  root.innerHTML = '';
+  const menu = el('div', 'ctx-menu ctx-dropup');
+  for (const item of items) {
+    if (item === CONTEXT_SEP) {
+      menu.appendChild(el('div', 'ctx-sep'));
+      continue;
+    }
+    renderMenuEntry(menu, item);
+  }
+  root.appendChild(menu);
+  const a = anchor.getBoundingClientRect();
+  menu.style.minWidth = `${Math.max(a.width, 170)}px`;
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(a.left, window.innerWidth - rect.width - 8)}px`;
+  menu.style.top = `${Math.max(8, a.top - rect.height - 4)}px`;
+  root.addEventListener('click', closeContextMenu, { once: true });
+  root.addEventListener('contextmenu', closeContextMenu, { once: true });
+}
 
 export function closeContextMenu(): void {
   const root = document.getElementById('ctx-root') as HTMLElement;

@@ -153,4 +153,28 @@ export function registerXtLanguage(): void {
   monaco.languages.setMonarchTokensProvider(XT_LANGUAGE_ID, language);
   monaco.languages.setLanguageConfiguration(XT_LANGUAGE_ID, config);
   monaco.editor.defineTheme('xuantie-dark', theme);
+  monaco.editor.defineTheme('xuantie-light', {
+    base: 'vs',
+    inherit: true,
+    rules: [
+      { token: 'comment', foreground: '5a7d47' },
+      { token: 'keyword', foreground: '8a3ab0' },
+      { token: 'type', foreground: '0f7b6c' },
+      { token: 'builtin', foreground: '795e26' },
+      { token: 'namespace', foreground: '0b6fa4' },
+      { token: 'constant', foreground: '2653a6' },
+      { token: 'string', foreground: 'a31515' },
+      { token: 'string.escape', foreground: '8a6d1e' },
+      { token: 'number', foreground: '1a7a3c' },
+      { token: 'delimiter.interp', foreground: 'c96a10' },
+      { token: 'identifier', foreground: '1f1f1f' },
+    ],
+    colors: {
+      'editor.background': '#ffffff',
+      'editorLineNumber.foreground': '#9a9a9a',
+      'editorLineNumber.activeForeground': '#c96a10',
+      'editor.selectionBackground': '#b3d7f2',
+      'editorCursor.foreground': '#c96a10',
+    },
+  });
 }

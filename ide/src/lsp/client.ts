@@ -45,6 +45,10 @@ export class XtLspClient {
   private changeTimers = new Map<string, number>();
   private changeText = new Map<string, string>();
   private changePath = new Map<string, string>();
+  // 发送串行链:Tauri 异步命令不保序,乱序会让 didOpen 晚于 hover/大纲请求到达
+  // xt_lsp(有状态协议循环),服务器按"文档不存在"返回空——悬停全空/大纲空/补全缺
+  // 本地符号的根因。串行化后 didOpen 恒先于依赖它的请求。
+  private sendChain: Promise<void> = Promise.resolve();
 
   onStatus(cb: (s: LspStatus, detail: string) => void): void {
     this.statusCb = cb;
@@ -57,6 +61,7 @@ export class XtLspClient {
   async start(serverPath: string, workspace: string, xtcPath: string): Promise<void> {
     this.statusCb?.('connecting', serverPath);
     this.handshaking = true;
+    this.sendChain = Promise.resolve();
     try {
       this.id = await backend.lspStart(serverPath, workspace, xtcPath);
       this.unlisten.push(await backend.onLspMessage(this.id, (json) => this.onMessage(json)));
@@ -106,16 +111,20 @@ export class XtLspClient {
     if (this.id >= 0) {
       const shutdown = JSON.stringify({ jsonrpc: '2.0', id: this.nextId++, method: 'shutdown', params: null });
       const exit = JSON.stringify({ jsonrpc: '2.0', method: 'exit' });
+      const id = this.id;
+      this.sendChain = this.sendChain
+        .then(() => backend.lspSend(id, shutdown))
+        .then(() => backend.lspSend(id, exit))
+        .catch(() => undefined);
       try {
-        await backend.lspSend(this.id, shutdown);
-        await backend.lspSend(this.id, exit);
+        await this.sendChain;
       } catch {
-        // 进程已死:直接走 kill 兜底
+        // 链上已捕获
       }
       try {
-        await backend.lspStop(this.id);
+        await backend.lspStop(id);
       } catch {
-        // 同上
+        // 进程已死:直接走 kill 兜底
       }
     }
     this.connected = false;
@@ -215,9 +224,13 @@ export class XtLspClient {
   }
 
   private sendRaw(msg: object): void {
-    backend.lspSend(this.id, JSON.stringify(msg)).catch((err: unknown) => {
-      console.error('LSP 发送失败', err);
-    });
+    // 全部发送走同一条 promise 链,严格保序(见 sendChain 注释)
+    const data = JSON.stringify(msg);
+    this.sendChain = this.sendChain
+      .then(() => backend.lspSend(this.id, data))
+      .catch((err: unknown) => {
+        console.error('LSP 发送失败', err);
+      });
   }
 
   private onMessage(json: string): void {

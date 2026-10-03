@@ -103,11 +103,14 @@ pub async fn pty_start(
         }
     });
 
-    // 等待线程:退出 → pty-exit-{id}
+    // 等待线程:退出 → pty-exit-{id},payload 携带退出码(0=成功),前端徽标据此判成败
     let sid2 = session;
     std::thread::spawn(move || {
-        let _ = child.wait();
-        let _ = app.emit(&format!("pty-exit-{}", sid2), "");
+        let code = match child.wait() {
+            Ok(st) => st.exit_code(),
+            Err(_) => 1,
+        };
+        let _ = app.emit(&format!("pty-exit-{}", sid2), code.to_string());
     });
 
     Ok(())

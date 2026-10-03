@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>智器对话 控制台</title>
+  <style>
+    /* 主题变量:控制台是独立窗口,不加载主界面样式表,自带一套(与 IDE 暗色一致,支持系统亮色) */
+    :root {
+      --bg: #1e1e1e;
+      --bg-panel: #252526;
+      --bg-deep: #181818;
+      --bg-hover: #2a2d2e;
+      --border: #3c3c3c;
+      --fg: #d4d4d4;
+      --fg-dim: #9d9d9d;
+      --accent: #e8842c;
+      --accent-dim: #a05a1e;
+      --ok: #4ec9b0;
+      --warn: #cca700;
+      --err: #f14c4c;
+      --mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --bg-panel: #f3f3f3;
+        --bg-deep: #f8f8f8;
+        --bg-hover: #eaeaea;
+        --border: #d4d4d4;
+        --fg: #1f1f1f;
+        --fg-dim: #6b6b6b;
+        --accent: #c2410c;
+        --accent-dim: #e8842c;
+        --ok: #1a7f5a;
+        --warn: #9a6700;
+        --err: #c62828;
+        color-scheme: light;
+      }
+    }
+    html, body { height: 100%; margin: 0; }
+    body { display: flex; flex-direction: column; background: var(--bg); color: var(--fg); font-family: system-ui, "Microsoft YaHei UI", sans-serif; font-size: 12.5px; }
+    #bar {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--bg-panel);
+    }
+    .chip {
+      padding: 2px 10px; border-radius: 10px; cursor: pointer; user-select: none;
+      border: 1px solid var(--border); color: var(--fg-dim); font-size: 11.5px;
+    }
+    .chip.on { color: var(--fg); border-color: var(--accent-dim); background: rgba(232, 132, 44, 0.12); }
+    #bar input[type="text"] {
+      background: var(--bg-deep); border: 1px solid var(--border); border-radius: 5px;
+      color: var(--fg); padding: 3px 8px; font-size: 12px; outline: none;
+    }
+    #bar input[type="text"]:focus { border-color: var(--accent-dim); }
+    .spacer { flex: 1; }
+    .tbtn2 {
+      padding: 3px 10px; border: 1px solid var(--border); border-radius: 5px;
+      background: transparent; color: var(--fg-dim); cursor: pointer; font-size: 11.5px; font-family: inherit;
+    }
+    .tbtn2:hover { color: var(--fg); border-color: var(--fg-dim); }
+    #log { flex: 1; overflow-y: auto; padding: 6px 10px; font-family: var(--mono); font-size: 12px; }
+    .row { display: flex; gap: 8px; padding: 2px 0; border-bottom: 1px solid rgba(128,128,128,0.08); align-items: baseline; }
+    .row:hover { background: var(--bg-hover); }
+    .ts { color: var(--fg-dim); flex-shrink: 0; }
+    .lv { flex-shrink: 0; width: 44px; font-weight: 700; }
+    .lv.debug { color: var(--fg-dim); }
+    .lv.info { color: var(--ok); }
+    .lv.warn { color: var(--warn); }
+    .lv.error { color: var(--err); }
+    .src { flex-shrink: 0; color: var(--accent); min-width: 80px; }
+    .txt { white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; }
+    .row .data {
+      margin: 2px 0 4px; padding: 6px 8px; background: var(--bg-deep);
+      border: 1px solid var(--border); border-radius: 5px; max-height: 240px; overflow: auto;
+      white-space: pre-wrap; word-break: break-all;
+    }
+    .cell { flex: 1; min-width: 0; }
+    .data-toggle { color: var(--accent); cursor: pointer; font-size: 11px; }
+    #empty { color: var(--fg-dim); padding: 24px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <span class="chip on" data-lv="debug">debug</span>
+    <span class="chip on" data-lv="info">info</span>
+    <span class="chip on" data-lv="warn">warn</span>
+    <span class="chip on" data-lv="error">error</span>
+    <input type="text" id="f-text" placeholder="过滤文本…" spellcheck="false" />
+    <input type="text" id="f-source" placeholder="来源(transport/adapter…)" spellcheck="false" />
+    <span class="spacer"></span>
+    <button class="tbtn2" id="btn-pause">暂停</button>
+    <button class="tbtn2" id="btn-clear">清空</button>
+  </div>
+  <div id="log"></div>
+  <script type="module" src="/src/ai/console.ts"></script>
+</body>
+</html>

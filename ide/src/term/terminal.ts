@@ -1,6 +1,5 @@
-// 终端面板:多会话(1 个常驻 shell + N 个运行会话),PTY 在 Rust 侧
-// 设计:一键运行用独立会话直连程序(不经 shell),免 PowerShell & 前缀与引号问题;
-//       退出检测精确(pty-exit),停止 = 杀会话。
+// 终端面板:终端会话(1 个常驻 shell + N 个会话) + 独立「构建」输出视图
+// PTY 在 Rust 侧;运行/铁铺走直连程序(不经 shell),编译输出进「构建」Tab 专用视图。
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
@@ -13,11 +12,12 @@ interface TermSession {
   term: Terminal;
   fit: FitAddon;
   view: HTMLElement;
-  tabEl: HTMLElement;
+  tabEl: HTMLElement | null; // 构建视图固定在「构建」Tab,无会话标签
   alive: boolean;
   isMain: boolean;
+  host: 'term' | 'build';
   // 进程退出回调(编译等动作借此感知完成时机)
-  onExit?: () => void;
+  onExit?: (exitCode: number) => void;
 }
 
 const TERM_OPTIONS = {
@@ -34,6 +34,12 @@ const TERM_OPTIONS = {
   },
 };
 
+export type SpawnOpts = {
+  isMain?: boolean;
+  onExit?: (exitCode: number) => void;
+  target?: 'term' | 'build';
+};
+
 export class TerminalPane {
   private sessions = new Map<string, TermSession>();
   private unlisten = new Map<string, UnlistenFn[]>();
@@ -45,9 +51,11 @@ export class TerminalPane {
   constructor(
     private host: HTMLElement,
     private tabBar: HTMLElement,
+    private buildHost: HTMLElement,
   ) {
     this.resizeObs = new ResizeObserver(() => this.queueFit());
     this.resizeObs.observe(host);
+    this.resizeObs.observe(buildHost);
   }
 
   private queueFit(): void {
@@ -74,32 +82,50 @@ export class TerminalPane {
     }
   }
 
+  fitBuild(): void {
+    const s = this.sessions.get('build');
+    if (!s) return;
+    try {
+      s.fit.fit();
+    } catch {
+      // 同上
+    }
+    if (s.alive) {
+      backend
+        .ptyResize('build', Math.max(4, s.term.cols), Math.max(2, s.term.rows))
+        .catch(() => undefined);
+    }
+  }
+
   private writeSession(s: TermSession, data: string): void {
     s.term.write(data);
   }
 
-  private buildSession(id: string, title: string, isMain: boolean): TermSession {
+  private buildSession(id: string, title: string, target: 'term' | 'build', isMain: boolean): TermSession {
     const view = document.createElement('div');
-    view.className = 'term-view';
-    this.host.appendChild(view);
+    view.className = target === 'build' ? 'build-view' : 'term-view';
+    (target === 'build' ? this.buildHost : this.host).appendChild(view);
 
-    const tabEl = document.createElement('div');
-    tabEl.className = 'ses-tab';
-    const tname = document.createElement('span');
-    tname.textContent = title;
-    tname.title = title;
-    const sclose = document.createElement('span');
-    sclose.className = 'sclose';
-    const scloseIco = document.createElement('i');
-    scloseIco.className = 'codicon codicon-close';
-    sclose.appendChild(scloseIco);
-    tabEl.append(tname, sclose);
-    tabEl.addEventListener('click', () => this.activate(id));
-    sclose.addEventListener('click', (e) => {
-      e.stopPropagation();
-      void this.closeSession(id);
-    });
-    this.tabBar.appendChild(tabEl);
+    let tabEl: HTMLElement | null = null;
+    if (target === 'term') {
+      tabEl = document.createElement('div');
+      tabEl.className = 'ses-tab';
+      const tname = document.createElement('span');
+      tname.textContent = title;
+      tname.title = title;
+      const sclose = document.createElement('span');
+      sclose.className = 'sclose';
+      const scloseIco = document.createElement('i');
+      scloseIco.className = 'codicon codicon-close';
+      sclose.appendChild(scloseIco);
+      tabEl.append(tname, sclose);
+      tabEl.addEventListener('click', () => this.activate(id));
+      sclose.addEventListener('click', (e) => {
+        e.stopPropagation();
+        void this.closeSession(id);
+      });
+      this.tabBar.appendChild(tabEl);
+    }
 
     const term = new Terminal(TERM_OPTIONS);
     const fit = new FitAddon();
@@ -112,7 +138,7 @@ export class TerminalPane {
       }
     });
 
-    return { id, title, term, fit, view, tabEl, alive: false, isMain };
+    return { id, title, term, fit, view, tabEl, alive: false, isMain, host: target };
   }
 
   private registerStreams(s: TermSession): Promise<void> {
@@ -124,33 +150,33 @@ export class TerminalPane {
         }),
       );
       un.push(
-        await listen<void>(`pty-exit-${s.id}`, () => {
+        await listen<string>(`pty-exit-${s.id}`, (e) => {
           s.alive = false;
-          this.writeSession(s, '\r\n\x1b[90m[进程已退出,点 × 关闭]\x1b[0m\r\n');
-          s.onExit?.();
+          const code = Number(e.payload ?? '1');
+          const exitCode = Number.isFinite(code) ? code : 1;
+          if (s.host === 'build') {
+            const line = exitCode === 0 ? '\x1b[32m编译成功\x1b[0m' : `\x1b[31m编译失败(退出码 ${exitCode})\x1b[0m`;
+            s.term.write(`\r\n\x1b[90m[铸造厂] 编译进程已结束:${line}\x1b[0m\r\n`);
+          } else {
+            s.term.write('\r\n\x1b[90m[进程已退出,点 × 关闭]\x1b[0m\r\n');
+          }
+          s.onExit?.(exitCode);
         }),
       );
       this.unlisten.set(s.id, un);
     })();
   }
 
-  async spawn(
-    id: string,
-    title: string,
-    cwd: string,
-    program: string | null,
-    args: string[] | null,
-    isMain = false,
-    onExit?: () => void,
-  ): Promise<void> {
+  async spawn(id: string, title: string, cwd: string, program: string | null, args: string[] | null, opts: SpawnOpts = {}): Promise<void> {
+    const target = opts.target ?? 'term';
     if (this.sessions.has(id)) {
-      this.activate(id);
+      if (target === 'term') this.activate(id);
       return;
     }
-    const s = this.buildSession(id, title, isMain);
-    s.onExit = onExit;
+    const s = this.buildSession(id, title, target, opts.isMain === true);
+    s.onExit = opts.onExit;
     this.sessions.set(id, s);
-    this.activate(id);
+    if (target === 'term') this.activate(id);
     await this.registerStreams(s);
     try {
       await backend.ptyStart(id, cwd, Math.max(20, s.term.cols), Math.max(4, s.term.rows), program, args);
@@ -158,7 +184,8 @@ export class TerminalPane {
     } catch (err) {
       this.writeSession(s, `\r\n\x1b[31m启动失败: ${String(err)}\x1b[0m\r\n`);
     }
-    this.fitActive();
+    if (target === 'term') this.fitActive();
+    else this.fitBuild();
   }
 
   async ensureMain(cwd: string): Promise<void> {
@@ -167,7 +194,7 @@ export class TerminalPane {
       this.activate('main');
       return;
     }
-    await this.spawn('main', '终端', cwd, null, null, true);
+    await this.spawn('main', '终端', cwd, null, null, { isMain: true });
   }
 
   getActiveId(): string | null {
@@ -193,16 +220,42 @@ export class TerminalPane {
     }
   }
 
-  async runCommand(
-    title: string,
-    cwd: string,
-    program: string,
-    args: string[],
-    onExit?: () => void,
-  ): Promise<void> {
+  async runCommand(title: string, cwd: string, program: string, args: string[], onExit?: (exitCode: number) => void): Promise<void> {
     this.pruneDeadRuns();
     const id = `run-${++this.seq}`;
-    await this.spawn(id, title, cwd, program, args, false, onExit);
+    await this.spawn(id, title, cwd, program, args, { onExit });
+  }
+
+  // 「构建」Tab:固定单视图,每次编译清场重来(上一次构建会话无论死活先清掉)
+  private async resetBuildSession(): Promise<void> {
+    const old = this.sessions.get('build');
+    if (old) {
+      try {
+        await backend.ptyKill('build');
+      } catch {
+        // 已退出属正常
+      }
+      for (const u of this.unlisten.get('build') ?? []) u();
+      this.unlisten.delete('build');
+      old.term.dispose();
+      old.view.remove();
+      this.sessions.delete('build');
+    }
+  }
+
+  async runBuild(cwd: string, program: string, args: string[], onExit?: (exitCode: number) => void): Promise<void> {
+    await this.resetBuildSession();
+    await this.spawn('build', '构建', cwd, program, args, { target: 'build', onExit });
+  }
+
+  writeBuild(text: string): void {
+    const s = this.sessions.get('build');
+    if (s) s.term.write(text);
+  }
+
+  clearBuild(): void {
+    const s = this.sessions.get('build');
+    if (s) s.term.clear();
   }
 
   stopRun(): boolean {
@@ -215,12 +268,13 @@ export class TerminalPane {
     return true;
   }
 
-  activate(id: string): void {
-    if (!this.sessions.has(id)) return;
+  activate(id: string | null): void {
+    if (id !== null && !this.sessions.has(id)) return;
     this.activeId = id;
     for (const [sid, s] of this.sessions) {
-      s.view.classList.toggle('active', sid === id);
-      s.tabEl.classList.toggle('active', sid === id);
+      const on = s.host === 'term' && sid === id;
+      s.view.classList.toggle('active', on);
+      if (s.tabEl) s.tabEl.classList.toggle('active', sid === id);
     }
     window.setTimeout(() => this.fitActive(), 0);
   }
@@ -238,18 +292,18 @@ export class TerminalPane {
     this.unlisten.delete(id);
     s.term.dispose();
     s.view.remove();
-    s.tabEl.remove();
+    if (s.tabEl) s.tabEl.remove();
     this.sessions.delete(id);
     if (this.activeId === id) {
-      const next = this.sessions.has('main') ? 'main' : (this.sessions.keys().next().value ?? null);
-      if (next !== null && next !== undefined) this.activate(next);
-      else this.activeId = null;
+      const nextTerm = [...this.sessions.values()].find((x) => x.host === 'term');
+      this.activate(nextTerm ? nextTerm.id : null);
     }
   }
 
   private pruneDeadRuns(): void {
+    // 构建视图不在此清理:最后一次编译的输出要留在「构建」Tab 供用户查看
     for (const s of [...this.sessions.values()]) {
-      if (!s.isMain && !s.alive) void this.closeSession(s.id);
+      if (s.host === 'term' && !s.isMain && !s.alive) void this.closeSession(s.id);
     }
   }
 

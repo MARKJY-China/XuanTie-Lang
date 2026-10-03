@@ -4,6 +4,89 @@
   <meta charset="UTF-8" />
   <title>玄铁铸造厂</title>
   <link rel="stylesheet" href="/src/styles.css" />
+  <script>
+    // 启动自诊断 v2:模块加载失败时①fetch 探针带回状态码/Content-Type/正文开头;
+    // ②用 cache-busting URL 动态 import 重试(命中坏缓存时应用可自愈)。
+    (function () {
+      var errs = [];
+      var probing = false;
+      function show(extra) {
+        var app = document.getElementById('app');
+        if (app && app.childNodes.length > 0) return; // 已渲染,不动
+        var box = document.getElementById('__boot_diag__');
+        if (!box) {
+          box = document.createElement('div');
+          box.id = '__boot_diag__';
+          box.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#1e1e1e;color:#e6e6e6;' +
+            'font:12px/1.6 Consolas,monospace;padding:24px;overflow:auto;white-space:pre-wrap';
+          (document.body || document.documentElement).appendChild(box);
+        }
+        box.textContent = '玄铁铸造厂 启动失败(自诊断)\n\n' + errs.join('\n\n') +
+          (extra ? '\n\n' + extra : '') +
+          '\n\n[环境] location=' + location.href + '\nbaseURI=' + document.baseURI +
+          '\nUA=' + navigator.userAgent;
+      }
+      function probeScript(url) {
+        if (probing) return;
+        probing = true;
+        fetch(url, { cache: 'no-store' })
+          .then(function (r) {
+            return r.text().then(function (t) {
+              var head = t.slice(0, 90).replace(/\s+/g, ' ');
+              errs.push('[探针] GET ' + url +
+                '\n  status=' + r.status + ' type=' + (r.headers.get('content-type') || '(无)') +
+                '\n  body[0..90]=' + head +
+                '\n  content-length=' + (r.headers.get('content-length') || '(无)') +
+                '\n  accept-ranges=' + (r.headers.get('accept-ranges') || '(无)'));
+              show();
+              // 自愈:正文不是 HTML 兜底页 → 换 cache-busting URL 重新加载入口模块
+              if (head.indexOf('<!doctype') !== 0 && head.indexOf('<!DOCTYPE') !== 0) {
+                var bust = url + (url.indexOf('?') < 0 ? '?' : '&') + 'xtcb=' + Date.now();
+                errs.push('[自愈] 尝试 cache-busting 重载: ' + bust);
+                show();
+                import(bust).then(function () {
+                  errs.push('[自愈] 成功:入口模块已加载,应用应已启动');
+                  var box = document.getElementById('__boot_diag__');
+                  if (box) box.remove();
+                }, function (e2) {
+                  errs.push('[自愈] 失败: ' + (e2 && e2.message ? e2.message : e2));
+                  show();
+                });
+              }
+            });
+          }, function (e) {
+            errs.push('[探针] GET ' + url + ' 网络层失败: ' + (e && e.message ? e.message : e));
+            show();
+          });
+      }
+      window.addEventListener('error', function (ev) {
+        var r = ev.target;
+        if (r && (r.tagName === 'SCRIPT' || r.tagName === 'LINK')) {
+          var url = r.src || r.href;
+          errs.push('[资源加载失败] ' + r.tagName + ' ' + url);
+          show();
+          if (r.tagName === 'SCRIPT') probeScript(url);
+        } else {
+          errs.push('[异常] ' + (ev.message || '') + ' @ ' + (ev.filename || '') + ':' + (ev.lineno || 0));
+          show();
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (ev) {
+        errs.push('[未处理拒绝] ' + (ev.reason instanceof Error ? (ev.reason.stack || ev.reason.message) : String(ev.reason)));
+        show();
+      });
+      setTimeout(function () {
+        var app = document.getElementById('app');
+        if (!app || app.childNodes.length === 0) {
+          if (errs.length === 0) errs.push('[超时] 前端脚本未产生任何渲染(App 为空),且未捕获到错误。');
+          show();
+        } else {
+          var box = document.getElementById('__boot_diag__');
+          if (box) box.remove();
+        }
+      }, 8000);
+    })();
+  </script>
 </head>
 <body>
   <div id="app"></div>

@@ -21,10 +21,9 @@ interface OpenDoc {
   model: monaco.editor.ITextModel;
   tabEl: HTMLElement;
   savedText: string;
-}
-
-export class TabManager {
+}export class TabManager {
   private docs = new Map<string, OpenDoc>();
+  private encodings = new Map<string, string>();
   private order: string[] = [];
   private activePath: string | null = null;
 
@@ -63,6 +62,30 @@ export class TabManager {
     return doc ? doc.model.getValue() : null;
   }
 
+  getEncoding(path: string): string | null {
+    return this.encodings.get(path) ?? null;
+  }
+
+  async reopenWith(path: string, encoding: string): Promise<void> {
+    const doc = this.docs.get(path);
+    if (!doc) return;
+    if (this.isDirty(path)) {
+      const ok = await this.confirmDiscard(path);
+      if (!ok) return;
+    }
+    const text = await backend.fsReadFileAs(path, encoding);
+    doc.model.setValue(text);
+    doc.savedText = text;
+    this.encodings.set(path, encoding);
+    this.refreshDirty(doc);
+  }
+
+  async saveWithEncoding(path: string, encoding: string): Promise<void> {
+    if (!this.docs.has(path)) return;
+    this.encodings.set(path, encoding);
+    await this.save(path);
+  }
+
   getActiveText(): string | null {
     const doc = this.active();
     return doc ? doc.model.getValue() : null;
@@ -73,6 +96,19 @@ export class TabManager {
     return doc ? doc.model.getValue() !== doc.savedText : false;
   }
 
+  /** AI 写文件后的编辑器刷新:仅当缓冲区未脏时从磁盘重载;已脏保留用户未保存的修改。 */
+  async reloadIfClean(path: string): Promise<'reloaded' | 'dirty' | 'unopened'> {
+    const doc = this.docs.get(path);
+    if (!doc) return 'unopened';
+    if (this.isDirty(path)) return 'dirty';
+    const res = await backend.fsReadFile(path);
+    doc.model.setValue(res.text);
+    doc.savedText = res.text;
+    this.encodings.set(path, res.encoding);
+    this.refreshDirty(doc);
+    return 'reloaded';
+  }
+
   async openFile(path: string, reveal?: RevealTarget): Promise<void> {
     const existing = this.docs.get(path);
     if (existing) {
@@ -80,7 +116,8 @@ export class TabManager {
       if (reveal) this.reveal(existing.model, reveal);
       return;
     }
-    const text = await backend.fsReadFile(path);
+    const res = await backend.fsReadFile(path);
+    const text = res.text;
     const uri = monaco.Uri.file(path);
     let model = monaco.editor.getModel(uri);
     if (model) {
@@ -91,6 +128,7 @@ export class TabManager {
     const tabEl = this.buildTab(path);
     this.tabBar.appendChild(tabEl);
     this.docs.set(path, { path, model, tabEl, savedText: text });
+    this.encodings.set(path, res.encoding);
     this.order.push(path);
     this.hooks.onDidOpen(path, text);
     this.activate(path);
@@ -112,7 +150,7 @@ export class TabManager {
     const doc = this.docs.get(path);
     if (!doc) return;
     const text = doc.model.getValue();
-    await backend.fsWriteFile(path, text);
+    await backend.fsWriteFile(path, text, this.encodings.get(path));
     doc.savedText = text;
     this.refreshDirty(doc);
     this.hooks.onDidSave(path);

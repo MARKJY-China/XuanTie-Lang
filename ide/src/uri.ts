@@ -20,5 +20,8 @@ export function uriToPath(uri: string): string {
   } catch {
     // 非法百分号序列(路径含字面 % 等)保留原样
   }
-  return p.replace(/\//g, '\\');
+  p = p.replace(/\//g, '\\');
+  // monaco(vscode-uri)会把盘符小写化(file:///g%3A/...),统一还原成大写,
+  // 与文件树/Rust 侧路径一致——否则 LSP 服务端的文档表/符号缓存键对不上
+  return p.replace(/^([a-zA-Z]):/, (c) => c[0].toUpperCase() + c.slice(1));
 }

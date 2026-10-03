@@ -1,0 +1,20 @@
+{
+  "@deepseek-ai/cordis": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/cordis/src",
+  "@deepseek-ai/cosmokit": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/cosmokit/src",
+  "@deepseek-ai/dsh-agent": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-agent/src",
+  "@deepseek-ai/dsh-agent-loop": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-agent-loop/src",
+  "@deepseek-ai/dsh-brand": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-brand/src",
+  "@deepseek-ai/dsh-llm": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-llm/src",
+  "@deepseek-ai/dsh-sandbox": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-sandbox/src",
+  "@deepseek-ai/dsh-scope": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-scope/src",
+  "@deepseek-ai/dsh-session": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-session/src",
+  "@deepseek-ai/dsh-session-persistence": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-session-persistence/src",
+  "@deepseek-ai/dsh-session-projection": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-session-projection/src",
+  "@deepseek-ai/dsh-system-prompt": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-system-prompt/src",
+  "@deepseek-ai/dsh-timeout": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-timeout/src",
+  "@deepseek-ai/dsh-tools": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-tools/src",
+  "@deepseek-ai/dsh-typert-protocol": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-typert-protocol/src",
+  "@deepseek-ai/dsh-util-crypto": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-util-crypto/src",
+  "@deepseek-ai/dsh-util-values": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/dsh-util-values/src",
+  "@deepseek-ai/schemastery": "G:/FUsed_Folders/Project/XuanTie/ide/vendor/dsh/packages/schemastery/src"
+}

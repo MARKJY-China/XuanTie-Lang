@@ -1,17 +1,25 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "铸造厂主窗口默认能力:核心事件、文件/文件夹选择对话框、自绘标题栏窗口控制与拖拽",
-  "windows": ["main"],
+  "description": "铸造厂主窗口默认能力:核心事件、文件/文件夹选择对话框、自绘标题栏窗口控制与拖拽;ai-console 为开发者控制台(事件订阅+应用内命令)",
+  "windows": [
+    "main",
+    "ai-console"
+  ],
   "permissions": [
     "core:default",
     "dialog:default",
     "opener:default",
     "opener:allow-open-url",
+    "opener:allow-open-path",
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-is-maximized",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-size",
+    "core:window:allow-inner-size",
+    "core:window:allow-scale-factor",
+    "core:webview:allow-set-webview-zoom"
   ]
 }
