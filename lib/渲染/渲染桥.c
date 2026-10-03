@@ -237,6 +237,15 @@ uintptr_t XT_GetScreenHeight(void) {
     return XT_FROM_INT(GetScreenHeight());
 }
 
+// framebuffer 物理像素(HIGHDPI 下为屏幕逻辑尺寸 × 缩放比;issue #22 缩放语义)
+uintptr_t XT_GetRenderWidth(void) {
+    return XT_FROM_INT(GetRenderWidth());
+}
+
+uintptr_t XT_GetRenderHeight(void) {
+    return XT_FROM_INT(GetRenderHeight());
+}
+
 void XT_SetWindowTitle(uintptr_t title) {
     const char* utf8 = xt_get_cstr(title);
 #ifdef _WIN32
@@ -669,7 +678,26 @@ uintptr_t XT_LoadTexture(uintptr_t filename) {
     const char* ext = strrchr(path, '.');
     if (!ext) ext = ".png";
     int dataSize = 0;
-    unsigned char* data = xt_read_file_bytes(path, &dataSize);
+    unsigned char* data = NULL;
+    // 2x 屏幕(HIGHDPI)自动选 @2x 变体:优先 路径@2x.扩展名,存在则用;否则回退原图(issue #22)。
+    // 命名沿 macOS 惯例(图标@2x.png),与渲染缓冲物理像素匹配;仅 2x 及以上触发,1x 不折腾。
+    {
+        int rw = GetRenderWidth();
+        int sw = GetScreenWidth();
+        if (sw > 0 && rw > sw * 1.5) {
+            char cand[1024];
+            size_t baseLen = (size_t)(ext - path);
+            if (baseLen + 3 + 16 < sizeof(cand)) { // "@2x"(3,不含 null) + 扩展名余量(≤16)
+                memcpy(cand, path, baseLen);
+                memcpy(cand + baseLen, "@2x", 3); // 只复制 '@' '2' 'x'，勿带字面量 null——否则字符串在 @2x 处提前终止
+                strcpy(cand + baseLen + 3, ext);
+                int sz2 = 0;
+                unsigned char* d2 = xt_read_file_bytes(cand, &sz2);
+                if (d2) { data = d2; dataSize = sz2; }
+            }
+        }
+    }
+    if (!data) data = xt_read_file_bytes(path, &dataSize);
     Texture2D tex;
     memset(&tex, 0, sizeof(tex));
     if (data) {

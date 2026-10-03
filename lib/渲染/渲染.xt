@@ -11,6 +11,15 @@
 //       R.结束绘图()
 //   }
 //   R.关闭窗口()
+//
+// 缩放语义(issue #22「渲染库跨平台缩放」第一层落地):
+//   - 绘制坐标工作于「逻辑画布」——取屏幕宽/取屏幕高(HIGHDPI 下数值不变,如 800×600)
+//   - 物理像素由库处理——取渲染宽/取渲染高(HIGHDPI 下为逻辑尺寸 × 缩放比,如 1600×1200)
+//   - 高清屏(macOS Retina / Linux 高分屏)自动 2x framebuffer;Windows 已声明
+//     Per-Monitor DPI Aware V2——窗口跨 DPI 显示器不被系统强制拉伸
+//   - 图片纹理:加载纹理 在 2x 屏幕下自动优先选「文件名@2x.扩展名」变体,缺失回退原图
+//   - 开发者按逻辑坐标写界面即可,无需关心物理像素;SVG/@2x 命名/逻辑单位抽象等
+//     后续层仍在 issue #22 设计中
 
 // ============================================================
 // 外部函数声明 — 窗口管理
@@ -24,6 +33,8 @@
 外 函 XT_GetFrameTime(): 小数
 外 函 XT_GetScreenWidth(): 整
 外 函 XT_GetScreenHeight(): 整
+外 函 XT_GetRenderWidth(): 整
+外 函 XT_GetRenderHeight(): 整
 外 函 XT_SetWindowTitle(title: 字): 空
 外 函 XT_SetWindowResizable(on: 整): 空
 外 函 XT_SetWindowUndecorated(on: 整): 空
@@ -540,14 +551,24 @@
     XT_WaitTime(秒数)
 }
 
-// 获取屏幕宽度
+// 获取屏幕宽度——逻辑画布尺寸(绘制坐标空间;HIGHDPI 下数值不变,物理像素由 取渲染宽 给出)
 公 函 取屏幕宽() {
     返 XT_GetScreenWidth()
 }
 
-// 获取屏幕高度
+// 获取屏幕高度——逻辑画布尺寸
 公 函 取屏幕高() {
     返 XT_GetScreenHeight()
+}
+
+// 获取渲染缓冲宽度——framebuffer 物理像素(HIGHDPI 下 = 屏幕宽 × 缩放比,如 2x)
+公 函 取渲染宽() {
+    返 XT_GetRenderWidth()
+}
+
+// 获取渲染缓冲高度——framebuffer 物理像素
+公 函 取渲染高() {
+    返 XT_GetRenderHeight()
 }
 
 // ============================================================
