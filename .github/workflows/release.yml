@@ -56,13 +56,21 @@ jobs:
             echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
           fi
           choco install mingw -y --no-progress || true
-          # 探测实机布局并写入环境(供 make_pkg 的内嵌工具链抽取段使用;首跑失败时这份日志即调参依据)
-          MINGW64=/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64
-          echo "---- MinGW 布局探测 ----"
-          ls "$MINGW64/bin/gcc.exe" 2>/dev/null || echo "缺: gcc.exe"
-          ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null || echo "缺: libexec"
-          VER=$(ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1)
-          [ -n "$VER" ] && echo "TDM_VER=$VER" >> "$GITHUB_ENV"
+          # MinGW 安装位置随 choco 版本而异(首跑实测:绑定在 C:\ProgramData\mingw64\mingw64);
+          # 逐候选探测,命中后写下 TDM_DIR/TDM_VER 供 make_pkg 抽取内嵌工具链;全缺则显式失败并打印现场
+          MINGW64=""
+          for cand in "/c/ProgramData/mingw64/mingw64"                       "/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64"                       "/c/ProgramData/chocolatey/lib/mingw/tools/install"; do
+            if [ -f "$cand/bin/gcc.exe" ]; then MINGW64="$cand"; break; fi
+          done
+          if [ -z "$MINGW64" ]; then
+            echo "!! 未找到 MinGW gcc.exe,候选路径全缺;现场目录如下(据此调参):"
+            ls /c/ProgramData/ 2>/dev/null || true
+            ls /c/ProgramData/chocolatey/lib/mingw/tools/install 2>/dev/null || true
+            exit 1
+          fi
+          echo "MinGW 命中: $MINGW64"
+          VER=$(ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1 || true)
+          if [ -n "$VER" ]; then echo "TDM_VER=$VER" >> "$GITHUB_ENV"; fi
           echo "TDM_DIR=$MINGW64" >> "$GITHUB_ENV"
           if [ -f "/c/Program Files/LLVM/bin/clang.exe" ]; then
             echo "LLVM_DIR=/c/Program Files/LLVM" >> "$GITHUB_ENV"
@@ -98,6 +106,11 @@ jobs:
             "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp
             ls -la tiepm/tiepm lsp/xt_lsp
           fi
+
+      - name: 构建 VSCode 插件 vsix(Windows;make_pkg 内嵌插件,缺则打包失败)
+        if: matrix.plat == 'windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File extensions/xuantie-syntax/build.ps1
 
       - name: 组装发行包(release/make_pkg.sh)
         shell: bash
