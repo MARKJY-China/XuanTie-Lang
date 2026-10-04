@@ -72,9 +72,15 @@ jobs:
           VER=$(ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1 || true)
           if [ -n "$VER" ]; then echo "TDM_VER=$VER" >> "$GITHUB_ENV"; fi
           echo "TDM_DIR=$MINGW64" >> "$GITHUB_ENV"
-          if [ -f "/c/Program Files/LLVM/bin/clang.exe" ]; then
-            echo "LLVM_DIR=/c/Program Files/LLVM" >> "$GITHUB_ENV"
-          fi
+          # LLVM 根:runner 预装 clang 的位置不固定,从 command -v 反推(与 make_pkg 同口径)
+          _cb=$(command -v clang 2>/dev/null || true)
+          for _cand in "$(dirname "$(dirname "$_cb")" 2>/dev/null)" "$(dirname "$_cb" 2>/dev/null)"; do
+            if [ -n "$_cand" ] && [ -f "$_cand/bin/clang.exe" ]; then
+              echo "LLVM_DIR=$_cand" >> "$GITHUB_ENV"
+              echo "LLVM 根: $_cand"
+              break
+            fi
+          done
 
       - name: 构建种子编译器 GSC
         run: go build -o xt_gsc.exe .

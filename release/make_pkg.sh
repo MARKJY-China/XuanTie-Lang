@@ -37,7 +37,23 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LLVM_DIR=${LLVM_DIR:-/d/LLVM}
 TDM_DIR=${TDM_DIR:-/c/TDM-GCC-64}
 TDM_VER=${TDM_VER:-10.3.0}  # 可 env 注入(CI 的 MinGW 版本目录与开发机 TDM 不同)
-CLANG_RES_VER=22
+
+# LLVM 根反推:env/默认之外,再从 PATH 上的 clang 反推(CI runner 的 LLVM 不在 /d 也不在
+# C:\Program Files\LLVM——首跑实测;从 command -v 反推是唯一可靠姿势)。取第一个含 bin/clang.exe 者。
+if [ ! -f "$LLVM_DIR/bin/clang.exe" ]; then
+  _cb=$(command -v clang 2>/dev/null || true)
+  for _cand in "$(dirname "$(dirname "$_cb")" 2>/dev/null)" "$(dirname "$_cb" 2>/dev/null)"; do
+    if [ -n "$_cand" ] && [ -f "$_cand/bin/clang.exe" ]; then LLVM_DIR="$_cand"; break; fi
+  done
+  echo "LLVM 根(由 clang 反推): $LLVM_DIR"
+fi
+# 内建头目录版本动态(开发机 22,CI 版本可能不同;缺失则警告并跳过——纯 .ll 编译不依赖内建头)
+if [ -d "$LLVM_DIR/lib/clang" ]; then
+  CLANG_RES_VER=$(ls "$LLVM_DIR/lib/clang" | head -1)
+else
+  CLANG_RES_VER=""
+  echo "注意: $LLVM_DIR/lib/clang 缺失,内嵌 clang 将不带内建头目录(纯 .ll 编译不受影响)"
+fi
 PKG=$ROOT/temp/pkg_test/XuanTie
 
 # 跨平台工具(macOS 无 md5sum/stat -c;bootstrap_check.sh 同款回落)
@@ -103,8 +119,10 @@ fi
 if [ "$PLATFORM" = "windows" ]; then
   mkdir -p $PKG/tools/clang/bin $PKG/tools/clang/lib/clang
   cp $LLVM_DIR/bin/clang.exe $PKG/tools/clang/bin/
-  cp -r $LLVM_DIR/lib/clang/$CLANG_RES_VER $PKG/tools/clang/lib/clang/
-  rm -rf $PKG/tools/clang/lib/clang/$CLANG_RES_VER/lib $PKG/tools/clang/lib/clang/$CLANG_RES_VER/share
+  if [ -n "$CLANG_RES_VER" ] && [ -d "$LLVM_DIR/lib/clang/$CLANG_RES_VER" ]; then
+    cp -r $LLVM_DIR/lib/clang/$CLANG_RES_VER $PKG/tools/clang/lib/clang/
+    rm -rf $PKG/tools/clang/lib/clang/$CLANG_RES_VER/lib $PKG/tools/clang/lib/clang/$CLANG_RES_VER/share
+  fi
 
   M=$PKG/tools/mingw
   mkdir -p $M/bin $M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER \
