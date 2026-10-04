@@ -142,6 +142,31 @@ if [ "$PLATFORM" = "windows" ]; then
   cp "$TDM_DIR/x86_64-w64-mingw32/bin/ld.exe" $M/x86_64-w64-mingw32/bin/ 2>/dev/null \
     || cp "$TDM_DIR/bin/ld.exe" $M/x86_64-w64-mingw32/bin/ 2>/dev/null \
     || { echo "!! 缺件: ld.exe(mingw 与 bin 两处均无)"; MISSING=$((MISSING+1)); }
+  # ld.exe/collect2.exe 住在深层子目录:Windows 加载器只搜"exe 自身目录 + 系统目录 + PATH",
+  # 用户 PATH 不会指向包内 → 非系统 DLL 依赖必须随放到各自 exe 目录才自足。开发机 TDM 的 ld 只
+  # 依赖系统 DLL 从未暴露;CI mingw64 16.x 的 ld 有非系统依赖 → 启动即死且零消息(collect2 仅
+  # 报 'ld returned 53',真因被吞)。依赖用发行版自带 objdump 查真实导入表(不猜名字),凡在源
+  # 发行版里找得到的即随放;objdump 缺失则全拷 bin DLL 兜底。尽力而为,不因缺件中断。
+  # 注:此处刻意不用 `| while read`(管道尾子壳以 read 的 EOF 状态退出,会撞 set -e 静默中止)。
+  _deps_copy() {
+    _edir=$(dirname "$1")
+    if [ -x "$TDM_DIR/bin/objdump.exe" ]; then
+      _deps=$( ("$TDM_DIR/bin/objdump.exe" -p "$1" 2>/dev/null || true) | sed -n 's/.*DLL Name: //p' | sort -u )
+      for _d in $_deps; do
+        for _c in "$TDM_DIR/bin/$_d" "$TDM_DIR/x86_64-w64-mingw32/bin/$_d"; do
+          if [ -f "$_c" ]; then
+            cp -n "$_c" "$_edir/" 2>/dev/null || true
+            echo "  依赖随放: $(basename "$_edir")/$_d"; break
+          fi
+        done
+      done
+    else
+      cp "$TDM_DIR"/bin/*.dll "$_edir/" 2>/dev/null || true
+    fi
+    return 0
+  }
+  _deps_copy "$M/x86_64-w64-mingw32/bin/ld.exe"
+  _deps_copy "$M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/collect2.exe"
   for f in crtbegin.o crtend.o libgcc.a; do
     cp "$TDM_DIR/lib/gcc/x86_64-w64-mingw32/$TDM_VER/$f" $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER/ 2>/dev/null \
       || { echo "!! 缺件: lib/gcc/.../$f"; MISSING=$((MISSING+1)); }
@@ -319,6 +344,16 @@ if [ "$PLATFORM" = "windows" ]; then
   if [ "$SMOKE_RC" -ne 0 ] || ! grep -q "工具链自检通过" "$SMOKE/输出.txt"; then
     echo "内嵌工具链实链自检失败(exit=$SMOKE_RC):包内 xtc/clang/gcc 无法完整编译运行最小程序,包不可用。输出:"
     tail -40 "$SMOKE/输出.txt"
+    # 定位辅助:ld/collect2 启动失败时零消息(第六轮实测),逐件 --version 探活 + 列出同目录文件
+    for _e in "tools/mingw/bin/gcc.exe" "tools/mingw/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/collect2.exe" "tools/mingw/x86_64-w64-mingw32/bin/ld.exe"; do
+      if [ -f "$PKG/$_e" ]; then
+        _v=$("$PKG/$_e" --version 2>&1 | head -1) || true
+        echo "  探活 $_e: ${_v:-<无输出,疑似无法启动(DLL 依赖缺失?)>}"
+      else
+        echo "  探活 $_e: 文件缺失"
+      fi
+    done
+    echo "  ld 同目录清单:"; ls -la "$PKG/tools/mingw/x86_64-w64-mingw32/bin/" 2>/dev/null | head -12
     exit 1
   fi
   echo "内嵌工具链实链自检: 通过(收窄 PATH 下,包内 xtc→clang→gcc 完整编译并运行)"
