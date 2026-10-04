@@ -109,15 +109,33 @@ if [ "$PLATFORM" = "windows" ]; then
   M=$PKG/tools/mingw
   mkdir -p $M/bin $M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER \
            $M/x86_64-w64-mingw32/bin $M/x86_64-w64-mingw32/lib
-  cp $TDM_DIR/bin/gcc.exe $M/bin/
-  cp $TDM_DIR/bin/{libiconv-2.dll,libintl-8.dll,libwinpthread-1.dll,libgcc_s_seh_64-1.dll,libatomic_64-1.dll,libssp_64-0.dll,libquadmath_64-0.dll} $M/bin/
-  cp $TDM_DIR/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/{collect2.exe,liblto_plugin-0.dll,libgmp-10.dll,libiconv-2.dll,libisl-23.dll,libmpc-3.dll,libmpfr-6.dll,libzstd.dll} \
-     $M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/
-  cp $TDM_DIR/x86_64-w64-mingw32/bin/ld.exe $M/x86_64-w64-mingw32/bin/
-  cp $TDM_DIR/lib/gcc/x86_64-w64-mingw32/$TDM_VER/{crtbegin.o,crtend.o,libgcc.a,libgcc_s.a} \
-     $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER/
-  cp $TDM_DIR/x86_64-w64-mingw32/lib/{crt2.o,libmingw32.a,libmingwex.a,libmsvcrt.a,libmsvcrt-os.a,libkernel32.a,libuser32.a,libws2_32.a,libsecur32.a,libadvapi32.a,libshell32.a,libole32.a,libuuid.a,libopengl32.a,libgdi32.a,libwinmm.a,libimm32.a,libmingwthrd.a,libpthread.a,libmoldname.a,libwinpthread.a,libcomdlg32.a,default-manifest.o} \
-     $M/x86_64-w64-mingw32/lib/
+  # 宽松扫拷 + 必需清单硬校验:开发机是 TDM-GCC(10.3,DLL 带 _64 后缀且在 libexec),
+  # CI 是 choco mingw64(16.x,DLL 在 bin 且命名不同)——不逐个猜名,改为"目录扫拷 DLL +
+  # 跨发行版稳定的必需件清单",缺件时汇总报错并打印现场目录(首跑实测教训)。
+  MISSING=0
+  cp "$TDM_DIR/bin/gcc.exe" $M/bin/ || { echo "!! 缺件: bin/gcc.exe"; MISSING=$((MISSING+1)); }
+  cp "$TDM_DIR"/bin/*.dll $M/bin/ 2>/dev/null || true
+  cp "$TDM_DIR/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/collect2.exe" $M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/ 2>/dev/null \
+    || { echo "!! 缺件: libexec/gcc/x86_64-w64-mingw32/$TDM_VER/collect2.exe"; MISSING=$((MISSING+1)); }
+  cp "$TDM_DIR/libexec/gcc/x86_64-w64-mingw32/$TDM_VER"/*.dll $M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER/ 2>/dev/null || true
+  cp "$TDM_DIR/x86_64-w64-mingw32/bin/ld.exe" $M/x86_64-w64-mingw32/bin/ 2>/dev/null \
+    || cp "$TDM_DIR/bin/ld.exe" $M/x86_64-w64-mingw32/bin/ 2>/dev/null \
+    || { echo "!! 缺件: ld.exe(mingw 与 bin 两处均无)"; MISSING=$((MISSING+1)); }
+  for f in crtbegin.o crtend.o libgcc.a libgcc_s.a; do
+    cp "$TDM_DIR/lib/gcc/x86_64-w64-mingw32/$TDM_VER/$f" $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER/ 2>/dev/null \
+      || { echo "!! 缺件: lib/gcc/.../$f"; MISSING=$((MISSING+1)); }
+  done
+  for f in crt2.o libmingw32.a libmingwex.a libmsvcrt.a libmsvcrt-os.a libkernel32.a libuser32.a libws2_32.a libsecur32.a libadvapi32.a libshell32.a libole32.a libuuid.a libopengl32.a libgdi32.a libwinmm.a libimm32.a libmingwthrd.a libpthread.a libmoldname.a libwinpthread.a libcomdlg32.a default-manifest.o; do
+    cp "$TDM_DIR/x86_64-w64-mingw32/lib/$f" $M/x86_64-w64-mingw32/lib/ 2>/dev/null \
+      || { echo "!! 缺件: x86_64-w64-mingw32/lib/$f"; MISSING=$((MISSING+1)); }
+  done
+  if [ "$MISSING" -gt 0 ]; then
+    echo "内嵌工具链抽取失败(共缺 $MISSING 项);现场目录(据此调参):"
+    ls "$TDM_DIR" 2>/dev/null | head -30 || true
+    ls "$TDM_DIR/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null || true
+    ls "$TDM_DIR/x86_64-w64-mingw32/lib/" 2>/dev/null | head -20 || true
+    exit 1
+  fi
   mkdir -p $PKG/tools
 else
   mkdir -p $PKG/tools

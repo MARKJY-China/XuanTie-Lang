@@ -29,6 +29,9 @@ if (-not $xtc) { throw "未找到 xtc 编译器(build\xtc_s4.exe 或 PATH);LSP �
 $lspSrc = "$root\lsp\xt_lsp.xt"
 $lspDst = "$extDir\server\xt_lsp.exe"
 if (-not (Test-Path $lspSrc)) { throw "未找到 lsp\xt_lsp.xt;请确认扩展目录在仓库内" }
+# server/ 里仅有被 gitignore 的 .exe,空目录不入 git——CI/新克隆 checkout 后该目录不存在,
+# 链接器会以 cannot open output file 失败(首跑实测);这里先确保目录存在。
+New-Item -ItemType Directory -Path (Split-Path $lspDst) -Force | Out-Null
 Write-Output "重建 LSP: $xtc 铁 $lspSrc -sc $lspDst"
 # 中文参数直传 PowerShell 可能按 ANSI 码页受损,先把控制台切到 UTF-8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
