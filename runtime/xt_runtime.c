@@ -807,7 +807,7 @@ XTValue xt_string_from_codepoint(XTValue cp_val) {
  * @return XTValue 包含该 UTF-8 字符的新字符串对象。
  */
 XTValue xt_string_get_char(XTValue str_val, int64_t index) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    if (str_val == XT_NULL) return XT_NULL;
     xt_string_guard(str_val, "字符");  // 3号加固:指针但非字符串(结果/字典等)明确报错,不再静默/段错误
     
     XTString* s = (XTString*)str_val;
@@ -849,7 +849,7 @@ XTValue xt_string_get_char(XTValue str_val, int64_t index) {
  * 整串迭代退化为 O(n²)(自举实测:50 万字符 109 秒)。
  */
 XTValue xt_string_chars(XTValue str_val) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    if (str_val == XT_NULL) return XT_NULL;
     xt_string_guard(str_val, "遍历");
     XTString* s = (XTString*)str_val;
     XTValue arr = xt_array_new(16);
@@ -875,7 +875,7 @@ XTValue xt_string_chars(XTValue str_val) {
  * @brief 获取指定偏移处的原始字节
  */
 XTValue xt_string_get_byte(XTValue str_val, int64_t byte_index) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_FROM_INT(0);
+    if (str_val == XT_NULL) return XT_FROM_INT(0);
     xt_string_guard(str_val, "字节");
     
     XTString* s = (XTString*)str_val;
@@ -889,7 +889,7 @@ XTValue xt_string_get_byte(XTValue str_val, int64_t byte_index) {
  * @brief 获取字节长度 (返回标记整数)
  */
 XTValue xt_string_byte_length(XTValue str_val) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_FROM_INT(0);
+    if (str_val == XT_NULL) return XT_FROM_INT(0);
     xt_string_guard(str_val, "字节数");
     
     XTString* s = (XTString*)str_val;
@@ -900,7 +900,7 @@ XTValue xt_string_byte_length(XTValue str_val) {
  * @brief 获取逻辑字符总数
  */
 XTValue xt_string_char_count(XTValue str_val) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_FROM_INT(0);
+    if (str_val == XT_NULL) return XT_FROM_INT(0);
     xt_string_guard(str_val, "长度");
     
     XTString* s = (XTString*)str_val;
@@ -924,7 +924,7 @@ XTValue xt_string_char_count(XTValue str_val) {
  * 用于编译器生成 LLVM IR 时的常量字面量转换（如 "中" -> "\E4\B8\AD"）。
  */
 XTValue xt_string_to_hex_string(XTValue str_val) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    if (str_val == XT_NULL) return XT_NULL;
     xt_string_guard(str_val, "转十六进制");
     XTString* s = (XTString*)str_val;
 
@@ -3751,7 +3751,7 @@ XTValue xt_time_sleep(XTValue ms_val) {
  * @brief 字符串分割 (字面子串切分,同 Python split:保留空段,分隔符按整体字面匹配)
  */
 XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    if (str_val == XT_NULL) return XT_NULL;
     xt_string_guard(str_val, "分割");
     xt_string_guard(sep_val, "分割 分隔符");
     XTString* s = (XTString*)str_val;
@@ -3795,7 +3795,7 @@ XTValue xt_string_split(XTValue str_val, XTValue sep_val) {
  * @brief 字符串简单替换 (目前仅支持首个匹配项)
  */
 XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val) {
-    if (!XT_IS_REAL_PTR(str_val)) return XT_NULL;
+    if (str_val == XT_NULL) return XT_NULL;
     xt_string_guard(str_val, "替换");
     xt_string_guard(old_val, "替换 旧串");
     xt_string_guard(new_val, "替换 新串");
@@ -3828,6 +3828,65 @@ XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val) {
     buf[total_len] = '\0';
     XTString* res = xt_string_new_len(buf, total_len);
     free(buf); return (XTValue)res;
+}
+
+/**
+ * @brief 字符串方法:去首尾空格() / 去首空格() / 去尾空格()
+ *
+ * 语义:按 ASCII 空白字符(空格 \t \n \r \f \v)剥离空白;中间空白不动。
+ *   · 去首尾空格() —— 两端都剥(Python str.strip() 同口径)
+ *   · 去首空格()   —— 只剥左侧(str.lstrip())
+ *   · 去尾空格()   —— 只剥右侧(str.rstrip())
+ * 与 修剪()(解释器里的旧名,Go 侧 strings.TrimSpace 语义)同一件事,但编译器链路此前
+ * 完全没有这三个方法:解释器有、XTC/GSC 都没有 → 同一份代码两条链路行为不一致。
+ * 为何不做 Unicode 全角空白:被判定的字节都 < 0x80,而 UTF-8 多字节序列的每个字节均
+ * ≥ 0x80,故按字节扫描不会切坏多字节字符;要支持全角空格(U+3000)需解码 UTF-8,
+ * 属另一档需求,这里明确只认 ASCII 空白。
+ * 返回新串;空串与无空白可剥时走 xt_string_new("") / retain 原串两条短路。
+ * 接收者非字符串时由 xt_string_guard 明确报错退出(与 替换/分割 同一纪律)。
+ */
+static const char* xt_trim_left_bound(const char* p, const char* end) {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == '\f' || *p == '\v')) p++;
+    return p;
+}
+
+static const char* xt_trim_right_bound(const char* begin, const char* end) {
+    while (end > begin && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\n' || end[-1] == '\r' || end[-1] == '\f' || end[-1] == '\v')) end--;
+    return end;
+}
+
+XTValue xt_string_trim(XTValue str_val) {
+    if (str_val == XT_NULL) return XT_NULL;
+    xt_string_guard(str_val, "去首尾空格");
+    XTString* s = (XTString*)str_val;
+    const char* begin = s->data;
+    const char* end = s->data + s->length;
+    const char* l = xt_trim_left_bound(begin, end);
+    const char* r = xt_trim_right_bound(l, end);
+    if (l == begin && r == end) { xt_retain(str_val); return str_val; }   // 无可剥:原串复用
+    return (XTValue)xt_string_new_len(l, (size_t)(r - l));
+}
+
+XTValue xt_string_trim_start(XTValue str_val) {
+    if (str_val == XT_NULL) return XT_NULL;
+    xt_string_guard(str_val, "去首空格");
+    XTString* s = (XTString*)str_val;
+    const char* begin = s->data;
+    const char* end = s->data + s->length;
+    const char* l = xt_trim_left_bound(begin, end);
+    if (l == begin) { xt_retain(str_val); return str_val; }
+    return (XTValue)xt_string_new_len(l, (size_t)(end - l));
+}
+
+XTValue xt_string_trim_end(XTValue str_val) {
+    if (str_val == XT_NULL) return XT_NULL;
+    xt_string_guard(str_val, "去尾空格");
+    XTString* s = (XTString*)str_val;
+    const char* begin = s->data;
+    const char* end = s->data + s->length;
+    const char* r = xt_trim_right_bound(begin, end);
+    if (r == end) { xt_retain(str_val); return str_val; }
+    return (XTValue)xt_string_new_len(begin, (size_t)(r - begin));
 }
 
 /**

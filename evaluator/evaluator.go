@@ -23,6 +23,12 @@ import (
 	"xuantie/token"
 )
 
+// xtAsciiSpace:剥空白三件套(去首尾空格/去首空格/去尾空格)的字符集。
+// 与 runtime/xt_runtime.c 的 xt_string_trim* 严格一致——**只认 ASCII 空白**,
+// 不用 strings.TrimSpace(它按 Unicode 判空白,会连全角空格 U+3000 一起剥,
+// 于是同一份代码在解释器与编译产物上行为不同)。
+const xtAsciiSpace = " \t\n\r\f\v"
+
 func RegisterStdLib(env map[string]object.Object) {
 	env["空"] = &object.Null{}
 	for name, obj := range stdlib.Builtins {
@@ -1351,6 +1357,15 @@ func evalMemberCallExpression(mce *ast.MemberCallExpression, env map[string]obje
 			return &object.String{Value: strings.ReplaceAll(str.Value, oldStr, newStr)}
 		case "修剪":
 			return &object.String{Value: strings.TrimSpace(str.Value)}
+		// 编译器链路(XTC/GSC)的三件套命名;解释器补上同名,免"同一份代码两条链路行为不同"。
+		// 语义对齐 runtime 的 xt_string_trim*:只剥 ASCII 空白(Go 的 strings.TrimSpace 还会剥
+		// Unicode 空白,故此处显式用 Cutset 限定,避免两边对全角空格的处理不一致)。
+		case "去首尾空格":
+			return &object.String{Value: strings.Trim(str.Value, xtAsciiSpace)}
+		case "去首空格":
+			return &object.String{Value: strings.TrimLeft(str.Value, xtAsciiSpace)}
+		case "去尾空格":
+			return &object.String{Value: strings.TrimRight(str.Value, xtAsciiSpace)}
 		case "大写":
 			return &object.String{Value: strings.ToUpper(str.Value)}
 		case "小写":

@@ -449,6 +449,10 @@ XTString* xt_string_substring(XTString* s, int64_t start, int64_t end);
 int xt_string_contains(XTString* s, XTString* sub);
 XTValue xt_string_split(XTValue str_val, XTValue sep_val);
 XTValue xt_string_replace(XTValue str_val, XTValue old_val, XTValue new_val);
+/// 剥空白(ASCII 空白:空格/\t/\n/\r/\f/\v):首尾 / 仅首 / 仅尾;返回新串(无可剥时复用原串)
+XTValue xt_string_trim(XTValue str_val);
+XTValue xt_string_trim_start(XTValue str_val);
+XTValue xt_string_trim_end(XTValue str_val);
 /// 将整数转换为字符串
 XTString* xt_int_to_string(int64_t val);
 /// 将任意对象转换为其字符串表示 (用于打印/插值)

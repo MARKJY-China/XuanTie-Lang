@@ -303,6 +303,9 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare %XTString* @xt_string_substring(%XTString*, i64, i64)\n")
 	res.WriteString("declare i32 @xt_string_contains(%XTString*, %XTString*)\n")
 	res.WriteString("declare i64 @xt_string_replace(i64, i64, i64)\n")
+	res.WriteString("declare i64 @xt_string_trim(i64)\n")
+	res.WriteString("declare i64 @xt_string_trim_start(i64)\n")
+	res.WriteString("declare i64 @xt_string_trim_end(i64)\n")
 	res.WriteString("declare i64 @xt_string_split(i64, i64)\n")
 	res.WriteString("declare %XTString* @xt_int_to_string(i64)\n")
 	res.WriteString("declare %XTString* @xt_obj_to_string(i64)\n")
@@ -2146,6 +2149,18 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			c.emit("  %s = call i64 @xt_string_split(i64 %s, i64 %s)", resI64, objXt, arg1Xt)
 			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
 			c.emit("  call void @xt_release(i64 %s)", arg1Xt)
+			c.emit("  br label %%%s", mergeLabel)
+		} else if e.Member.Value == "去首尾空格" || e.Member.Value == "去首空格" || e.Member.Value == "去尾空格" {
+			// 与 XTC 侧同口径:只剥 ASCII 空白;runtime 同名函数实现(见 xt_runtime.c)
+			fn := "@xt_string_trim"
+			if e.Member.Value == "去首空格" {
+				fn = "@xt_string_trim_start"
+			} else if e.Member.Value == "去尾空格" {
+				fn = "@xt_string_trim_end"
+			}
+			resI64 := c.nextReg()
+			c.emit("  %s = call i64 %s(i64 %s)", resI64, fn, objXt)
+			c.emit("  store i64 %s, i64* %s", resI64, resAddr)
 			c.emit("  br label %%%s", mergeLabel)
 		} else if e.Member.Value == "转为十六进制" {
 			resI64 := c.nextReg()
