@@ -117,11 +117,13 @@ fi
 
 # ── 2. 自带极简工具链(仅 Windows:发行机无 C 工具链时的最小集)──
 if [ "$PLATFORM" = "windows" ]; then
-  mkdir -p $PKG/tools/clang/bin $PKG/tools/clang/lib/clang
-  cp $LLVM_DIR/bin/clang.exe $PKG/tools/clang/bin/
+  # 引号硬规矩:LLVM 根实测可含空格(CI 的 "C:/Program Files/LLVM"),漏引号会被词分割成
+  # "C:/Program" + "Files/LLVM/..."(第四轮 CI 实测教训)——本块路径一律加引号
+  mkdir -p "$PKG/tools/clang/bin" "$PKG/tools/clang/lib/clang"
+  cp "$LLVM_DIR/bin/clang.exe" "$PKG/tools/clang/bin/"
   if [ -n "$CLANG_RES_VER" ] && [ -d "$LLVM_DIR/lib/clang/$CLANG_RES_VER" ]; then
-    cp -r $LLVM_DIR/lib/clang/$CLANG_RES_VER $PKG/tools/clang/lib/clang/
-    rm -rf $PKG/tools/clang/lib/clang/$CLANG_RES_VER/lib $PKG/tools/clang/lib/clang/$CLANG_RES_VER/share
+    cp -r "$LLVM_DIR/lib/clang/$CLANG_RES_VER" "$PKG/tools/clang/lib/clang/"
+    rm -rf "$PKG/tools/clang/lib/clang/$CLANG_RES_VER/lib" "$PKG/tools/clang/lib/clang/$CLANG_RES_VER/share"
   fi
 
   M=$PKG/tools/mingw
@@ -151,7 +153,9 @@ if [ "$PLATFORM" = "windows" ]; then
     echo "内嵌工具链抽取失败(共缺 $MISSING 项);现场目录(据此调参):"
     ls "$TDM_DIR" 2>/dev/null | head -30 || true
     ls "$TDM_DIR/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null || true
-    ls "$TDM_DIR/x86_64-w64-mingw32/lib/" 2>/dev/null | head -20 || true
+    # 按字母序 head -20 会截掉 libmsvcrt*/libpthread/libws2_32 等关键候选,放宽到 80 行
+    echo "── x86_64-w64-mingw32/lib/ 共 $(ls "$TDM_DIR/x86_64-w64-mingw32/lib/" 2>/dev/null | wc -l) 项:"
+    ls "$TDM_DIR/x86_64-w64-mingw32/lib/" 2>/dev/null | head -80 || true
     exit 1
   fi
   mkdir -p $PKG/tools
