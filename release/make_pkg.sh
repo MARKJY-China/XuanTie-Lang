@@ -339,8 +339,28 @@ if [ "$PLATFORM" = "windows" ]; then
   # 注意别把 System32 也剥掉:实测缺它时 执("cmd /c cd") 的 spawn 失败,编译器在结果.值 上
   # 空指针崩溃(该缺陷另行报告);自检只如实模拟真实环境,不替编译器边界缺陷兜底。
   SYS32="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null || echo /c/Windows)/System32"
-  SMOKE_RC=0
-  ( cd "$SMOKE" && PATH="/usr/bin:/bin:$SYS32" "$PKG/xtc.exe" 跑 _smoke.xt ) > "$SMOKE/输出.txt" 2>&1 || SMOKE_RC=$?
+  # 链接库自动补齐:各发行版的"静态链接默认库集"不同(TDM 静态链接只要 libgcc.a;mingw-builds
+  # 16.x 还要 libgcc_eh.a、libiconv.a)——硬清单永远追不上。改由真实链接点名:ld 报
+  # cannot find -lX,就从源发行版补 libX.a / libX.dll.a 进包内对应目录再重跑,最多 6 轮。
+  # 只加文件、不掩盖问题:补不到的仍交失败分支如实报错,最终裁决始终是"包内工具链能否完整编译运行"。
+  SMOKE_RC=1
+  for _round in 1 2 3 4 5 6; do
+    SMOKE_RC=0
+    ( cd "$SMOKE" && PATH="/usr/bin:/bin:$SYS32" "$PKG/xtc.exe" 跑 _smoke.xt ) > "$SMOKE/输出.txt" 2>&1 || SMOKE_RC=$?
+    if [ "$SMOKE_RC" -eq 0 ] && grep -q "工具链自检通过" "$SMOKE/输出.txt"; then break; fi
+    _fixed=0
+    for _l in $(grep -o 'cannot find -l[A-Za-z0-9_+-]*' "$SMOKE/输出.txt" | sed 's/.*-l//' | sort -u); do
+      for _c in "$TDM_DIR/lib/gcc/x86_64-w64-mingw32/$TDM_VER" "$TDM_DIR/x86_64-w64-mingw32/lib"; do
+        for _n in "lib$_l.a" "lib$_l.dll.a"; do
+          if [ -f "$_c/$_n" ]; then
+            cp "$_c/$_n" "$M/${_c#"$TDM_DIR"/}/" && echo "  链接库补齐(第 $_round 轮): $_n ← ${_c#"$TDM_DIR"/}" && _fixed=$((_fixed+1))
+            break 2
+          fi
+        done
+      done
+    done
+    [ "$_fixed" -gt 0 ] || break
+  done
   if [ "$SMOKE_RC" -ne 0 ] || ! grep -q "工具链自检通过" "$SMOKE/输出.txt"; then
     echo "内嵌工具链实链自检失败(exit=$SMOKE_RC):包内 xtc/clang/gcc 无法完整编译运行最小程序,包不可用。输出:"
     tail -40 "$SMOKE/输出.txt"
