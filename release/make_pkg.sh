@@ -129,9 +129,10 @@ if [ "$PLATFORM" = "windows" ]; then
   M=$PKG/tools/mingw
   mkdir -p $M/bin $M/libexec/gcc/x86_64-w64-mingw32/$TDM_VER $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER \
            $M/x86_64-w64-mingw32/bin $M/x86_64-w64-mingw32/lib
-  # 宽松扫拷 + 必需清单硬校验:开发机是 TDM-GCC(10.3,DLL 带 _64 后缀且在 libexec),
-  # CI 是 choco mingw64(16.x,DLL 在 bin 且命名不同)——不逐个猜名,改为"目录扫拷 DLL +
-  # 跨发行版稳定的必需件清单",缺件时汇总报错并打印现场目录(首跑实测教训)。
+  # 宽松扫拷 + 必需清单硬校验 + 实链自检三件套:开发机是 TDM-GCC(10.3),CI 是 choco mingw64
+  # (16.x)——不逐个猜名;"跨发行版稳定的必需件"进硬清单(缺件汇总报错并打印现场目录),
+  # 会随发行版漂移的件(libgcc_s.a / default-manifest.o)只探测随包,包可用性最终由 6.5 的
+  # 实链自检裁决(第五轮 CI 实测教训:静态清单追不上发行版漂移,不再用它卡发布)。
   MISSING=0
   cp "$TDM_DIR/bin/gcc.exe" $M/bin/ || { echo "!! 缺件: bin/gcc.exe"; MISSING=$((MISSING+1)); }
   cp "$TDM_DIR"/bin/*.dll $M/bin/ 2>/dev/null || true
@@ -141,14 +142,31 @@ if [ "$PLATFORM" = "windows" ]; then
   cp "$TDM_DIR/x86_64-w64-mingw32/bin/ld.exe" $M/x86_64-w64-mingw32/bin/ 2>/dev/null \
     || cp "$TDM_DIR/bin/ld.exe" $M/x86_64-w64-mingw32/bin/ 2>/dev/null \
     || { echo "!! 缺件: ld.exe(mingw 与 bin 两处均无)"; MISSING=$((MISSING+1)); }
-  for f in crtbegin.o crtend.o libgcc.a libgcc_s.a; do
+  for f in crtbegin.o crtend.o libgcc.a; do
     cp "$TDM_DIR/lib/gcc/x86_64-w64-mingw32/$TDM_VER/$f" $M/lib/gcc/x86_64-w64-mingw32/$TDM_VER/ 2>/dev/null \
       || { echo "!! 缺件: lib/gcc/.../$f"; MISSING=$((MISSING+1)); }
   done
-  for f in crt2.o libmingw32.a libmingwex.a libmsvcrt.a libmsvcrt-os.a libkernel32.a libuser32.a libws2_32.a libsecur32.a libadvapi32.a libshell32.a libole32.a libuuid.a libopengl32.a libgdi32.a libwinmm.a libimm32.a libmingwthrd.a libpthread.a libmoldname.a libwinpthread.a libcomdlg32.a default-manifest.o; do
+  for f in crt2.o libmingw32.a libmingwex.a libmsvcrt.a libmsvcrt-os.a libkernel32.a libuser32.a libws2_32.a libsecur32.a libadvapi32.a libshell32.a libole32.a libuuid.a libopengl32.a libgdi32.a libwinmm.a libimm32.a libmingwthrd.a libpthread.a libmoldname.a libwinpthread.a libcomdlg32.a; do
     cp "$TDM_DIR/x86_64-w64-mingw32/lib/$f" $M/x86_64-w64-mingw32/lib/ 2>/dev/null \
       || { echo "!! 缺件: x86_64-w64-mingw32/lib/$f"; MISSING=$((MISSING+1)); }
   done
+  # 随发行版漂移的两个"可选件"(TDM-GCC 10.3 有,choco mingw64 16.x 实测无;两处目录探测,有则随包):
+  #   libgcc_s.a —— 动态 libgcc 导入库。GCC specs 仅显式 -shared-libgcc 时引用(dumpspecs 实证);
+  #                 玄铁默认 -static(内链),且 --外链 在当前版本被编译器显式拒绝 → 链接面不触及。
+  #   default-manifest.o —— GCC specs 写作 %:if-exists(default-manifest.o) 守卫,存在才用 → 非必需。
+  # 二者不在硬清单里;包能否用由下方 6.5 的实链自检裁决,不再让文件清单随发行版漂移把发布卡死。
+  for _d in "lib/gcc/x86_64-w64-mingw32/$TDM_VER" "x86_64-w64-mingw32/lib"; do
+    for _p in "$TDM_DIR/$_d"/libgcc_s*.a "$TDM_DIR/$_d"/default-manifest.o; do
+      [ -f "$_p" ] || continue
+      cp "$_p" "$M/$_d/" && echo "可选件随包: ${_p#"$TDM_DIR"/}"
+    done
+  done
+  # default-manifest.o 兜底:发行版若把它放在非标准位置,浅扫一次全树(找到即放入库搜索路径,
+  # 实测 TDM 链接会引用它;没有则第 6.5 节实链自检裁决)
+  if [ ! -f "$M/x86_64-w64-mingw32/lib/default-manifest.o" ]; then
+    _dm=$(find "$TDM_DIR" -maxdepth 4 -name default-manifest.o 2>/dev/null | head -1)
+    if [ -n "$_dm" ]; then cp "$_dm" "$M/x86_64-w64-mingw32/lib/" && echo "可选件随包(兜底扫描): $_dm"; fi
+  fi
   if [ "$MISSING" -gt 0 ]; then
     echo "内嵌工具链抽取失败(共缺 $MISSING 项);现场目录(据此调参):"
     ls "$TDM_DIR" 2>/dev/null | head -30 || true
@@ -281,6 +299,29 @@ $( [ "$PLATFORM" = "darwin" ] && printf -- '- 渲染库:本包已含 darwin-arm6
 $( [ "$PLATFORM" = "linux" ] && printf -- '- 渲染库:本包未含 raylib 库产物,渲染功能需自行构建 raylib(见 lib/渲染/changelog.md)\n' )
 - 本包不含自带工具链(Windows 包自带 clang/MinGW;本平台使用系统工具链)
 EOF
+fi
+
+# ── 6.5 内嵌工具链实链自检(Windows;包能否用由真实链接裁决,不靠文件清单猜)──
+# 用包内 xtc(它按自身目录定位 tools\clang\ 与 tools\mingw\)在收窄 PATH 下完整编译并运行
+# 一个最小程序:链接到底引用了哪些库、DLL 依赖是否齐全,全部由真实链接暴露。
+# (第五轮 CI 教训:MinGW 发行版之间文件清单会漂移,静态清单永远追不上;动态链接 --外链
+#  在当前版本被编译器显式拒绝,故链接面只有默认静态一路,自检即覆盖全部可达面。)
+if [ "$PLATFORM" = "windows" ]; then
+  SMOKE="$ROOT/temp/pkg_test/_smoke"
+  rm -rf "$SMOKE"; mkdir -p "$SMOKE"
+  printf '示("工具链自检通过")\n' > "$SMOKE/_smoke.xt"
+  # PATH 收窄成"裸 Windows 用户"形态:Git 工具 + System32(任何真实用户的 PATH 都含 System32)。
+  # 注意别把 System32 也剥掉:实测缺它时 执("cmd /c cd") 的 spawn 失败,编译器在结果.值 上
+  # 空指针崩溃(该缺陷另行报告);自检只如实模拟真实环境,不替编译器边界缺陷兜底。
+  SYS32="$(cygpath -u "${SYSTEMROOT:-C:\\Windows}" 2>/dev/null || echo /c/Windows)/System32"
+  SMOKE_RC=0
+  ( cd "$SMOKE" && PATH="/usr/bin:/bin:$SYS32" "$PKG/xtc.exe" 跑 _smoke.xt ) > "$SMOKE/输出.txt" 2>&1 || SMOKE_RC=$?
+  if [ "$SMOKE_RC" -ne 0 ] || ! grep -q "工具链自检通过" "$SMOKE/输出.txt"; then
+    echo "内嵌工具链实链自检失败(exit=$SMOKE_RC):包内 xtc/clang/gcc 无法完整编译运行最小程序,包不可用。输出:"
+    tail -40 "$SMOKE/输出.txt"
+    exit 1
+  fi
+  echo "内嵌工具链实链自检: 通过(收窄 PATH 下,包内 xtc→clang→gcc 完整编译并运行)"
 fi
 
 # ── 7. 构建清单 MANIFEST.txt(第三方核验"二进制是否对应这份源码"的唯一凭据)──
