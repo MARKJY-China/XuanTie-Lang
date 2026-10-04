@@ -183,6 +183,11 @@ static unsigned char* xt_read_file_bytes(const char* u8path, int* outSize) {
 // 窗口管理
 // ============================================================
 
+/* 非 Windows 平台"请求关闭窗口"标志:置位后由 XT_WindowShouldClose 返回,
+   主循环下一轮正常退出,调用方统一执行一次 CloseWindow——避免与 XT_CloseWindow
+   连用时二次 CloseWindow → rlUnloadRenderBatch 二次释放 → SIGABRT(issue #47) */
+static int xt_window_close_requested = 0;
+
 void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     // MSAA 4x:圆角矩形/斜边的 GPU 级抗锯齿(raylib 的 DrawRectangleRounded 是三角形扇
     // 拼合,不开多重采样时边缘台阶感严重)。须在 InitWindow 前设置;取不到多样本
@@ -203,10 +208,11 @@ void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     }
 #endif
     InitWindow((int)XT_TO_INT(w), (int)XT_TO_INT(h), xt_get_cstr(title));
+    xt_window_close_requested = 0; /* 新窗口重置"请求关闭"标志(issue #47) */
 }
 
 uintptr_t XT_WindowShouldClose(void) {
-    return WindowShouldClose() ? 1 : 0;
+    return (xt_window_close_requested || WindowShouldClose()) ? 1 : 0;
 }
 
 void XT_CloseWindow(void) {
@@ -413,13 +419,15 @@ uintptr_t XT_WindowIsMaximized(void) {
 
 /* 优雅关闭:不直接 CloseWindow(帧中销毁上下文,后续绘制即崩),
    Windows 下投递 WM_CLOSE,GLFW 转成 shouldClose,主循环下一轮按正常路径退出;
-   非 Windows 平台退回 CloseWindow(帧末调用方为界) */
+   非 Windows 平台设"请求关闭"标志(xt_window_close_requested),由 XT_WindowShouldClose
+   返回——主循环下一轮正常退出,调用方统一执行一次 CloseWindow(issue #47:
+   直接 CloseWindow 会与 XT_CloseWindow 连用时二次释放 rlUnloadRenderBatch → SIGABRT) */
 void XT_WindowClose(void) {
 #ifdef _WIN32
     void* hwnd = GetWindowHandle();
     if (hwnd) PostMessageW(hwnd, 0x0010 /* WM_CLOSE */, 0, 0);
 #else
-    CloseWindow();
+    xt_window_close_requested = 1;
 #endif
 }
 
