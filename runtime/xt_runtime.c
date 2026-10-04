@@ -3353,9 +3353,12 @@ static int xt_pclose_nowindow(FILE* f, HANDLE hProc) {
 #endif
 
 XTValue xt_execute(XTValue cmd_val) {
-    if (!XT_IS_REAL_PTR(cmd_val)) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("指令无效"));
+    // 失败契约:结果.值 一律给空串,绝不交 NULL——语言层存在对 结果.值 直接调字符串方法
+    // 的调用点(如 编译.xt 规范化绝对路径),NULL 会段错误;空串可安全参与字符串运算。
+    // (实测:收窄 PATH 下 执("cmd /c cd") 管道打开失败,旧实现交 NULL 致编译期段错误)
+    if (!XT_IS_REAL_PTR(cmd_val)) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("指令无效"));
     XTObject* obj = (XTObject*)cmd_val;
-    if (obj->type_id != XT_TYPE_STRING) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("指令无效"));
+    if (obj->type_id != XT_TYPE_STRING) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("指令无效"));
     XTString* cmd = (XTString*)cmd_val;
 
 #ifdef _WIN32
@@ -3367,18 +3370,18 @@ XTValue xt_execute(XTValue cmd_val) {
     if (dwRet == 0 || dwRet > MAX_PATH) {
         char err_msg[128];
         snprintf(err_msg, sizeof(err_msg), "获取临时路径失败, Error: %lu", GetLastError());
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
     }
     
     // 创建 XuanTie 临时目录
     if (strlen(temp_path) + 10 >= MAX_PATH) {
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("临时路径过长"));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("临时路径过长"));
     }
     strcat(temp_path, "XuanTie");
     if (!CreateDirectoryA(temp_path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
         char err_msg[256];
         snprintf(err_msg, sizeof(err_msg), "创建临时目录失败, Path: %s, Error: %lu", temp_path, GetLastError());
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
     }
 
     // P2: 使用 PID + TickCount 消除命名碰撞
@@ -3386,7 +3389,7 @@ XTValue xt_execute(XTValue cmd_val) {
             temp_path, 
             GetCurrentProcessId(), 
             (unsigned long long)GetTickCount64()) >= MAX_PATH) {
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("临时批处理路径过长"));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("临时批处理路径过长"));
     }
     
     FILE* fbat = NULL;
@@ -3400,7 +3403,7 @@ XTValue xt_execute(XTValue cmd_val) {
     fbat = fopen(bat_path, "w");
 #endif
 
-    if (!fbat) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("创建临时批处理失败"));
+    if (!fbat) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("创建临时批处理失败"));
     
     // 写入指令并确保获取正确的退出码，同时将 stderr 重定向到 stdout 以便捕获错误信息
     // chcp 65001: bat 文件内容是 UTF-8,而 cmd 默认按系统代码页(中文 Windows 为 GBK)解析 bat,
@@ -3413,7 +3416,7 @@ XTValue xt_execute(XTValue cmd_val) {
     wchar_t* wbat = xt_utf8_to_utf16(bat_path);
     if (!wbat) {
         remove(bat_path);
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径转换失败"));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("路径转换失败"));
     }
 
     int required = _snwprintf(wcmd, 1024, L"\"\"%ls\"\"", wbat);
@@ -3421,14 +3424,14 @@ XTValue xt_execute(XTValue cmd_val) {
 
     if (required < 0 || required >= 1024) {
         remove(bat_path);
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("执行指令路径过长，超出了运行时缓冲区限制"));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行指令路径过长，超出了运行时缓冲区限制"));
     }
 
     HANDLE hProc = NULL;
     FILE* pipe = xt_popen_nowindow(wcmd, &hProc);
     if (!pipe) {
         remove(bat_path);
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("执行管道打开失败"));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行管道打开失败"));
     }
 
     char buffer[1024]; // 增大缓冲区
@@ -3455,7 +3458,7 @@ XTValue xt_execute(XTValue cmd_val) {
         char err_msg[16384];
         snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", status, res->data);
         xt_release((XTValue)res);
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
     }
     return (XTValue)xt_result_new(1, (void*)res, NULL);
 
@@ -3464,7 +3467,7 @@ XTValue xt_execute(XTValue cmd_val) {
     char cmd_with_stderr[2048];
     snprintf(cmd_with_stderr, sizeof(cmd_with_stderr), "%s 2>&1", cmd->data);
     FILE* pipe = popen(cmd_with_stderr, "r");
-    if (!pipe) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("执行失败"));
+    if (!pipe) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行失败"));
     
     char buffer[1024];
     XTString* res = xt_string_new("");
@@ -3485,7 +3488,7 @@ XTValue xt_execute(XTValue cmd_val) {
         char err_msg[16384];
         snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", code, res->data);
         xt_release((XTValue)res);
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(err_msg));
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
     }
     return (XTValue)xt_result_new(1, (void*)res, NULL);
 #endif
