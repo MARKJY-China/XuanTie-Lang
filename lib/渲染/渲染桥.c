@@ -2011,3 +2011,111 @@ uintptr_t XT_IME_GetComp(void) { return (uintptr_t)xt_string_new(""); }
 uintptr_t XT_IME_Enable(uintptr_t on) { (void)on; return XT_FROM_INT(0); }
 void XT_SetIMEPos(uintptr_t x, uintptr_t y) { (void)x; (void)y; }
 #endif
+
+// ============================================================
+// 3D 渲染(v1.3.0,raylib 核心 3D 通道)
+// 坐标约定与 raylib 一致:Y 轴向上、右手系;相机 up 固定 (0,1,0),投影固定透视。
+// 数值参数经 xt_get_num:小数对象取其值;标记整数容错转 double
+//   (既有 xt_get_float 对标记整数静默回 0.0——调用方 1 与 1.0 混用即静默归零的坑,
+//    本段新增函数一律走 xt_get_num 不受影响;既有函数的同款隐患记在观察报告)。
+// rlgl 矩阵栈:本地随附 raylib.h 未包含 rlgl.h,故显式声明原型;符号已在随包
+//   libraylib.a 中(llvm-nm 实测:rlPushMatrix/rlPopMatrix/rlTranslatef/rlRotatef)。
+// ============================================================
+
+RLAPI void rlPushMatrix(void);
+RLAPI void rlPopMatrix(void);
+RLAPI void rlTranslatef(float x, float y, float z);
+RLAPI void rlRotatef(float angle, float x, float y, float z);
+
+static double xt_get_num(uintptr_t v) {
+    if (IS_INT(v)) return (double)XT_TO_INT(v);
+    return xt_get_float(v);
+}
+
+static Color xt_color4(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    Color c = {
+        (unsigned char)XT_TO_INT(r),
+        (unsigned char)XT_TO_INT(g),
+        (unsigned char)XT_TO_INT(b),
+        (unsigned char)XT_TO_INT(a)
+    };
+    return c;
+}
+
+static Camera3D g_xt_cam3d = {
+    { 0.0f, 10.0f, -10.0f },
+    { 0.0f, 0.0f, 0.0f },
+    { 0.0f, 1.0f, 0.0f },
+    60.0f,
+    CAMERA_PERSPECTIVE
+};
+
+// 设置 3D 相机(每帧可调,做跟随用);up=(0,1,0),透视投影
+void XT_Camera3D_Set(uintptr_t px, uintptr_t py, uintptr_t pz,
+                     uintptr_t tx, uintptr_t ty, uintptr_t tz, uintptr_t fovy) {
+    g_xt_cam3d.position = (Vector3){ (float)xt_get_num(px), (float)xt_get_num(py), (float)xt_get_num(pz) };
+    g_xt_cam3d.target   = (Vector3){ (float)xt_get_num(tx), (float)xt_get_num(ty), (float)xt_get_num(tz) };
+    g_xt_cam3d.up       = (Vector3){ 0.0f, 1.0f, 0.0f };
+    g_xt_cam3d.fovy     = (float)xt_get_num(fovy);
+    g_xt_cam3d.projection = CAMERA_PERSPECTIVE;
+}
+
+void XT_BeginMode3D(void) { BeginMode3D(g_xt_cam3d); }
+void XT_EndMode3D(void)   { EndMode3D(); }
+
+// 立方体以中心为基准(raylib 语义)
+void XT_DrawCube3D(uintptr_t x, uintptr_t y, uintptr_t z,
+                   uintptr_t w, uintptr_t h, uintptr_t d,
+                   uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    DrawCube((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
+             (float)xt_get_num(w), (float)xt_get_num(h), (float)xt_get_num(d),
+             xt_color4(r, g, b, a));
+}
+
+void XT_DrawCubeWires3D(uintptr_t x, uintptr_t y, uintptr_t z,
+                        uintptr_t w, uintptr_t h, uintptr_t d,
+                        uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    DrawCubeWires((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
+                  (float)xt_get_num(w), (float)xt_get_num(h), (float)xt_get_num(d),
+                  xt_color4(r, g, b, a));
+}
+
+void XT_DrawSphere3D(uintptr_t x, uintptr_t y, uintptr_t z, uintptr_t radius,
+                     uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    DrawSphere((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
+               (float)xt_get_num(radius), xt_color4(r, g, b, a));
+}
+
+void XT_DrawSphereWires3D(uintptr_t x, uintptr_t y, uintptr_t z, uintptr_t radius,
+                          uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    DrawSphereWires((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
+                    (float)xt_get_num(radius), 8, 16, xt_color4(r, g, b, a));
+}
+
+void XT_DrawGrid3D(uintptr_t slices, uintptr_t spacing) {
+    DrawGrid((int)XT_TO_INT(slices), (float)xt_get_num(spacing));
+}
+
+void XT_DrawLine3D(uintptr_t x1, uintptr_t y1, uintptr_t z1,
+                   uintptr_t x2, uintptr_t y2, uintptr_t z2,
+                   uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    DrawLine3D((Vector3){ (float)xt_get_num(x1), (float)xt_get_num(y1), (float)xt_get_num(z1) },
+               (Vector3){ (float)xt_get_num(x2), (float)xt_get_num(y2), (float)xt_get_num(z2) },
+               xt_color4(r, g, b, a));
+}
+
+void XT_DrawPoint3D(uintptr_t x, uintptr_t y, uintptr_t z,
+                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    DrawPoint3D((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
+                xt_color4(r, g, b, a));
+}
+
+// 矩阵栈:须在 BeginMode3D 内成对使用(推→平移→旋转→绘制→弹)
+void XT_PushMatrix3D(void) { rlPushMatrix(); }
+void XT_PopMatrix3D(void)  { rlPopMatrix(); }
+void XT_Translate3D(uintptr_t x, uintptr_t y, uintptr_t z) {
+    rlTranslatef((float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z));
+}
+void XT_Rotate3D(uintptr_t angle, uintptr_t ax, uintptr_t ay, uintptr_t az) {
+    rlRotatef((float)xt_get_num(angle), (float)xt_get_num(ax), (float)xt_get_num(ay), (float)xt_get_num(az));
+}

@@ -1,4 +1,4 @@
-// 渲染.xt — 玄铁渲染库 v1.2.3
+// 渲染.xt — 玄铁渲染库 v1.3.0
 // 基于 raylib，通过 C 桥接层提供 2D/3D 图形渲染能力
 //
 // 用法:
@@ -157,6 +157,25 @@
 外 函 XT_UpdateMusicStream(musicPtr: 整): 空
 外 函 XT_StopMusicStream(musicPtr: 整): 空
 外 函 XT_UnloadMusicStream(musicPtr: 整): 空
+
+// ============================================================
+// 3D 渲染(v1.3.0)
+// 坐标约定与 raylib 一致:Y 轴向上;相机 up 固定 (0,1,0),透视投影。
+// ============================================================
+外 函 XT_Camera3D_Set(px: 小数, py: 小数, pz: 小数, tx: 小数, ty: 小数, tz: 小数, fovy: 小数): 空
+外 函 XT_BeginMode3D(): 空
+外 函 XT_EndMode3D(): 空
+外 函 XT_DrawCube3D(x: 小数, y: 小数, z: 小数, w: 小数, h: 小数, d: 小数, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawCubeWires3D(x: 小数, y: 小数, z: 小数, w: 小数, h: 小数, d: 小数, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawSphere3D(x: 小数, y: 小数, z: 小数, radius: 小数, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawSphereWires3D(x: 小数, y: 小数, z: 小数, radius: 小数, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawGrid3D(slices: 整, spacing: 小数): 空
+外 函 XT_DrawLine3D(x1: 小数, y1: 小数, z1: 小数, x2: 小数, y2: 小数, z2: 小数, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_DrawPoint3D(x: 小数, y: 小数, z: 小数, r: 整, g: 整, b: 整, a: 整): 空
+外 函 XT_PushMatrix3D(): 空
+外 函 XT_PopMatrix3D(): 空
+外 函 XT_Translate3D(x: 小数, y: 小数, z: 小数): 空
+外 函 XT_Rotate3D(angle: 小数, ax: 小数, ay: 小数, az: 小数): 空
 
 // ============================================================
 // 高层封装 API（面向用户）
@@ -630,6 +649,62 @@
 公 函 释音乐流(音乐句柄) {
     XT_UnloadMusicStream(音乐句柄)
 }
+
+// ============================================================
+// 3D(v1.3.0,高层封装)
+// ============================================================
+
+// 设置 3D 相机(每帧调用即可做跟随):眼位→注视点,透视投影,up 固定朝上
+公 函 设置相机3D(眼x, 眼y, 眼z, 靶x, 靶y, 靶z, 视场) {
+    XT_Camera3D_Set(眼x, 眼y, 眼z, 靶x, 靶y, 靶z, 视场)
+}
+
+// 进入 3D 绘制:须与本帧 退出3D 成对,且包含在 开始绘图/结束绘图 之间
+公 函 进入3D() { XT_BeginMode3D() }
+
+// 退出 3D 绘制,恢复 2D(HUD 等在此后绘制)
+公 函 退出3D() { XT_EndMode3D() }
+
+// 立方体(以中心为基准)
+公 函 绘立方体(x, y, z, 宽, 高, 深, r, g, b, a) {
+    XT_DrawCube3D(x, y, z, 宽, 高, 深, r, g, b, a)
+}
+
+// 立方体线框
+公 函 绘立方体线(x, y, z, 宽, 高, 深, r, g, b, a) {
+    XT_DrawCubeWires3D(x, y, z, 宽, 高, 深, r, g, b, a)
+}
+
+// 球体
+公 函 绘球体(x, y, z, 半径, r, g, b, a) {
+    XT_DrawSphere3D(x, y, z, 半径, r, g, b, a)
+}
+
+// 球体线框
+公 函 绘球体线(x, y, z, 半径, r, g, b, a) {
+    XT_DrawSphereWires3D(x, y, z, 半径, r, g, b, a)
+}
+
+// 地面网格(以原点为中心,格数×间距)
+公 函 绘地面网格(格数, 间距) { XT_DrawGrid3D(格数, 间距) }
+
+// 3D 直线
+公 函 绘直线3D(x1, y1, z1, x2, y2, z2, r, g, b, a) {
+    XT_DrawLine3D(x1, y1, z1, x2, y2, z2, r, g, b, a)
+}
+
+// 3D 点(实际渲染为一小段线)
+公 函 绘点3D(x, y, z, r, g, b, a) { XT_DrawPoint3D(x, y, z, r, g, b, a) }
+
+// ---- 矩阵栈(3D 内平移/旋转图元;推弹成对) ----
+公 函 推矩阵() { XT_PushMatrix3D() }
+公 函 弹矩阵() { XT_PopMatrix3D() }
+
+// 平移当前矩阵
+公 函 平移3D(x, y, z) { XT_Translate3D(x, y, z) }
+
+// 绕轴旋转(角度单位:度;轴为方向向量,如 (0,1,0) 绕 Y 轴)
+公 函 旋转3D(角度, 轴x, 轴y, 轴z) { XT_Rotate3D(角度, 轴x, 轴y, 轴z) }
 
 // ============================================================
 // 常用颜色常量（RGBA）
