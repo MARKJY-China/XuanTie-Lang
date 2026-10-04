@@ -232,7 +232,8 @@ func main() {
 		}
 		raylibA := filepath.Join(raylibDir, "libraylib.a")
 		raylibInclude := raylibDir
-		useRender := hasImport(program, "渲染") && fileExists(renderBridgeC) && fileExists(raylibA)
+		// linux: 发行包 libraylib.a 为 MinGW 版(Windows COFF 重定位,ELF 链接器不认)——不要求静态库存在,渲染链接走系统 -lraylib(issue #59)
+		useRender := hasImport(program, "渲染") && fileExists(renderBridgeC) && (fileExists(raylibA) || targetOS == "linux")
 
 		objFile := strings.TrimSuffix(filename, ".xt") + ".o"
 		cc := findCCompiler()
@@ -288,14 +289,14 @@ func main() {
 			gccArgs = append(gccArgs, "-lpthread", "-ldl", "-lm")
 		}
 		if useRender {
-			gccArgs = append(gccArgs, bridgeObj, raylibA)
 			switch targetOS {
 			case "windows":
-				gccArgs = append(gccArgs, "-lopengl32", "-lgdi32", "-lwinmm", "-limm32")
+				gccArgs = append(gccArgs, bridgeObj, raylibA, "-lopengl32", "-lgdi32", "-lwinmm", "-limm32")
 			case "darwin":
-				gccArgs = append(gccArgs, "-framework", "Cocoa", "-framework", "OpenGL", "-framework", "IOKit", "-framework", "CoreVideo")
+				gccArgs = append(gccArgs, bridgeObj, raylibA, "-framework", "Cocoa", "-framework", "OpenGL", "-framework", "IOKit", "-framework", "CoreVideo")
 			case "linux":
-				gccArgs = append(gccArgs, "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+				// 发行包 libraylib.a 为 MinGW 版(COFF 重定位,ELF 链接器不认)——linux 链系统 raylib(需已安装 raylib 包,如 pacman -S raylib)
+				gccArgs = append(gccArgs, bridgeObj, "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
 			}
 		}
 		gccCmd := exec.Command(gccExe, gccArgs...)
