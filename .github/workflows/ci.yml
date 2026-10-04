@@ -2,10 +2,34 @@
 # 门禁判据：编译成功性 / 退出码 / FAIL 标记 / 与 Test/golden 基线逐行 diff（四层），叠加自举 s3==s4 逐字节一致（DDC）。
 name: CI
 
+# 触发过滤(issue #64):纯文档/展示资源的变动不必跑 4 平台门禁。
+# 为何用黑名单而不是 issue 里的白名单方案:两侧风险不对称——多跑一次只是浪费 runner,
+# 少跑一次却是"改动没被门禁看过"。黑名单漏掉的是"某个代码文件没被列进白名单"这类
+# 会静默跳过的错误;而本例白名单必须逐一点名 .sh/.ps1/.txt(golden 基线)/.txt(runtime
+# 头)/.golden.txt 等全部会影响判定的文件,任何新增文件类型(如 golden 换扩展名)都会
+# 静默漏跑。黑名单最坏情况是某类文档被列入而仍会跑,不会漏。
+# 注意:被忽略的路径不是"不重要"——GUIDE/readme 会进发行包,改它们应人工跑发布冒烟
+# (GUIDE/发布前冒烟清单.md);这里只表示"不需要跨平台编译门禁"。
 on:
   push:
     branches: [ master ]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.ico'
+      - '**/*.ttf'
+      - '**/*.icns'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.ico'
+      - '**/*.ttf'
+      - '**/*.icns'
   workflow_dispatch:
 
 jobs:
