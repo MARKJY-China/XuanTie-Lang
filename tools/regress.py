@@ -81,6 +81,8 @@ VOLATILE = [
     (re.compile(r"\[ID \d+\]"), "[ID <N>]"),
     (re.compile(r"\d+ pixel size \| \d+ glyphs"), "<字体栅格>"),
     (re.compile(r"glyphs found: \[\d+/\d+\]"), "glyphs found: [<字体栅格>]"),
+    # 库解析提示(铁铺安装副本与自带副本版本不一致):随各机器安装态波动,与程序正确性无关
+    (re.compile(r"注意: 库 '.+?' 使用铁铺安装副本\([^)]*\);编译器自带副本为 [^ ]+ —— .*"), "<库版本提示>"),
 ]
 
 def normalize(text, sort_lines):
