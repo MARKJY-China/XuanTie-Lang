@@ -85,7 +85,10 @@ extern void* xt_string_new(const char*);
 extern void xt_release(uintptr_t);
 
 // 提取浮点数: 如果是 XTFloat 对象则返回 value
+// 标记整数容错(2026-10-04 狗粮实测):旧实现只认 XTFloat,实参写 1(而非 1.0)时静默归 0.0;
+// 现对标记整数按数值返回——库的"小数"形参从此 1 与 1.0 两种写法通吃。
 static double xt_get_float(uintptr_t v) {
+    if (IS_INT(v)) return (double)XT_TO_INT(v);
     if (IS_PTR(v) && v != 0) {
         XTFloat* f = (XTFloat*)v;
         if (f->type_id == 2) return f->value;
@@ -1027,6 +1030,8 @@ void XT_CloseAudioDevice(void) {
 // 必须走标记整数,这条约定对同库所有句柄外函适用。
 static Sound xt_snd_pool[32];
 static int   xt_snd_used[32];
+static void* xt_synth_pcm[32];   // 合成音效的 PCM 缓冲:LoadSoundFromWave 的拷贝语义在 raylib.h
+                                 // 未言明,保守保活到卸载时再释放(文件音效恒为 NULL)
 static Music xt_mus_pool[32];
 static int   xt_mus_used[32];
 
@@ -1062,12 +1067,59 @@ void XT_UnloadSound(uintptr_t snd) {
     Sound* p = xt_get_snd(snd);
     if (!p) return;
     UnloadSound(*p);
-    xt_snd_used[XT_TO_INT(snd) - 1] = 0;
+    int slot = (int)XT_TO_INT(snd) - 1;
+    if (slot >= 0 && slot < 32 && xt_synth_pcm[slot]) {
+        free(xt_synth_pcm[slot]);
+        xt_synth_pcm[slot] = NULL;
+    }
+    xt_snd_used[slot] = 0;
 }
 
 void XT_PlaySound(uintptr_t snd) {
     Sound* p = xt_get_snd(snd);
     if (p) PlaySound(*p);
+}
+
+// 程序化发声(零资产:桥内合成 16 位单声道正弦 PCM,免 wav 文件)——2026-10-04
+// 频率(Hz)/时长(毫秒);10ms 淡入淡出免咔哒;非法入参按默认值钳制(<=0 → 440Hz/120ms,>10s 截到 10s)。
+// 返回与文件音效同一槽位池的句柄(槽号+1),0 表示失败;播放/释放走既有 播音效/释音效。
+uintptr_t XT_SynthSound(uintptr_t freq_hz, uintptr_t ms) {
+    int slot = xt_snd_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    double f = xt_get_float(freq_hz);
+    int m = (int)XT_TO_INT(ms);
+    if (f <= 0.0) f = 440.0;
+    if (m <= 0) m = 120;
+    if (m > 10000) m = 10000;
+    const int rate = 22050;
+    int n = (int)((long long)rate * m / 1000);
+    if (n < 1) n = 1;
+    short* pcm = (short*)malloc(sizeof(short) * (size_t)n);
+    if (!pcm) return XT_FROM_INT(0);
+    double w = 2.0 * 3.14159265358979323846 * f / (double)rate;
+    int fade = rate / 100;                       // 10ms
+    if (fade > n / 2) fade = n / 2;
+    for (int i = 0; i < n; i++) {
+        double a = 0.35;                         // 音量留余量
+        if (i < fade) a *= (double)i / (double)fade;
+        if (i >= n - fade) a *= (double)(n - 1 - i) / (double)fade;
+        pcm[i] = (short)(sin(w * (double)i) * a * 32767.0);
+    }
+    Wave wv;
+    wv.frameCount = (unsigned int)n;
+    wv.sampleRate = (unsigned int)rate;
+    wv.sampleSize = 16;
+    wv.channels = 1;
+    wv.data = pcm;
+    Sound s = LoadSoundFromWave(wv);
+    if (s.stream.buffer == NULL || s.frameCount == 0) {
+        free(pcm);
+        return XT_FROM_INT(0);
+    }
+    xt_snd_pool[slot] = s;
+    xt_synth_pcm[slot] = pcm;                    // 保活;XT_UnloadSound 释放
+    xt_snd_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
 }
 
 uintptr_t XT_LoadMusicStream(uintptr_t filename) {
@@ -2015,9 +2067,8 @@ void XT_SetIMEPos(uintptr_t x, uintptr_t y) { (void)x; (void)y; }
 // ============================================================
 // 3D 渲染(v1.3.0,raylib 核心 3D 通道)
 // 坐标约定与 raylib 一致:Y 轴向上、右手系;相机 up 固定 (0,1,0),投影固定透视。
-// 数值参数经 xt_get_num:小数对象取其值;标记整数容错转 double
-//   (既有 xt_get_float 对标记整数静默回 0.0——调用方 1 与 1.0 混用即静默归零的坑,
-//    本段新增函数一律走 xt_get_num 不受影响;既有函数的同款隐患记在观察报告)。
+// 数值参数经 xt_get_float:小数对象取其值;标记整数亦按数值返回——该容错已并入
+//   xt_get_float 公共实现(2026-10-04 统一),整数与小数写法此后全库通吃。
 // rlgl 矩阵栈:本地随附 raylib.h 未包含 rlgl.h,故显式声明原型;符号已在随包
 //   libraylib.a 中(llvm-nm 实测:rlPushMatrix/rlPopMatrix/rlTranslatef/rlRotatef)。
 // ============================================================
@@ -2026,11 +2077,6 @@ RLAPI void rlPushMatrix(void);
 RLAPI void rlPopMatrix(void);
 RLAPI void rlTranslatef(float x, float y, float z);
 RLAPI void rlRotatef(float angle, float x, float y, float z);
-
-static double xt_get_num(uintptr_t v) {
-    if (IS_INT(v)) return (double)XT_TO_INT(v);
-    return xt_get_float(v);
-}
 
 static Color xt_color4(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {
@@ -2053,10 +2099,10 @@ static Camera3D g_xt_cam3d = {
 // 设置 3D 相机(每帧可调,做跟随用);up=(0,1,0),透视投影
 void XT_Camera3D_Set(uintptr_t px, uintptr_t py, uintptr_t pz,
                      uintptr_t tx, uintptr_t ty, uintptr_t tz, uintptr_t fovy) {
-    g_xt_cam3d.position = (Vector3){ (float)xt_get_num(px), (float)xt_get_num(py), (float)xt_get_num(pz) };
-    g_xt_cam3d.target   = (Vector3){ (float)xt_get_num(tx), (float)xt_get_num(ty), (float)xt_get_num(tz) };
+    g_xt_cam3d.position = (Vector3){ (float)xt_get_float(px), (float)xt_get_float(py), (float)xt_get_float(pz) };
+    g_xt_cam3d.target   = (Vector3){ (float)xt_get_float(tx), (float)xt_get_float(ty), (float)xt_get_float(tz) };
     g_xt_cam3d.up       = (Vector3){ 0.0f, 1.0f, 0.0f };
-    g_xt_cam3d.fovy     = (float)xt_get_num(fovy);
+    g_xt_cam3d.fovy     = (float)xt_get_float(fovy);
     g_xt_cam3d.projection = CAMERA_PERSPECTIVE;
 }
 
@@ -2067,46 +2113,46 @@ void XT_EndMode3D(void)   { EndMode3D(); }
 void XT_DrawCube3D(uintptr_t x, uintptr_t y, uintptr_t z,
                    uintptr_t w, uintptr_t h, uintptr_t d,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    DrawCube((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
-             (float)xt_get_num(w), (float)xt_get_num(h), (float)xt_get_num(d),
+    DrawCube((Vector3){ (float)xt_get_float(x), (float)xt_get_float(y), (float)xt_get_float(z) },
+             (float)xt_get_float(w), (float)xt_get_float(h), (float)xt_get_float(d),
              xt_color4(r, g, b, a));
 }
 
 void XT_DrawCubeWires3D(uintptr_t x, uintptr_t y, uintptr_t z,
                         uintptr_t w, uintptr_t h, uintptr_t d,
                         uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    DrawCubeWires((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
-                  (float)xt_get_num(w), (float)xt_get_num(h), (float)xt_get_num(d),
+    DrawCubeWires((Vector3){ (float)xt_get_float(x), (float)xt_get_float(y), (float)xt_get_float(z) },
+                  (float)xt_get_float(w), (float)xt_get_float(h), (float)xt_get_float(d),
                   xt_color4(r, g, b, a));
 }
 
 void XT_DrawSphere3D(uintptr_t x, uintptr_t y, uintptr_t z, uintptr_t radius,
                      uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    DrawSphere((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
-               (float)xt_get_num(radius), xt_color4(r, g, b, a));
+    DrawSphere((Vector3){ (float)xt_get_float(x), (float)xt_get_float(y), (float)xt_get_float(z) },
+               (float)xt_get_float(radius), xt_color4(r, g, b, a));
 }
 
 void XT_DrawSphereWires3D(uintptr_t x, uintptr_t y, uintptr_t z, uintptr_t radius,
                           uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    DrawSphereWires((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
-                    (float)xt_get_num(radius), 8, 16, xt_color4(r, g, b, a));
+    DrawSphereWires((Vector3){ (float)xt_get_float(x), (float)xt_get_float(y), (float)xt_get_float(z) },
+                    (float)xt_get_float(radius), 8, 16, xt_color4(r, g, b, a));
 }
 
 void XT_DrawGrid3D(uintptr_t slices, uintptr_t spacing) {
-    DrawGrid((int)XT_TO_INT(slices), (float)xt_get_num(spacing));
+    DrawGrid((int)XT_TO_INT(slices), (float)xt_get_float(spacing));
 }
 
 void XT_DrawLine3D(uintptr_t x1, uintptr_t y1, uintptr_t z1,
                    uintptr_t x2, uintptr_t y2, uintptr_t z2,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    DrawLine3D((Vector3){ (float)xt_get_num(x1), (float)xt_get_num(y1), (float)xt_get_num(z1) },
-               (Vector3){ (float)xt_get_num(x2), (float)xt_get_num(y2), (float)xt_get_num(z2) },
+    DrawLine3D((Vector3){ (float)xt_get_float(x1), (float)xt_get_float(y1), (float)xt_get_float(z1) },
+               (Vector3){ (float)xt_get_float(x2), (float)xt_get_float(y2), (float)xt_get_float(z2) },
                xt_color4(r, g, b, a));
 }
 
 void XT_DrawPoint3D(uintptr_t x, uintptr_t y, uintptr_t z,
                     uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    DrawPoint3D((Vector3){ (float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z) },
+    DrawPoint3D((Vector3){ (float)xt_get_float(x), (float)xt_get_float(y), (float)xt_get_float(z) },
                 xt_color4(r, g, b, a));
 }
 
@@ -2114,8 +2160,8 @@ void XT_DrawPoint3D(uintptr_t x, uintptr_t y, uintptr_t z,
 void XT_PushMatrix3D(void) { rlPushMatrix(); }
 void XT_PopMatrix3D(void)  { rlPopMatrix(); }
 void XT_Translate3D(uintptr_t x, uintptr_t y, uintptr_t z) {
-    rlTranslatef((float)xt_get_num(x), (float)xt_get_num(y), (float)xt_get_num(z));
+    rlTranslatef((float)xt_get_float(x), (float)xt_get_float(y), (float)xt_get_float(z));
 }
 void XT_Rotate3D(uintptr_t angle, uintptr_t ax, uintptr_t ay, uintptr_t az) {
-    rlRotatef((float)xt_get_num(angle), (float)xt_get_num(ax), (float)xt_get_num(ay), (float)xt_get_num(az));
+    rlRotatef((float)xt_get_float(angle), (float)xt_get_float(ax), (float)xt_get_float(ay), (float)xt_get_float(az));
 }
