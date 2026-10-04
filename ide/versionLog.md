@@ -153,6 +153,13 @@
   (E1042 候选修复+文档锚)、LSP 三工具(候选查签名/查符号/列成员)与编译器测试语料索引
   需动 xtc/xt_lsp(自举验证),待独立排期。
 
+#### 安装器中英双语(2026-10-04)
+
+- NSIS 安装器三语言:`languages: [English, SimpChinese, TradChinese]` + 开启
+  `displayLanguageSelector`——安装/卸载前弹出语言选择框(默认高亮系统语言:简体系统→
+  简体、繁体系统→繁体、其他→English),用户可当场切换。改 `tauri.conf.json` 后需重新
+  `npx tauri build` 生效(构建产物不变,仅安装器文案)。
+
 #### Agent 模式媒体支持(2026-10-04)
 
 - **Agent 模式支持图片/视频输入**:DSH 的 `session.send` 只收文本、附件服务未 vendor——

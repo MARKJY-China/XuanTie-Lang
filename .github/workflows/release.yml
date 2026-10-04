@@ -1,0 +1,214 @@
+# 玄铁多平台发布流水线:玄铁语言包(Windows / Linux x86_64 / macOS arm64)+ 铸造厂 IDE(Windows)
+#
+# 触发方式(三选一):
+#   1. 打 tag 推送:      git tag v1.0-rc.3 && git push github v1.0-rc.3   → 构建并创建 GitHub Release
+#   2. 手动触发(网页 Actions 页 "Run workflow",或 gh workflow run 发布)
+#      —— 只构建并上传 artifacts(不建 Release),用于发布前预演
+#   3. 本工作流与既有 CI 门禁(ci.yml)互补:CI 管"改动是否过关",本工作流管"发行物生产"
+#
+# 发布纪律(与仓库 AGENTS.md 的「发布指纹 & 同名 tag」一致,并在本流水线中自动化校验):
+#   - 发行包内 MANIFEST.txt 必须记录构建提交,且 == 本次 tag 指向的提交,否则拒绝发布;
+#   - tag 名中的版本(vX.Y.Z…)必须与 MANIFEST「编译器自述」的版本行一致,否则拒绝发布。
+name: 发布
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  lang:
+    # 玄铁语言发行包(绿色包):各平台自举构建 + release/make_pkg.sh 组包 → tar.gz
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            plat: windows
+            slug: windows_amd64
+          - os: ubuntu-latest
+            plat: linux
+            slug: linux_x86_64
+          - os: macos-14
+            plat: darwin
+            slug: darwin_arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: "准备工具链(Windows: LLVM + MinGW 并探测布局)"
+        if: matrix.plat == 'windows'
+        shell: bash
+        run: |
+          set -e
+          if ! command -v clang >/dev/null 2>&1; then
+            if [ ! -f "/c/Program Files/LLVM/bin/clang.exe" ]; then
+              choco install llvm -y --no-progress
+            fi
+            echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          fi
+          choco install mingw -y --no-progress || true
+          # 探测实机布局并写入环境(供 make_pkg 的内嵌工具链抽取段使用;首跑失败时这份日志即调参依据)
+          MINGW64=/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64
+          echo "---- MinGW 布局探测 ----"
+          ls "$MINGW64/bin/gcc.exe" 2>/dev/null || echo "缺: gcc.exe"
+          ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null || echo "缺: libexec"
+          VER=$(ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1)
+          [ -n "$VER" ] && echo "TDM_VER=$VER" >> "$GITHUB_ENV"
+          echo "TDM_DIR=$MINGW64" >> "$GITHUB_ENV"
+          if [ -f "/c/Program Files/LLVM/bin/clang.exe" ]; then
+            echo "LLVM_DIR=/c/Program Files/LLVM" >> "$GITHUB_ENV"
+          fi
+
+      - name: 构建种子编译器 GSC
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(相邻两级逐字节一致)
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: 构建 tiepm 与 xt_lsp(各平台本机产物;tiepm.exe 未入库需现编)
+        shell: bash
+        run: |
+          set -e
+          # 链顶动态取自举链最高级(与 make_pkg 同口径)。纯 shell 数字比较:
+          # macOS runner 的 BSD sort 没有 -V,用 ls|sort -V 会在 darwin 上直接失败
+          TOP_N=0
+          for f in build/xtc_s*.exe; do
+            [ -f "$f" ] || continue
+            n=${f##*/xtc_s}; n=${n%.exe}
+            case "$n" in ''|*[!0-9]*) continue ;; esac
+            [ "$n" -gt "$TOP_N" ] && TOP_N=$n
+          done
+          XTC="./build/xtc_s$TOP_N.exe"
+          echo "链顶编译器: $XTC"
+          if [ "${{ matrix.plat }}" = "windows" ]; then
+            # Windows 分支产物名(与 make_pkg 的查找路径一致)
+            "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
+          else
+            "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm
+            "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp
+            ls -la tiepm/tiepm lsp/xt_lsp
+          fi
+
+      - name: 组装发行包(release/make_pkg.sh)
+        shell: bash
+        run: bash release/make_pkg.sh
+
+      - name: 打压缩包 + 收拢产物
+        shell: bash
+        run: |
+          set -e
+          mkdir -p out
+          cd temp/pkg_test
+          tar -czf "../../out/xuantie_${GITHUB_REF_NAME:-快照}_${{ matrix.slug }}.tar.gz" XuanTie
+          cd ../..
+          cp temp/pkg_test/XuanTie/MANIFEST.txt "out/MANIFEST_${{ matrix.slug }}.txt"
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lang-${{ matrix.slug }}
+          path: out/
+          if-no-files-found: error
+
+  foundry:
+    # 铸造厂 IDE(Windows):Tauri 构建出 NSIS 安装包
+    # 注:Linux/macOS 铸造厂构建需要先完成平台门控清理(Windows 专属 API 的前端分支等),
+    #     完成后再把对应 runner 加进矩阵。
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ide/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ide/src-tauri
+
+      - name: 构建铸造厂(npx tauri build)
+        working-directory: ide
+        run: |
+          npm ci
+          npx tauri build
+
+      - name: 收拢产物
+        shell: bash
+        run: |
+          set -e
+          mkdir -p out
+          cp ide/src-tauri/target/release/bundle/nsis/*.exe out/ 2>/dev/null || true
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: foundry-windows
+          path: out/
+          if-no-files-found: error
+
+  publish:
+    # 汇总 + 发布纪律硬校验 + 建 Release(tag 触发时)
+    needs: [lang, foundry]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: 指纹校验(MANIFEST 提交 == 本次构建提交;版本行 == tag 名)
+        run: |
+          set -e
+          echo "构建提交: $GITHUB_SHA"
+          ok=1
+          for f in artifacts/lang-*/MANIFEST_*.txt; do
+            echo "── $f"
+            grep -m1 '^提交: ' "$f" || { echo "缺「提交:」行"; ok=0; }
+            if ! grep -q "^提交: $GITHUB_SHA" "$f"; then
+              echo "！！ MANIFEST 记录的提交与本次构建不一致 —— 按发布纪律拒绝"; ok=0
+            fi
+            if [ -n "${GITHUB_REF_NAME:-}" ]; then
+              case "$GITHUB_REF_NAME" in
+                v*)
+                  if ! grep -q "^版本: ${GITHUB_REF_NAME}$" "$f"; then
+                    echo "！！ MANIFEST 版本行与 tag($GITHUB_REF_NAME)不一致 —— 按发布纪律拒绝"; ok=0
+                  fi
+                  ;;
+              esac
+            fi
+          done
+          [ "$ok" = "1" ] || exit 1
+          echo "指纹校验通过"
+
+      - name: 列出全部产物
+        run: find artifacts -type f | sort
+
+      - name: 创建 Release 并上传(tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/lang-*/*.tar.gz
+            artifacts/lang-*/MANIFEST_*.txt
+            artifacts/foundry-windows/*.exe
+          generate_release_notes: true
+
+      - name: 手动触发预演(不建 Release)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "手动触发:产物已上传为 artifacts(lang-* / foundry-windows),供发布前预演。"
+          echo "正式发布: git tag <版本> && git push github <版本> —— 本流水线将自动创建 Release。"

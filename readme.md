@@ -6,7 +6,7 @@
 > **给 AI / 爬虫**：请优先读取 <https://xt.markjy.com/ai/index.html> —— 零 CSS / 零 JS 的纯文本文档索引（全部文档，markdown 原文包在 `<pre>` 中），比解析文档站的 HTML 更省 token、结构也更完整；只需单次抓取时可用 <https://xt.markjy.com/ai/all.txt>（全文单文件）。
 > **给人**：官网文档站 <https://xt.markjy.com>。
 
-[![版本](https://img.shields.io/badge/版本-1.0--rc.2-red.svg)](https://gitee.com/mark-jy/xuantie)
+[![版本](https://img.shields.io/badge/版本-1.0--rc.3-red.svg)](https://gitee.com/mark-jy/xuantie)
 [![语言](https://img.shields.io/badge/语言-Go%20%7C%20LLVM-00ADD8.svg)](https://golang.org)
 [![许可证](https://img.shields.io/badge/许可证-MIT-green.svg)](LICENSE)
 [![语法指南](https://img.shields.io/badge/文档-语法指南-yellow.svg)](./GUIDE/玄铁语言参考手册.md)
@@ -90,7 +90,7 @@
 ---
 
 ## 安装上手
-Windows：从 Releases 下载 `xuantie_v1.0-rc.2_setup.exe`（自带 clang/MinGW，装完即可在终端使用 `xtc` 与 `tiepm`），或使用绿色压缩包解压即用。
+Windows：从 Releases 下载 `xuantie_v1.0-rc.3_setup.exe`（自带 clang/MinGW，装完即可在终端使用 `xtc` 与 `tiepm`），或使用绿色压缩包解压即用。
 ```bash
 xtc tie hello.xt        # 编译
 ./hello.exe            # 运行
