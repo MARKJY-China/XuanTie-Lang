@@ -24,7 +24,7 @@ import type {
   SessionEvent,
   ToolDefinition,
 } from '@dsh-core'
-import { OpenAiCompatAdapter, type OpenAiChannelConfig } from './adapter-openai'
+import { OpenAiCompatAdapter, type OpenAiChannelConfig, type TurnAttachment } from './adapter-openai'
 import type { SseTransport } from './transport'
 
 export interface ApprovalGateRequest {
@@ -66,6 +66,8 @@ export interface AgentRuntimeConfig {
   }
   /** 传输实现,缺省动态加载 Tauri WebView 桥;Node 冒烟注入 stub */
   transport?: SseTransport
+  /** 本轮待发附件(Agent 媒体注入;见 adapter-openai TurnAttachment) */
+  getTurnAttachments?: () => readonly TurnAttachment[]
 }
 
 export interface AgentSessionHandle {
@@ -98,8 +100,15 @@ const DEFAULT_PERSONA =
   '- 零信任:调用任何接口/路径/命令前先核实其存在(docs_search/环境快照/read_file),不臆造 API、语法与文件。\n' +
   '- 不确定就标注"可能/推测";信息不足直接回答"信息不足",严禁编造。\n' +
   '- 宁可报错退出,绝不静默跳过:发现问题如实报告,不掩盖。\n' +
-  '- 语言问题(语法/关键字/标准库)先 docs_search 检索本地文档再写代码;环境问题查系统提示词中的环境快照,\n' +
+  '- 语言问题先看系统提示词中的<玄铁语言基础认知>块(基础语法事实基准),细节再 docs_search\n' +
+  '  检索官方文档;严禁按其他语言直觉推演语法(如把 elif 写成「否 若」——玄铁是「抑」)。\n' +
+  '  环境问题查系统提示词中的环境快照,\n' +
   '  禁止用 where/dir/find 全盘探测(环境快照已含编译器/库/工程路径)。\n' +
+  '- 环境可用性与基础语义已由 IDE 自检覆盖(见快照「本地玄铁环境自检」段):直接采用其中事实,\n' +
+  '  禁止写探针/冒烟/前置测试去验证基础行为,也不要用 chcp/echo/findstr 探测环境。\n' +
+  '  不确定的新语法/库用法用 check_code 工具验证(约 0.5 秒,临时文件在 .foundry/ 内自动清理);禁止手写探针/测试文件到工程根(临时文件只许放 .foundry/);\n' +
+  '- 库(渲染/UI/数组/HTTP 等)用法:先 docs_search 检索官方文档;需要精确 API 签名时,\n' +
+  '  直接 read_file 读环境快照「官方库目录」下的库源码(只读放行),不要凭记忆猜测 API。\n' +
   '你具备联网能力:web_search 搜索、web_fetch 打开网页(含 SPA,自动无头渲染)。用户给链接或要查资料时' +
   '主动调用,不要以"我无法浏览网页"为由拒绝。'
 
@@ -120,7 +129,7 @@ export async function createAgentRuntime(config: AgentRuntimeConfig): Promise<Ag
   await ctx.plugin(dsh.AgentRegistry)
   await ctx.plugin(dsh.AgentLoop, { agents: [] })
 
-  ctx.llm.registerAdapter([provider], new OpenAiCompatAdapter(config.channel, transport))
+  ctx.llm.registerAdapter([provider], new OpenAiCompatAdapter(config.channel, transport, config.getTurnAttachments))
   for (const tool of config.tools ?? []) ctx.tools.register(tool)
 
   // 审批 seam:gate 命中的工具在 pre-execute 挂 ask,由我们 provide 的 approval 服务弹窗裁决

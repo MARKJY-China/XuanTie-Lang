@@ -34,6 +34,36 @@ fn docs_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// 玄铁基础认知块缓存路径(app 数据目录 primer.txt;与文档库同级)。
+fn primer_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("取应用数据目录失败: {}", e))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("建应用数据目录失败: {}", e))?;
+    Ok(dir.join("primer.txt"))
+}
+
+/// 读本地缓存的玄铁基础认知块(社区后台版本覆盖后落盘;未缓存返回 None → 前端用内置常量)。
+#[tauri::command]
+pub async fn primer_read(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let path = primer_path(&app)?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(Some(s)),
+        Err(_) => Ok(None),
+    }
+}
+
+/// 写本地缓存(空内容不写——后台清空认知块时保留本地/内置兜底)。
+#[tauri::command]
+pub async fn primer_write(app: tauri::AppHandle, content: String) -> Result<(), String> {
+    if content.trim().is_empty() {
+        return Ok(());
+    }
+    let path = primer_path(&app)?;
+    std::fs::write(&path, content).map_err(|e| format!("写认知块缓存失败: {}", e))
+}
+
 /// 文档目录(供工具白名单与设置展示)
 #[tauri::command]
 pub async fn docs_dir(app: tauri::AppHandle) -> Result<String, String> {
@@ -163,7 +193,7 @@ pub async fn fetch_docs(
     for (d, n) in &subs {
         index.push_str(&format!("- {}/({} 篇,文件名即主题) → {}/\n", d, n, d));
     }
-    index.push_str("\n需要语言特性/关键字/标准库用法时:先用 docs_search 按关键词检索定位,再对命中的文档用 read_file 精读,然后动手写代码。\n");
+    index.push_str("\n需要语言特性/关键字/标准库用法时:先用 docs_search 按关键词检索(返回命中所在章节整块);需要可直接抄的完整代码示例时用 example_search;仍不够再 read_file 精读原文。\n");
     std::fs::write(dir.join("INDEX.md"), &index).map_err(|e| format!("写索引失败: {}", e))?;
     std::fs::write(dir.join(".version"), &version).map_err(|e| format!("写版本标记失败: {}", e))?;
 
@@ -232,43 +262,159 @@ pub async fn docs_search(
     if files.is_empty() {
         return Err("本地尚无玄铁文档(等待启动时自动拉取,或在设置中手动检查更新)".into());
     }
-    let mut hits: Vec<(String, usize, String)> = Vec::new();
+    // 块返回:命中行不再是单行,而是扩展到"所在章节"(向上遇标题停且限 40 行,向下遇标题停
+    // 且限 60 行)——AI 实测反馈:单行命中必然触发第二次 read_file,块返回可砍掉一半往返。
+    let mut blocks: Vec<(String, usize, usize, String)> = Vec::new(); // (文件, 起, 止, 文本)
     let mut files_scanned = 0usize;
-    'outer: for (rel, path) in &files {
+    let per_file_cap = 2usize;
+    let total_chars_cap = 20000usize;
+    let mut total_chars = 0usize;
+    for (rel, path) in &files {
+        if blocks.len() >= max || total_chars >= total_chars_cap {
+            break;
+        }
         let Ok(text) = std::fs::read_to_string(path) else {
             continue;
         };
         files_scanned += 1;
-        let mut per_file = 0usize;
-        for (i, line) in text.lines().enumerate() {
-            if line.to_lowercase().contains(&q_lower) {
-                let snippet: String = line.trim().chars().take(200).collect();
-                hits.push((rel.clone(), i + 1, snippet));
-                per_file += 1;
-                if per_file >= 5 || hits.len() >= max {
-                    break;
+        let lines: Vec<&str> = text.lines().collect();
+        let mut in_file = 0usize;
+        let mut last_end: Option<usize> = None;
+        for (i, line) in lines.iter().enumerate() {
+            if !line.to_lowercase().contains(&q_lower) {
+                continue;
+            }
+            let (start, end) = extract_block(&lines, i);
+            // 与上一块重叠则合并跳过(同一节多个命中只出一次)
+            if let Some(le) = last_end {
+                if start <= le + 1 {
+                    continue;
                 }
             }
-        }
-        if hits.len() >= max {
-            break 'outer;
+            let body: String = lines[start..=end].join("\n");
+            total_chars += body.len();
+            blocks.push((rel.clone(), start + 1, end + 1, body));
+            last_end = Some(end);
+            in_file += 1;
+            if in_file >= per_file_cap || total_chars >= total_chars_cap {
+                break;
+            }
         }
     }
-    if hits.is_empty() {
+    if blocks.is_empty() {
         return Ok(format!(
             "未在玄铁文档中找到「{}」(已扫描 {} 篇)",
             q, files_scanned
         ));
     }
     let mut out = format!(
-        "玄铁文档检索「{}」:命中 {} 条{}。\n",
+        "玄铁文档检索「{}」:{} 个命中章节{}。\n",
         q,
-        hits.len(),
-        if hits.len() >= max { "(已达上限,可换更精确的关键词)" } else { "" }
+        blocks.len(),
+        if blocks.len() >= max || total_chars >= total_chars_cap {
+            "(已达上限,可换更精确的关键词)"
+        } else {
+            ""
+        }
     );
-    for (rel, no, line) in &hits {
-        out.push_str(&format!("- {}:{}\n  {}\n", rel, no, line));
+    for (rel, a, b, body) in &blocks {
+        out.push_str(&format!("── {}:{}-{} ──\n{}\n\n", rel, a, b, body));
     }
-    out.push_str("(用 read_file 打开对应文档阅读完整上下文)");
+    out.push_str("(以上为命中所在章节的完整内容;需要更多用 read_file 打开原文档)");
+    Ok(out)
+}
+
+/// 命中行扩展为所在章节:向上到最近标题(含,限 40 行),向下到下一标题(不含,限 60 行)。
+fn extract_block(lines: &[&str], hit: usize) -> (usize, usize) {
+    let mut start = hit;
+    let mut up = 0;
+    while start > 0 && up < 40 {
+        start -= 1;
+        up += 1;
+        if lines[start].starts_with('#') {
+            break;
+        }
+    }
+    let mut end = hit;
+    let mut down = 0;
+    while end + 1 < lines.len() && down < 60 {
+        end += 1;
+        down += 1;
+        if lines[end].starts_with('#') {
+            end -= 1;
+            break;
+        }
+    }
+    (start, end)
+}
+
+/// 完整代码示例检索:扫描本地文档的 ```xuanti/```xuantie 栅栏块,按关键词命中数排序返回。
+/// (AI 实测反馈:模板是"拷贝-改写器",需要的是完整可跑片段,不是规格行)
+#[tauri::command]
+pub async fn docs_examples(
+    app: tauri::AppHandle,
+    query: String,
+    max_examples: Option<usize>,
+) -> Result<String, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("搜索词不能为空".into());
+    }
+    let dir = docs_root(&app)?;
+    let q_lower = q.to_lowercase();
+    let max = max_examples.unwrap_or(3).clamp(1, 6);
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    collect_md_files(&dir, &dir, &mut files);
+    if files.is_empty() {
+        return Err("本地尚无玄铁文档(等待启动时自动拉取,或在设置中手动检查更新)".into());
+    }
+    // (文件, 起行, 止行, 块文本, 命中数)
+    let mut found: Vec<(String, usize, usize, String, usize)> = Vec::new();
+    for (rel, path) in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let lines: Vec<&str> = text.lines().collect();
+        let mut i = 0usize;
+        while i < lines.len() {
+            let t = lines[i].trim();
+            if t.starts_with("```") {
+                let fence = t.trim_start_matches('`').trim().to_lowercase();
+                let is_xuan = fence.starts_with("xuanti") || fence.starts_with("xuantie");
+                let start = i;
+                let mut j = i + 1;
+                while j < lines.len() && !lines[j].trim().starts_with("```") {
+                    j += 1;
+                }
+                if is_xuan && j < lines.len() {
+                    let body: String = lines[start + 1..j].join("\n");
+                    let score = body.to_lowercase().matches(&q_lower).count();
+                    if score > 0 {
+                        found.push((rel.clone(), start + 2, j + 1, body, score));
+                    }
+                    i = j + 1;
+                    continue;
+                }
+                i = j + 1;
+                continue;
+            }
+            i += 1;
+        }
+    }
+    if found.is_empty() {
+        return Ok(format!("未找到含「{}」的玄铁代码示例(试试更通用的关键词,或改用 docs_search)", q));
+    }
+    found.sort_by(|a, b| b.4.cmp(&a.4));
+    found.truncate(max);
+    let mut out = format!("玄铁代码示例「{}」:{} 段(可直接抄改;来源为本地官方文档)\n", q, found.len());
+    let mut chars = 0usize;
+    for (n, (rel, a, b, body, _)) in found.iter().enumerate() {
+        out.push_str(&format!("── 示例 {} · {}:{}-{} ──\n```xuanti\n{}\n```\n\n", n + 1, rel, a, b, body));
+        chars += body.len();
+        if chars > 12000 {
+            out.push_str("(已截断:示例总量超预算,如需更多请收窄关键词)\n");
+            break;
+        }
+    }
     Ok(out)
 }

@@ -75,19 +75,89 @@
   (xtc/tiepm 路径与版本、官方库目录[标记 `数组\数组.xt`,候选序:xtc 目录/上 1-2 级/工程根]、
   工程顶层 .xt、产物目录);随系统提示词注入。改候选顺序先看这里。
 - **上下文自动压缩**(面板层实现;DSH 的 compaction 包未 vendor):阈值
-  `COMPRESS_AT_TOKENS=90K`(实测 lastInputTokens 优先,字符估算兜底);摘要经当前通道
-  httpStream 收集 text chunk;Agent 模式走 `AgentMode.applyCompression`(摘要→
-  compressionNote[摘要+最近 6 条回放——会话历史不可注入,回放是重建后唯一连续通道],
-  清 instructions 缓存,dropSession → 下次发送重建会话重携全部块)。
+  `compressTriggerTokens()` = 输入上限 − 输出上限 − 8K 余量;输入上限来源:自定义提供商
+  `AiProvider.contextWindow/maxOutput`(设置界面两项,main.ts 表单)→ deps.getModelContext,
+  官方模型由社区后台 ailm_ctx_input/ailm_ctx_output → /api/ai/config 下发(均 0 = 未配置,
+  回落 `COMPRESS_AT_TOKENS=90K`);摘要经当前通道 httpStream 收集 text chunk;Agent 模式走
+  `AgentMode.injectContext`(记录→contextNote,清 instructions 缓存,dropSession →
+  下次发送重建会话重携全部块)。
   引用 chip 的"仅首发"逻辑在 runAgentTurn 的 `firstCarry` 判定(历史中已有携带记录则不渲染)。
+- **流中断恢复**(`adapter-openai.ts`):SSE 无 finish_reason 且未发正文/工具调用 →
+  非流式降级补全(`transport.json`,SseTransport 可选方法;冒烟 stub 不实现则自动回落报错);
+  已发内容绝不拼接(`emittedText`/`emittedToolCall` 闸门——重生成内容与 partial 不可拼)。
+  面板侧:`showStreamError` → `buildErrBubble`(「继续」=把 partial 作引用块合成续写指令);
+  `truncCount ≥ 5` 展示作者联系方式(deps.getSupportContact ← /api/ai/config 的
+  contactName/contactValue)+ 反馈弹窗(复用社区 /api/feedback,kind=bug)。改截断判定
+  关键词(STREAM_TRUNCATED/finish_reason)前先想清楚与 truncCount 计数的联动。
+- **玄铁语言基础认知**:`ide/src/ai/xuantie-primer.ts`(常驻块;事实源 readme + GUIDE 手册
+  01/02/03,改前回查源文件);agent 模式由 `loadInstructions` 注入(环境快照之前);自定义
+  通道简单对话在 runStream 里插 system 消息;官方简单对话由服务端 ai.go `xuanTiePrimer`
+  常量注入(官方端点只允许 user/assistant 角色,客户端插 system 会被 400 拒绝)。两处文本
+  同源,改动需同步,并注意长度(常驻系统提示词,每轮都发)。
+- **环境自检(preflight)**:Rust `preflight.rs` 内嵌探针 `src-tauri/src/preflight_probe.xt`
+  (改自检覆盖面=改探针;**探针语法改动必须先在 temp/ 手工 `xtc tie` + 运行验证一遍**再内嵌);
+  前端 `startPreflight`(openWorkspace 触发,切工程重跑、旧结果丢弃);`runAgentTurn` 开头
+  await `deps.getPreflight` 的未完成态(状态行"正在校验本地玄铁环境");快照注入在
+  buildEnvSnapshot 尾部;黄条 = `showPreflightWarning`(瞬时,不持久化)。
+  可见化:状态栏 `#sb-preflight` 徽标(`setPreflightBadge`:running 橙/ok 绿 5 分钟自动隐藏/
+  fail 红)+ 双击开 `PreflightConsole`(`ui/preflight-console.ts`,CI 式浮层);Rust
+  `run_streaming` 逐行 emit `preflight-progress`(stage/log/done 三型;事件名常量
+  `PROGRESS_EVENT`)——改校验流程时三型事件要同步。
+- **runtime .o 红线**:`build/env/runtime/` 必须保留 xt_runtime/xt_threadpool/xt_net/xt_tls
+  四个预编译 .o(缺失会让每次 `xtc tie` 现场编 C,实测 +7s);发行由 make_pkg.sh 生成同名 .o。
+  重建 env 后补:
+  `clang -target x86_64-w64-windows-gnu -O2 -c runtime/<f>.c -o build/env/runtime/<f>.o`。
+- **诊断导出纪律**:log-bus 分池(warnPool 保底 200 条,永不被 debug 挤出;dbgPool 折叠
+  导出)——新增高频日志前先想"它会不会淹掉 warn"(实测:逐块 SSE 日志 0.26s 灌满旧单池);
+  transport 逐块日志只允许抽样(`nSse % 100`);静默监控双处:transport(30s 无数据 → warn)、
+  面板状态行(20s 无增量 → "数据流静默 Ns")。
+- **Harness 反馈落地(2026-10-04)**:环境卡含「编译与运行命令/可写禁区」;快照前缀必须
+  字节稳定(勿加易变项:文件清单/耗时/时间戳——前缀一变即击穿提示词缓存);docs_search
+  块返回(`extract_block`:上 40 行遇 # 停、下 60 行遇 # 停);example_search(文档 ```xuanti
+  代码块);check_code(`.foundry/` 临时文件 + `xtc tie -jc`≈0.5s,自动删除)与 write_file
+  落盘 .xt 后自动 -jc;primer 含「常见错写对照表」。新增提示词内容先问"稳定前缀还是任务
+  相关"——任务相关的勿塞系统提示词(候选方案:随用户消息尾部注入,吃缓存不变)。
+- **流中断诊断链**:Rust http_stream(EOF 判定 + stat 事件)→ transport(warn/stat 记日志)
+  → adapter(STREAM_TRUNCATED 带块数)→ 面板「复制诊断」(log-bus `exportLogText`)。
+  日志总线 warn/error 不受 devMode 开关限制(环形 history 缓冲,导出用)。**社区代理侧红线**:
+  `aiUpstreamClient` 绝不能设 `Client.Timeout`——总超时会切断长 SSE 流(2026-10-04 实测
+  根因:官方通道 180s 处必断,"思考完/准备继续"时高发)。
+- **流式超时红线**:`http_stream` 绝不设 reqwest 总超时(`.timeout`)——长思考/大输出的正常
+  长流会被拦腰切断(实测"后台跑长任务流中断高发");只用 `connect_timeout` + `read_timeout`
+  (空闲才判死)。改 http.rs 流式路径前先想清楚这一点。非流式 http_json 的总超时不受此限。
+- **会话实时保存**:`persistLive`(500ms 节流,直播快照= msgs + 进行中临时消息)在
+  思考段关闭/工具终态触发;`liveTurnMsg`/`liveStreamMsg` 组装临时消息。turn 结束仍全量保存。
+- **工具预卡**:`onToolStreamDelta`(agent-mode 透传 tool-call-delta)> 面板 pendingCards
+  准备中卡;正式 onToolCall 按 callId 退场;`peekArg` 宽松正则从半截 JSON 抽 path/command;
+  turn 收尾清残留。改工具卡流程时注意预卡与分组逻辑(runTools/activeGroup)互不干扰。
+- **引用 chips 五类**:`ChatRef{kind: code|terminal|build|problem|path}`;发送时的引用块措辞在
+  `AiChatPanel.refBlock`。终端/构建浮层 = main.ts `attachSelectionAdder`(xterm getSelection
+  在 mouseup 时捕获);问题/文件树走右键菜单 + 双击。新来源接入只动 refBlock/chip 文案分支。
+- **AI 文件访问三态**:`settings.ai.fsAccess`(deny/ask/allow)→ tools.ts 异步 `resolvePath`
+  (根内直通/越界按策略)→ ask 走面板审批卡(`kindLabel='访问工作区外'`,拒绝与关面板
+  fail-closed)。append 在审批 gate 之前;write_file 根内仍限工程根。
+- **认知块文档同步**:后台 `ailm_primer` → 公开端点 `/api/ai/primer` → IDE 启动
+  `refreshAiPrimer` 覆盖 app 数据目录 `primer.txt`(Rust `primer_read/primer_write`);
+  注入优先级:本地缓存(后台版本)→ 内置常量(`xuantie-primer.ts`);官方简单对话服务端拼
+  `ailm_primer`(留空用内置常量)。改认知内容先改内置常量、再由后台覆盖。
+- **/compact 命令**:`send()` 精确匹配 `/compact`|`/压缩` → `manualCompact`(notice 消息 +
+  force 压缩,保留窗口 2 条);notice 消息不进摘要源与历史回放(过滤在 maybeCompress/
+  agentHistoryReplay)。
+- **只读白名单三根**:allowedRoots = [workspace, docsDir?, libDir?];libDir 来自面板
+  `buildEnvSnapshot` 探测结果缓存(`detectedLibDir`)经 deps.getLibDir 注入;
+  write_file 仍仅限 workspace。漏传根会让 AI 读文档/库源码全部越界(实测踩到两次)。
 
 ## 智器对话交互工程事实
 
 - **默认值**:联网搜索与 Agent 模式默认开启;修改时同步 `syncWebBtn`/`syncAgentBtn`(构造期刷 UI)。
 - **busy 唯一入口 `setBusy()`**:同步发送按钮红色终止态(primitive-square 图标),新增 busy 赋值禁止裸改字段。
-- **回退/重生成 × Agent 残留**:DSH 会话历史不可注入(facade 未导出 fork;buildForkSeed 在 dsh-session 中
-  但未暴露),回退时以 `AgentMode.dropSession()` 丢弃会话(同步清引用+configKey,异步 dispose),
-  下次发送全新重建——与"重启后 Agent 上下文从零"的产品行为一致。改回退逻辑前先想清楚这一点。
+- **会话重建必须注入历史(回退/重生成/换模型/压缩共用)**:DSH 会话历史不可注入(facade 未导出
+  fork),回退/重生成/换模型档位/压缩一律走 `AgentMode.injectContext(note)` 重建会话;
+  note = 压缩摘要(`agentContextExtra`)+ 历史回放(`agentHistoryReplay`:单条 1200 字截断、
+  总量 16K 受限、头部保最早 2 条、排除即将发送的末条用户消息)。`ensureSession` 在无显式
+  记录时还会向面板兜底取回放(deps.getHistoryReplay → replayExcludingPending),覆盖 key
+  变更/重启恢复等全部重建路径。**漏注入 = 模型"这是会话第一条消息"式失忆(实测反馈)**;
+  改重建路径前先想清楚这一点。
 - **工程指令**:`project_instructions`(Rust,工程根同层,不区分大小写,100KB 上限)→
   `AgentMode.loadInstructions()` 缓存一次 → runtime `projectInstructions` 拼在 persona 之后;
   面板在 runAgentTurn 里于思考段之前渲染 `.ai-instr-ref` chip。

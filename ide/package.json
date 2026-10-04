@@ -1,7 +1,7 @@
 {
   "name": "xuantie-foundry",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "玄铁铸造厂 —— 玄铁语言 IDE(v0.2:Tauri 2 壳 + Monaco + xt_lsp + xterm)",
   "scripts": {
     "dev": "vite",

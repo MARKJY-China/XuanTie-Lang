@@ -18,6 +18,17 @@ import type {
 import type { SseTransport } from './transport'
 import { aiLog, truncatePayload } from '../log-bus'
 
+/** 本轮待发附件(面板经 runtime 注入 adapter):Agent 模式下 DSH 的 send 只收文本、
+ *  附件服务未 vendor——图片/视频由 adapter 在组装 OpenAI 请求时直接注入最后一条 user 消息
+ *  (与简单对话同一多模态格式;仅作用于本轮,不落 DSH 会话历史)。 */
+export interface TurnAttachment {
+  kind: 'image' | 'video'
+  mime: string
+  /** data URL(base64) */
+  dataUrl: string
+  name: string
+}
+
 /** 通道配置:完整端点 + 凭据,由 officialChannel/customChannel 构造(逻辑参照 aichat.ts)。 */
 export interface OpenAiChannelConfig {
   /** 完整 chat completions URL */
@@ -107,10 +118,32 @@ function translateMessage(message: RequestMessage): OpenAiMessage | undefined {
   }
 }
 
-function translateRequest(options: GenerateOptions): Record<string, unknown> {
+function translateRequest(options: GenerateOptions, attachments: readonly TurnAttachment[] = []): Record<string, unknown> {
   const messages: OpenAiMessage[] = []
   if (options.system) messages.push({ role: 'system', content: options.system })
-  for (const m of options.messages) {
+  // 最后一条 user 消息(附件注入目标)
+  let lastUser = -1
+  for (let i = 0; i < options.messages.length; i++) {
+    if (options.messages[i]?.role === 'user') lastUser = i
+  }
+  for (let i = 0; i < options.messages.length; i++) {
+    const m = options.messages[i] as (typeof options.messages)[number]
+    if (i === lastUser && attachments.length > 0) {
+      // 多模态数组格式(与简单对话一致):文本 + image_url/video_url(data URL 直发)
+      const text = blocksToText(m.content, 'user 消息')
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text },
+          ...attachments.map((a) =>
+            a.kind === 'image'
+              ? { type: 'image_url', image_url: { url: a.dataUrl } }
+              : { type: 'video_url', video_url: { url: a.dataUrl } },
+          ),
+        ],
+      })
+      continue
+    }
     const translated = translateMessage(m)
     if (translated) messages.push(translated)
   }
@@ -179,6 +212,36 @@ interface OpenAiChunk {
   } | null
 }
 
+type UsageChunk = Extract<StreamChunk, { type: 'usage' }>['usage']
+
+/** OpenAI usage → DSH usage 帧(流式 chunk 与非流式响应共用;缓存字段解析)。 */
+function mapUsage(u: NonNullable<OpenAiChunk['usage']>): UsageChunk {
+  // 缓存读取:DeepSeek prompt_cache_hit_tokens 优先,回落 OpenAI details.cached_tokens
+  const cacheRead = u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens
+  return {
+    inputTokens: u.prompt_tokens ?? 0,
+    outputTokens: u.completion_tokens ?? 0,
+    ...(typeof u.total_tokens === 'number' ? { totalTokens: u.total_tokens } : {}),
+    ...(typeof u.completion_tokens_details?.reasoning_tokens === 'number'
+      ? { reasoningTokens: u.completion_tokens_details.reasoning_tokens }
+      : {}),
+    ...(typeof cacheRead === 'number' ? { cacheReadTokens: cacheRead } : {}),
+    ...(typeof u.prompt_cache_miss_tokens === 'number' ? { cacheMissTokens: u.prompt_cache_miss_tokens } : {}),
+  }
+}
+
+/** 非流式响应形状(截断恢复用;字段名以 OpenAI 兼容线格式为准)。 */
+interface OpenAiFullResponse {
+  choices?: {
+    message?: {
+      content?: string | null
+      tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[]
+    }
+    finish_reason?: string | null
+  }[]
+  usage?: OpenAiChunk['usage']
+}
+
 interface ToolCallAssembly {
   blockIndex: number
   id: string
@@ -190,6 +253,8 @@ export class OpenAiCompatAdapter extends LlmAdapter {
   constructor(
     private readonly channel: OpenAiChannelConfig,
     private readonly transport: SseTransport,
+    /** 本轮待发附件(面板提供;turn 内所有请求都带,含截断恢复的重发) */
+    private readonly getAttachments?: () => readonly TurnAttachment[],
   ) {
     super()
   }
@@ -210,7 +275,11 @@ export class OpenAiCompatAdapter extends LlmAdapter {
   }
 
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
-    const body = translateRequest(options)
+    const attachments = this.getAttachments?.() ?? []
+    const body = translateRequest(options, attachments)
+    if (attachments.length > 0) {
+      aiLog('info', 'adapter', `本轮附件注入: ${attachments.map((a) => `${a.kind}:${a.name}`).join('、')}(最后一条 user 消息)`)
+    }
     aiLog('debug', 'adapter', `请求 ${this.channel.url} model=${options.model}`, truncatePayload(JSON.stringify(body)))
 
     // 块装配状态:text/reasoning 共享一个"当前打开块",tool-call 按 OpenAI tc.index 各占一块
@@ -220,6 +289,10 @@ export class OpenAiCompatAdapter extends LlmAdapter {
     let nextIndex = 0
     const toolCalls = new Map<number, ToolCallAssembly>()
     let finishReason: FinishReason | undefined
+    // 截断恢复准入:已发出正文/工具调用则不许补全(会造成重复拼接),只有 reasoning 允许重来
+    let emittedText = false
+    let emittedToolCall = false
+    let nChunks = 0 // 诊断:收到的有效 chunk 数(截断日志用)
 
     const closeTextBlock = (): StreamChunk | undefined => {
       if (openIndex < 0) return undefined
@@ -248,8 +321,9 @@ export class OpenAiCompatAdapter extends LlmAdapter {
           aiLog('warn', 'adapter', `SSE 载荷非 JSON,跳过: ${String(parseErr)}`, truncatePayload(payload, 512, 128))
           continue // 非 JSON 载荷(注释行/心跳)跳过
         }
-        // chunk 类型摘要(debug:字段级,不含正文)
-        aiLog('debug', 'adapter', `chunk: keys=[${Object.keys(chunk).join(',')}] delta_keys=[${Object.keys(chunk.choices?.[0]?.delta ?? {}).join(',')}]${chunk.choices?.[0]?.finish_reason ? ` finish=${chunk.choices[0].finish_reason}` : ''}`)
+        nChunks++
+        // 注:逐块 chunk 摘要曾以每秒上千条灌满诊断缓冲(实测),已删除;
+        // 需要协议级排查时看 transport 的首块抽样(含原始载荷)
         const choice = chunk.choices?.[0]
         const delta = choice?.delta
         if (delta) {
@@ -278,6 +352,7 @@ export class OpenAiCompatAdapter extends LlmAdapter {
               yield { type: 'block-start', index: openIndex, blockType: 'text' }
             }
             openText += content
+            emittedText = true
             yield { type: 'text-delta', index: openIndex, text: content }
           }
           for (const tc of delta.tool_calls ?? []) {
@@ -296,6 +371,7 @@ export class OpenAiCompatAdapter extends LlmAdapter {
             if (nameDelta) state.name += nameDelta
             if (argsDelta) state.arguments += argsDelta
             if (nameDelta || argsDelta) {
+              emittedToolCall = true
               yield {
                 type: 'tool-call-delta',
                 index: state.blockIndex,
@@ -307,24 +383,7 @@ export class OpenAiCompatAdapter extends LlmAdapter {
           }
         }
         if (chunk.usage) {
-          const u = chunk.usage
-          // 缓存读取:DeepSeek prompt_cache_hit_tokens 优先,回落 OpenAI details.cached_tokens
-          const cacheRead = u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens
-          yield {
-            type: 'usage',
-            usage: {
-              inputTokens: u.prompt_tokens ?? 0,
-              outputTokens: u.completion_tokens ?? 0,
-              ...(typeof u.total_tokens === 'number' ? { totalTokens: u.total_tokens } : {}),
-              ...(typeof u.completion_tokens_details?.reasoning_tokens === 'number'
-                ? { reasoningTokens: u.completion_tokens_details.reasoning_tokens }
-                : {}),
-              ...(typeof cacheRead === 'number' ? { cacheReadTokens: cacheRead } : {}),
-              ...(typeof u.prompt_cache_miss_tokens === 'number'
-                ? { cacheMissTokens: u.prompt_cache_miss_tokens }
-                : {}),
-            },
-          }
+          yield { type: 'usage', usage: mapUsage(chunk.usage) }
         }
         const fr = choice?.finish_reason
         if (fr) finishReason = mapFinishReason(fr)
@@ -340,8 +399,38 @@ export class OpenAiCompatAdapter extends LlmAdapter {
           block: { type: 'tool-call', id: ToolCallId(state.id), name: state.name, arguments: state.arguments },
         }
       }
+      // 流被截断(无 finish_reason)且尚未发出正文/工具调用 → 降级非流式补全:
+      // 同请求 stream:false 重取完整结果,补发为等价流事件,上层无感继续(仅多付一次生成费用)。
+      // 已发正文/工具调用时不做补全(重生成内容不可拼接),按截断错误上抛,由 UI 提供「继续」。
+      if (!finishReason && !emittedText && !emittedToolCall && options.signal?.aborted !== true) {
+        const recovered = await this.recoverNonStream(body)
+        if (recovered) {
+          if (recovered.content) {
+            const idx = nextIndex++
+            yield { type: 'block-start', index: idx, blockType: 'text' }
+            yield { type: 'text-delta', index: idx, text: recovered.content }
+            yield { type: 'block-end', index: idx, block: { type: 'text', text: recovered.content } }
+          }
+          for (const tc of recovered.toolCalls) {
+            const idx = nextIndex++
+            yield { type: 'block-start', index: idx, blockType: 'tool-call' }
+            yield { type: 'tool-call-delta', index: idx, id: ToolCallId(tc.id), name: tc.name, argumentsDelta: tc.arguments }
+            yield { type: 'block-end', index: idx, block: { type: 'tool-call', id: ToolCallId(tc.id), name: tc.name, arguments: tc.arguments } }
+          }
+          if (recovered.usage) yield { type: 'usage', usage: recovered.usage }
+          finishReason = recovered.finishReason
+          aiLog('info', 'adapter', `STREAM_TRUNCATED → 非流式补全成功(${recovered.content.length} 字符正文/${recovered.toolCalls.length} 个工具调用,finish=${finishReason.kind})`)
+        } else {
+          aiLog('warn', 'adapter', 'STREAM_TRUNCATED → 非流式补全未成功,按错误上抛')
+        }
+      }
       if (!finishReason) {
-        aiLog('warn', 'adapter', 'SSE 流结束但未收到 finish_reason(STREAM_TRUNCATED)', undefined)
+        aiLog(
+          'warn',
+          'adapter',
+          `SSE 流结束但未收到 finish_reason(STREAM_TRUNCATED):已收 ${nChunks} 块,正文${emittedText ? '有' : '无'},工具调用${emittedToolCall ? '有' : '无'}`,
+          undefined,
+        )
       }
       aiLog('info', 'adapter', `finish: ${finishReason?.kind ?? 'error(STREAM_TRUNCATED)'}`)
       yield {
@@ -367,6 +456,54 @@ export class OpenAiCompatAdapter extends LlmAdapter {
           },
         },
       }
+    }
+  }
+
+  /**
+   * 截断恢复:同一请求改 stream:false 重取完整结果(官方通道服务端支持非流式透传)。
+   * 传输/协议失败或响应为空 → 返回 undefined,调用方按原截断报错。
+   */
+  private async recoverNonStream(streamBody: Record<string, unknown>): Promise<
+    | {
+      content: string
+      toolCalls: { id: string; name: string; arguments: string }[]
+      usage?: UsageChunk
+      finishReason: FinishReason
+    }
+    | undefined
+  > {
+    if (!this.transport.json) return undefined
+    const body: Record<string, unknown> = { ...streamBody, stream: false }
+    delete body.stream_options
+    let raw: unknown
+    try {
+      raw = await this.transport.json({
+        url: this.channel.url,
+        body,
+        cookie: this.channel.cookie,
+        auth: this.channel.auth,
+      })
+    } catch (error) {
+      aiLog('warn', 'adapter', `截断恢复:非流式请求失败: ${error instanceof Error ? error.message : String(error)}`)
+      return undefined
+    }
+    const parsed = raw as OpenAiFullResponse
+    const choice = parsed.choices?.[0]
+    const message = choice?.message
+    if (!message) return undefined
+    const content = typeof message.content === 'string' ? message.content : ''
+    const toolCalls = (message.tool_calls ?? []).map((t) => ({
+      id: t.id ?? '',
+      name: t.function?.name ?? '',
+      arguments: t.function?.arguments ?? '',
+    }))
+    if (content === '' && toolCalls.length === 0) return undefined
+    return {
+      content,
+      toolCalls,
+      ...(parsed.usage ? { usage: mapUsage(parsed.usage) } : {}),
+      // 非流式兜底:完成帧缺失时按 stop(完整 message 已拿到,不再当截断)
+      finishReason: mapFinishReason(choice?.finish_reason ?? 'stop'),
     }
   }
 }

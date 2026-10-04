@@ -15,6 +15,8 @@ export interface ApprovalPrompt {
   detail: string
   /** run_command 时显示「批准并加入白名单」 */
   showWhitelist?: boolean
+  /** 卡片右上角类型标签;缺省按工具名推断(run_command=执行命令,其余=写入文件) */
+  kindLabel?: string
   /** 中止信号(turn 取消/关面板时撤下该问,按 deny 结算) */
   signal?: AbortSignal
 }
@@ -50,7 +52,7 @@ export class ApprovalLane {
       title.textContent = '操作审批'
       const kind = document.createElement('span')
       kind.className = 'ai-appr-kind'
-      kind.textContent = prompt.toolName === 'run_command' ? '执行命令' : '写入文件'
+      kind.textContent = prompt.kindLabel ?? (prompt.toolName === 'run_command' ? '执行命令' : '写入文件')
       head.append(icon, title, kind)
 
       const summary = document.createElement('div')

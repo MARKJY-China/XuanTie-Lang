@@ -40,17 +40,26 @@ import { copyText, dirname } from '../util';
 import { getSettings, resolveTiepm, resolveXtc } from '../settings';
 import type { AccountState, AiProvider } from '../types';
 import type { AgentMode, AgentTurnUI, ToolCardStatus, AgentApprovalMode } from './dsh/agent-mode';
+import type { TurnAttachment } from './dsh/adapter-openai';
 import { ApprovalLane } from './dsh/approval';
 import { formatToolArgs } from './dsh/tools';
 import { SmoothTyper } from './smooth-typer';
 import { ActivityTracker, fmtDur } from './activity';
 import { TurnParts, type TurnPart, type ToolRecord } from './turn-parts';
-import { aiLog } from './log-bus';
+import { aiLog, exportLogText } from './log-bus';
+import { XUANTIE_PRIMER } from './xuantie-primer';
 
 export type { TurnPart, ToolRecord };
 export type MsgPart = TurnPart;
 
 export type AiTarget = { kind: 'official' } | { kind: 'custom'; provider: AiProvider };
+
+/** 玄铁环境自检:打开工程后台运行;结果注入环境快照(免 AI 自写冒烟/探针测试) */
+export interface PreflightState {
+  running: boolean;
+  promise: Promise<void>;
+  result: { ok: boolean; items: { key: string; value: string }[]; detail: string; ms: number } | null;
+}
 
 export interface AiChatDeps {
   listTargets(): { id: string; label: string }[];
@@ -63,6 +72,18 @@ export interface AiChatDeps {
   getAccount(): AccountState;
   /** 官方模型媒体能力(来自服务端 /api/ai/config;未连服务端时缺省 false) */
   getOfficialMediaCaps(): { vision: boolean; video: boolean };
+  /** 当前模型上下文配置(压缩阈值依据;0 = 未配置,回落到默认阈值) */
+  getModelContext(): { input: number; output: number };
+  /** 作者联系方式(社区后台 ailm_contact_* 经 /api/ai/config 下发;未配置时为空串) */
+  getSupportContact(): { name: string; value: string };
+  /** 玄铁基础认知块:本地缓存优先(后台版本),无则内置;未实现时用内置常量 */
+  getPrimer?(): Promise<string>;
+  /** 工程外访问策略(设置项「允许AI访问工程目录外的文件」;缺省 deny) */
+  getFsAccess?(): 'deny' | 'ask' | 'allow';
+  /** xtc 路径(校验工具用) */
+  getXtcPath?(): Promise<string | null>;
+  /** 玄铁环境自检状态(打开工程后台运行;轮次开始若未完,状态行先显示"正在校验本地玄铁环境") */
+  getPreflight?(): PreflightState | null;
   /** 在编辑器打开文件(工具卡片点击标题;相对路径由 main 侧对工程根解析) */
   openFileInEditor(path: string): void;
   // 当前会话 ID(服务端归档键,工程区内唯一)
@@ -126,6 +147,24 @@ export interface ChatMsg {
   attachments?: AttachMeta[];
   /** 上下文自动压缩生成的摘要消息(渲染为压缩提示+折叠摘要,不作为普通回答) */
   compressed?: boolean;
+  /** 系统提示行(如 /compact 的「上下文正在压缩…」;渲染为居中分割提示,非对话内容) */
+  notice?: boolean;
+  /** 流中断/传输错误消息(随会话持久化:重启后仍可见、仍可「继续」) */
+  error?: boolean;
+  /** 「继续」所需的已收部分内容(截断存储) */
+  errPartial?: string;
+  /** 是否附作者联系方式与反馈入口(直播时按会话中断计数决定并随消息持久化) */
+  errFeedback?: boolean;
+}
+
+/** 引用 chip 类型:编辑器代码 / 终端输出 / 构建输出 / 问题项 / 工程内路径 */
+export interface ChatRef {
+  kind: 'code' | 'terminal' | 'build' | 'problem' | 'path';
+  /** code: 文件路径;path: 文件/目录路径;其余为来源标签(终端输出/构建输出/问题项) */
+  path: string;
+  startLine?: number;
+  endLine?: number;
+  text: string;
 }
 
 const THINK_LABEL: Record<string, string> = {
@@ -524,6 +563,8 @@ export class AiChatPanel {
   clear(): void {
     this.disposeAgent();
     this.clearRefs();
+    this.truncCount = 0; // 新会话:流中断计数归零
+    this.agentContextExtra = ''; // 新会话:压缩摘要留存清空
     this.msgs = [];
     this.renderAll();
   }
@@ -531,6 +572,7 @@ export class AiChatPanel {
   setMessages(msgs: ChatMsg[]): void {
     // 保留 thinking/parts 富字段:历史会话恢复时思考段与工具卡现场必须完整重现
     // (旧会话无这些字段时按纯文本渲染,向后兼容)。
+    this.truncCount = 0; // 历史恢复:流中断计数按新会话起算
     this.msgs = msgs.map((m) => ({
       role: m.role,
       content: m.content,
@@ -542,6 +584,10 @@ export class AiChatPanel {
       ...(m.docsCount && m.docsCount > 0 ? { docsCount: m.docsCount } : {}),
       ...(m.attachments && m.attachments.length > 0 ? { attachments: m.attachments } : {}),
       ...(m.compressed ? { compressed: true } : {}),
+      ...(m.notice ? { notice: true } : {}),
+      ...(m.error ? { error: true } : {}),
+      ...(m.errPartial ? { errPartial: m.errPartial } : {}),
+      ...(m.errFeedback ? { errFeedback: true } : {}),
     }));
     this.renderAll();
   }
@@ -571,6 +617,22 @@ export class AiChatPanel {
     wrap.className = 'ai-wrap' + (m.role === 'user' ? ' user' : '');
 
     wrap.dataset.idx = String(index);
+    // 系统提示行(/compact 等):居中分割提示,不是对话内容
+    if (m.notice) {
+      wrap.classList.add('notice');
+      const div = document.createElement('div');
+      div.className = 'ai-notice';
+      const ic = document.createElement('i');
+      ic.className = 'codicon codicon-collapse-all';
+      div.append(ic, document.createTextNode(m.content));
+      wrap.appendChild(div);
+      return wrap;
+    }
+    // 错误消息(流中断/传输错误):重建带操作栏的气泡(直播与历史恢复共用)
+    if (m.error) {
+      wrap.appendChild(this.buildErrEl(m));
+      return wrap;
+    }
     // 思考:有 think 段的消息在 parts 里原位渲染;否则回落顶部单块(简单对话/老数据)
     const hasThinkPart = m.parts?.some((p) => p.kind === 'think') === true;
     if (m.instrNames && m.instrNames.length > 0) {
@@ -814,8 +876,10 @@ export class AiChatPanel {
     // Agent 模式:被回退的消息仍在 DSH 会话上下文里 —— 必须同步丢弃会话,否则"回退"只是
     // 界面假象(下次发送模型仍看得到被回退的内容)。dropSession 内部先同步清引用再异步销毁。
     if (this.agentModeOn && this.agentCtl) {
-      void this.agentCtl.dropSession().catch((err: unknown) => {
-        aiLog('warn', 'aichat', `回退时丢弃 Agent 会话失败: ${String(err)}`);
+      // 回退触发会话重建:必须把回退点之前的历史作为回放注入,否则下次发送模型失忆
+      const replay = this.replayExcludingPending();
+      void this.agentCtl.injectContext(this.composeAgentNote(replay)).catch((err: unknown) => {
+        aiLog('warn', 'aichat', `回退时重建 Agent 会话失败: ${String(err)}`);
       });
     }
     if (this.msgs.length > 0) this.deps.onConversationChange(this.richMessages());
@@ -840,7 +904,10 @@ export class AiChatPanel {
         return;
       }
       void (async () => {
-        if (this.agentCtl) await this.agentCtl.dropSession();
+        // 重建会话必须带回放(排除最后一条=即将重发的用户消息,避免与本次 user 消息重复),
+        // 否则新会话里模型只见一条孤立消息(实测:重新生成后回复"这是会话的第一条消息")
+        const replay = this.replayExcludingPending();
+        if (this.agentCtl) await this.agentCtl.injectContext(this.composeAgentNote(replay));
         await this.runAgentTurn().finally(() => this.setBusy(false));
       })().catch((err: unknown) => {
         this.addBubble('err', `重新生成失败: ${String(err)}`);
@@ -898,9 +965,8 @@ export class AiChatPanel {
     if (this.attachments.length === 0) return null;
     const hasImg = this.attachments.some((a) => a.kind === 'image');
     const hasVid = this.attachments.some((a) => a.kind === 'video');
-    if (this.agentModeOn) {
-      return 'Agent 模式暂不支持图片/视频输入:请关闭 Agent 开关后用简单对话发送,或移除附件';
-    }
+    // Agent 模式同样支持媒体:附件经 adapter 注入最后一条 user 消息(见 TurnAttachment);
+    // 能力检查对两种模式一致(官方=后台开关,自定义=提供商自报)
     const t = this.deps.getTarget();
     if (t.kind === 'official') {
       const caps = this.deps.getOfficialMediaCaps();
@@ -917,7 +983,15 @@ export class AiChatPanel {
 
   async send(): Promise<void> {
     if (this.busy) return;
-    const body = this.els.input.value.trim();
+    const raw = this.els.input.value.trim();
+    // 斜杠命令:/compact 与 /压缩 手动触发上下文压缩(不进对话、不发送给 AI)
+    if (raw === '/compact' || raw === '/压缩') {
+      this.els.input.value = '';
+      this.autoresize();
+      void this.manualCompact();
+      return;
+    }
+    const body = raw;
     if (!body && this.refs.length === 0 && this.attachments.length === 0) return;
     // 媒体能力检查:不通过则保留附件与输入,明确报错(不静默丢弃、不半发)
     const capErr = this.checkMediaCapability();
@@ -987,21 +1061,22 @@ export class AiChatPanel {
       return;
     }
     if (this.agentModeOn) {
-      // 媒体已被 checkMediaCapability 拦截;此处理论不可达,保留防御
-      if (atts.length > 0) {
-        this.addBubble('err', 'Agent 模式暂不支持媒体输入');
-        return;
-      }
       if (!this.deps.getWorkspace()) {
         this.addBubble('err', 'Agent 模式需要先打开工程文件夹(工具桥以工程根为作用域)');
         return;
       }
+      // 本轮附件:交给 adapter 注入最后一条 user 消息(DSH 会话历史仍只存文本);
+      // turn 结束清空——同 turn 内所有请求(含截断恢复的重发)都带
+      this.pendingTurnMedia = atts.map((a) => ({ kind: a.kind, mime: a.mime, dataUrl: a.dataUrl, name: a.name }));
       await this.maybeCompress();
-      this.msgs.push({ role: 'user', content: text });
-      this.els.msgs.appendChild(this.buildWrap({ role: 'user', content: text }, this.msgs.length - 1));
+      const metas = AiChatPanel.toAttachMetas(atts);
+      const userMsg: ChatMsg = { role: 'user', content: text, ...(metas.length > 0 ? { attachments: metas } : {}) };
+      this.msgs.push(userMsg);
+      this.els.msgs.appendChild(this.buildWrap(userMsg, this.msgs.length - 1));
       this.els.msgs.scrollTop = this.els.msgs.scrollHeight;
-      // finally 兜底复位 busy:turn 内任何悬挂/异常都不许把发送闸卡死
+      // finally 兜底复位 busy:turn 内任何悬挂/异常都不许把发送闸卡死;一并清空本轮媒体
       void this.runAgentTurn().finally(() => {
+        this.pendingTurnMedia = [];
         this.setBusy(false);
       });
       return;
@@ -1019,8 +1094,11 @@ export class AiChatPanel {
     void this.runStream(atts);
   }
 
-  // ---- 选中代码引用(「添加到对话」的 chip;发送时拼为引用块,仅内存不持久化) ----
-  private refs: SelectionRef[] = [];
+  // ---- 本轮待发附件(Agent 媒体注入;turn 结束清空,不随历史持久化) ----
+  private pendingTurnMedia: TurnAttachment[] = [];
+
+  // ---- 引用 chip(编辑器代码 / 终端输出 / 构建输出 / 问题项 / 文件路径;仅内存不持久化) ----
+  private refs: ChatRef[] = [];
 
   // ---- 附件(图片/视频;kimiCode 式:输入区上方卡片 + 编号徽章,N 供文本提及) ----
   private attachments: Attachment[] = [];
@@ -1083,9 +1161,70 @@ export class AiChatPanel {
     this.els.statCtx.textContent = `上下文 ≈ ${AiChatPanel.fmtTok(u.lastInputTokens)} tok`;
   }
 
+  // ---- 流中断(SSE 截断)恢复:继续按钮 + 联系作者/反馈 ----
+  /** 本会话流中断计数(达阈值展示作者联系方式与反馈入口) */
+  private truncCount = 0;
+  /** 达到该次数后展示作者联系方式与「反馈」入口(用户要求:5 次) */
+  private static readonly TRUNC_FEEDBACK_AT = 5;
+  /** 环境快照探测到的官方库根(只读白名单;空串 = 未探测到) */
+  private detectedLibDir = '';
+  /** 上下文压缩摘要留存(会话重建时与新回放组合注入;新会话清空) */
+  private agentContextExtra = '';
+
+  // ---- 会话实时持久化:思考完/工具完即保存一次(此前只在整轮结束才落盘) ----
+  private lastPersistAt = 0;
+
+  /** 按节流把「当前直播内容」并入持久化快照:思考段结束/工具终态触发;
+   *  turn 结束仍走原有全量保存。live 为直播中的临时 assistant 消息(可空)。 */
+  private persistLive(live: ChatMsg | null): void {
+    const nowTs = Date.now();
+    if (nowTs - this.lastPersistAt < 500) return;
+    this.lastPersistAt = nowTs;
+    const base = this.richMessages();
+    this.deps.onConversationChange(live ? [...base, live] : base);
+  }
+
+  /** 直播中的 Agent turn → 临时 assistant 消息(实时快照用);无内容返回 null。 */
+  private liveTurnMsg(): ChatMsg | null {
+    const tp = this.liveParts;
+    if (!tp) return null;
+    const parts = tp.getParts();
+    const content = tp.contentText();
+    const thinking = tp.thinkingText();
+    if (!content && parts.length === 0 && !thinking) return null;
+    return {
+      role: 'assistant',
+      content,
+      ...(thinking ? { thinking } : {}),
+      ...(parts.length > 0 ? { parts } : {}),
+    };
+  }
+
+  /** 简单对话直播 → 临时 assistant 消息(思考折叠/进行中落盘用)。 */
+  private liveStreamMsg(content: string, thinking: string): ChatMsg | null {
+    if (!content && !thinking) return null;
+    return { role: 'assistant', content, ...(thinking ? { thinking } : {}) };
+  }
+
   // ---- 上下文自动压缩(面板层):接近模型窗口时把早前历史压成摘要 ----
+  /** 未配置模型上下文时的默认触发阈值 */
   private static readonly COMPRESS_AT_TOKENS = 90000;
+  /** 模型未配输出上限时的输出预留 */
+  private static readonly DEFAULT_OUTPUT_TOKENS = 8192;
+  /** 压缩请求自身与系统块的机动余量 */
+  private static readonly COMPRESS_RESERVE_TOKENS = 8192;
   private compressing = false;
+
+  /** 压缩触发阈值 = 输入上限 − 输出预留 − 机动余量;未配置输入上限时回落默认 90K。
+   *  留余量是为了让压缩请求(输入 ≈ 当前上下文)与后续回复输出都顶不爆模型窗口。 */
+  private compressTriggerTokens(): number {
+    const cap = this.deps.getModelContext();
+    if (cap.input > 0) {
+      const out = cap.output > 0 ? cap.output : AiChatPanel.DEFAULT_OUTPUT_TOKENS;
+      return Math.max(cap.input - out - AiChatPanel.COMPRESS_RESERVE_TOKENS, 4096);
+    }
+    return AiChatPanel.COMPRESS_AT_TOKENS;
+  }
 
   /** 上下文粗估(token):中文为主 ~0.7 tok/字符;仅无实测输入 token 时兜底 */
   private estimateContextTokens(): number {
@@ -1096,20 +1235,21 @@ export class AiChatPanel {
 
   /** 接近上限时压缩:较早历史 → 摘要(1 条压缩消息)+ 最近 6 条(消息少时 2 条)原文。
    *  Agent 模式重建 DSH 会话并把摘要注入系统提示词(重携环境快照/工程指令/文档索引)。 */
-  private async maybeCompress(): Promise<void> {
-    if (this.compressing) return;
+  private async maybeCompress(force = false): Promise<boolean> {
+    if (this.compressing) return false;
     const est = this.estimateContextTokens();
     const used = this.usage.lastInputTokens > 0 ? this.usage.lastInputTokens : est;
-    if (used < AiChatPanel.COMPRESS_AT_TOKENS) return;
-    // 保留窗口自适应:长会话保 6 条;消息数不多但单条巨大(如工具输出)时保 2 条,保证可压
-    const keep = this.msgs.length > 8 ? 6 : 2;
+    const trigger = this.compressTriggerTokens();
+    if (!force && used < trigger) return false;
+    // 保留窗口:自动触发时长会话保 6 条、消息少保 2 条;手动 /compact 一律保 2 条(压得更彻底)
+    const keep = force ? 2 : this.msgs.length > 8 ? 6 : 2;
     const cut = this.msgs.length - keep;
-    if (cut < 2) return;
+    if (cut < 2) return false;
     this.compressing = true;
     const t0 = Date.now();
     showToast('上下文接近模型上限,正在自动压缩较早历史…');
     try {
-      const summary = await this.summarizeHistory(this.msgs.slice(0, cut));
+      const summary = await this.summarizeHistory(this.msgs.slice(0, cut).filter((m) => !m.notice && !m.error));
       if (!summary.trim()) throw new Error('摘要为空');
       const cap = `【历史对话摘要】较早前 ${cut} 条消息已由 IDE 自动压缩为下述要点,继续任务时以此为准;需要细节时重新读取文件或重新执行命令核实。\n\n${summary.trim()}`;
       const kept = this.msgs.slice(cut);
@@ -1125,18 +1265,21 @@ export class AiChatPanel {
             return `【${m.role === 'user' ? '用户' : '助手'}】${text}`;
           })
           .join('\n\n');
-        const note = cap + (replay ? `\n\n【最近对话回放(压缩前最后 ${kept.length} 条原文)】\n${replay}` : '');
+        const note = cap + (replay ? `\n\n【此前对话回放 压缩前最后 ${kept.length} 条原文节选】\n${replay}` : '');
         const ctl = await this.ensureAgentCtl().catch(() => undefined);
-        await ctl?.applyCompression(note).catch((err: unknown) => {
+        this.agentContextExtra = cap;
+        await ctl?.injectContext(note).catch((err: unknown) => {
           aiLog('warn', 'aichat', `压缩后重建 Agent 会话失败: ${String(err)}`);
         });
       }
       this.renderAll();
       this.renderStats();
       this.deps.onConversationChange(this.richMessages());
-      aiLog('info', 'aichat', `上下文已压缩: ${cut} 条历史 → 摘要 ${summary.length} 字符(用时 ${fmtDur(Date.now() - t0)})`);
+      aiLog('info', 'aichat', `上下文已压缩: ${cut} 条历史 → 摘要 ${summary.length} 字符(触发阈值 ${trigger} tok,用时 ${fmtDur(Date.now() - t0)})`);
+      return true;
     } catch (error) {
       aiLog('warn', 'aichat', `上下文压缩失败(按原样继续): ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     } finally {
       this.compressing = false;
     }
@@ -1187,6 +1330,273 @@ export class AiChatPanel {
       void un();
     }
     return buf;
+  }
+
+  /** 构造 Agent 会话重建的注入记录(既有压缩摘要 + 本次历史回放)。 */
+  private composeAgentNote(replay: string): string {
+    return [this.agentContextExtra.trim(), replay.trim()].filter((x) => x.length > 0).join('\n\n');
+  }
+
+  /** Agent 会话重建的历史回放:msgs 节选(单条截断、总量受限、最近优先,头部保留最早 2 条)。
+   *  DSH 会话历史不可注入,重建(重新生成/回退/换模型/压缩)后模型只认系统提示词里的这块
+   *  记录——不注入就会"这是会话的第一条消息"式失忆(实测反馈)。excludeTail 用于排除
+   *  即将重发的那条用户消息(重新生成场景,避免与本次 user 消息重复)。 */
+  private agentHistoryReplay(excludeTail: number): string {
+    const msgs = this.msgs.filter((m) => m.content.trim().length > 0 && !m.notice && !m.error);
+    const usable = excludeTail > 0 ? msgs.slice(0, Math.max(0, msgs.length - excludeTail)) : msgs;
+    if (usable.length === 0) return '';
+    const perMsg = 1200;
+    const totalMax = 16000;
+    const segs = usable.map((m) => {
+      const text =
+        m.content.length > perMsg ? m.content.slice(0, 700) + '\n…(中段省略)…\n' + m.content.slice(-400) : m.content;
+      return `【${m.role === 'user' ? '用户' : '助手'}】${text}`;
+    });
+    const head = segs.slice(0, 2);
+    let budget = totalMax - head.join('\n\n').length;
+    const tail: string[] = [];
+    for (let i = segs.length - 1; i >= 2 && budget > 0; i--) {
+      if (segs[i].length > budget) break;
+      tail.unshift(segs[i]);
+      budget -= segs[i].length;
+    }
+    const omitted = segs.length - head.length - tail.length;
+    const body = [...head, ...(omitted > 0 ? [`…(中间 ${omitted} 条消息省略)…`] : []), ...tail].join('\n\n');
+    return `【此前对话回放 重建会话前的对话节选,继续任务时以此为准】\n${body}`;
+  }
+
+  /** 回放兜底口径:末条若是用户消息,必是"即将发送/重发"的那条,排除之避免重复。 */
+  private replayExcludingPending(): string {
+    const last = this.msgs[this.msgs.length - 1];
+    return this.agentHistoryReplay(last && last.role === 'user' ? 1 : 0);
+  }
+
+  /** /compact 手动压缩:先落一条分割提示,压缩完成后更新文案(与自动压缩共用管线)。 */
+  private async manualCompact(): Promise<void> {
+    if (this.busy) {
+      showToast('正在生成中,请等回复结束后再试', 'err');
+      return;
+    }
+    if (this.compressing) return;
+    const notice: ChatMsg = { role: 'assistant', content: '上下文正在压缩…', notice: true };
+    this.msgs.push(notice);
+    this.els.msgs.appendChild(this.buildWrap(notice, this.msgs.length - 1));
+    this.els.msgs.scrollTop = this.els.msgs.scrollHeight;
+    const ok = await this.maybeCompress(true);
+    notice.content = ok ? '上下文已自动压缩' : '历史太短,暂无需压缩';
+    this.renderAll();
+    if (ok) this.deps.onConversationChange(this.richMessages());
+    this.els.input.focus();
+  }
+
+  /** 环境自检未通过:插入黄色警告引用提示(瞬时提示,不随会话持久化)。 */
+  showPreflightWarning(text: string): void {
+    this.pendingPreflightWarn = text;
+    this.renderPreflightWarn();
+  }
+
+  private pendingPreflightWarn = '';
+
+  private renderPreflightWarn(): void {
+    if (!this.pendingPreflightWarn) return;
+    const div = document.createElement('div');
+    div.className = 'ai-instr-ref warn';
+    const ic = document.createElement('i');
+    ic.className = 'codicon codicon-warning';
+    div.append(ic, document.createTextNode(this.pendingPreflightWarn));
+    div.title = '本地玄铁环境自检有未通过项:请检查设置中的编译器路径(或重装玄铁工具链)后重开工程重试';
+    this.pendingPreflightWarn = '';
+    this.els.msgs.appendChild(div);
+    this.els.msgs.scrollTop = this.els.msgs.scrollHeight;
+  }
+
+  /** 流截断类错误判定(文案来自 adapter/DSH 归一化,含固定关键词)。 */
+  private static isStreamTruncated(msg: string | undefined): boolean {
+    return !!msg && (msg.includes('STREAM_TRUNCATED') || msg.includes('finish_reason'));
+  }
+
+  /** 统一错误出口:截断类计数并在气泡上提供「继续」;(达阈值时)展现联系作者与「反馈」。 */
+  private showStreamError(errText: string, partial: string, prefix = ''): void {
+    const trunc = AiChatPanel.isStreamTruncated(errText);
+    if (trunc) this.truncCount++;
+    const label = trunc ? `流中断:未收到结束标记(本会话第 ${this.truncCount} 次)` : `${prefix}${errText}`;
+    const cut = AiChatPanel.truncatePartial(partial);
+    // 错误消息入 msgs 持久化:重启后仍可见、仍可「继续」(此前只在 DOM 里,重启即丢——实测反馈)
+    const msg: ChatMsg = {
+      role: 'assistant',
+      content: label,
+      error: true,
+      ...(cut ? { errPartial: cut } : {}),
+      ...(trunc && this.truncCount >= AiChatPanel.TRUNC_FEEDBACK_AT ? { errFeedback: true } : {}),
+    };
+    this.msgs.push(msg);
+    this.els.msgs.appendChild(this.buildWrap(msg, this.msgs.length - 1));
+    this.els.msgs.scrollTop = this.els.msgs.scrollHeight;
+    this.deps.onConversationChange(this.richMessages());
+  }
+
+  /** 「继续」引用块的部分内容截断(过长时留头留尾;持久化与继续共用同一口径)。 */
+  private static truncatePartial(partial: string): string {
+    const trimmed = partial.trim();
+    if (trimmed.length <= 4000) return trimmed;
+    return trimmed.slice(0, 2000) + '\n…(中部省略,避免重复占用上下文)…\n' + trimmed.slice(-1500);
+  }
+
+  /** 错误消息元素(流中断/传输错误):继续 / 复制诊断;errFeedback 时附作者联系方式与反馈入口。 */
+  private buildErrEl(m: ChatMsg): HTMLElement {
+    const msg = document.createElement('div');
+    msg.className = 'ai-msg err';
+    msg.textContent = m.content;
+    const bar = document.createElement('div');
+    bar.className = 'ai-err-actions';
+    const btnContinue = document.createElement('button');
+    btnContinue.className = 'mbtn mbtn-sm';
+    btnContinue.textContent = '继续';
+    btnContinue.title = '把已收到的内容作为开头,让 AI 从中断处接着写';
+    btnContinue.addEventListener('click', () => {
+      btnContinue.disabled = true;
+      this.continueTurn(m.errPartial ?? '');
+    });
+    bar.appendChild(btnContinue);
+    const btnDiag = document.createElement('button');
+    btnDiag.className = 'mbtn mbtn-sm';
+    btnDiag.textContent = '复制诊断';
+    btnDiag.title = '复制最近的 AI 链路日志(含断流原因/流统计),便于排查或反馈';
+    btnDiag.addEventListener('click', () => {
+      void copyText(exportLogText()).then((ok) => showToast(ok ? '诊断信息已复制' : '复制失败', ok ? 'ok' : 'err'));
+    });
+    bar.appendChild(btnDiag);
+    if (m.errFeedback) {
+      const contact = this.deps.getSupportContact();
+      if (contact.name && contact.value) {
+        const c = document.createElement('span');
+        c.className = 'ai-err-contact';
+        c.textContent = `联系作者 —— ${contact.name}:${contact.value}`;
+        bar.appendChild(c);
+      }
+      const btnFb = document.createElement('button');
+      btnFb.className = 'mbtn mbtn-sm';
+      btnFb.textContent = '反馈问题';
+      btnFb.title = '把问题提交给社区(管理员后台可见,并邮件通知)';
+      btnFb.addEventListener('click', () => this.openFeedbackDialog(m.content));
+      bar.appendChild(btnFb);
+    }
+    msg.appendChild(bar);
+    return msg;
+  }
+
+  /** 「继续」:把已收到的部分内容作为引用,让模型从中断处续写(不重复已输出部分)。 */
+  private continueTurn(partial: string): void {
+    if (this.busy) {
+      showToast('正在生成中,请稍候再试', 'err');
+      return;
+    }
+    const cut = AiChatPanel.truncatePartial(partial);
+    const text = cut
+      ? `上一条回复在传输中断,已收到的部分内容如下:\n\`\`\`\n${cut}\n\`\`\`\n请从中断处继续输出剩余内容:不要重复上述已输出部分,不要重新开头,直接接着写。`
+      : '上一条回复在传输中断。请重发刚才的回复内容。';
+    void this.dispatch(text);
+  }
+
+  /** 反馈弹窗(流中断多次后出现):内容提交到社区 /api/feedback,管理员后台可见并邮件通知。 */
+  /** 帮助菜单入口:打开反馈弹窗(无错误上下文,通用反馈)。 */
+  openFeedback(): void {
+    this.openFeedbackDialog('');
+  }
+
+  private openFeedbackDialog(errText: string): void {
+    if (document.getElementById('ai-fb-mask')) return;
+    const mask = document.createElement('div');
+    mask.id = 'ai-fb-mask';
+    mask.className = 'ai-fb-mask';
+    const card = document.createElement('div');
+    card.className = 'ai-fb-card';
+    const title = document.createElement('div');
+    title.className = 'ai-fb-title';
+    title.textContent = '反馈问题';
+    const contact = this.deps.getSupportContact();
+    const sub = document.createElement('div');
+    sub.className = 'ai-fb-sub';
+    const base = errText
+      ? '已连续多次流中断。也可以直接联系作者 —— 或描述问题提交给开发者。'
+      : '遇到问题或有建议?描述后提交,会送达开发者(社区后台可见,并邮件通知)。';
+    sub.textContent =
+      contact.name && contact.value ? `${base}直接联系作者 —— ${contact.name}:${contact.value}。` : base;
+    const ta = document.createElement('textarea');
+    ta.className = 'ai-fb-input';
+    ta.rows = 5;
+    ta.placeholder = '描述遇到的问题(在做什么、问了什么、从什么时候开始)…';
+    const foot = document.createElement('div');
+    foot.className = 'ai-fb-foot';
+    const msgEl = document.createElement('div');
+    msgEl.className = 'ai-fb-msg';
+    const btnCancel = document.createElement('button');
+    btnCancel.className = 'mbtn';
+    btnCancel.textContent = '取消';
+    btnCancel.addEventListener('click', () => mask.remove());
+    const btnSend = document.createElement('button');
+    btnSend.className = 'mbtn';
+    btnSend.textContent = '发送反馈';
+    btnSend.addEventListener('click', () => {
+      const text = ta.value.trim();
+      if (text.length < 5) {
+        msgEl.textContent = '反馈内容至少 5 个字';
+        return;
+      }
+      if (text.length > 3800) {
+        msgEl.textContent = '反馈内容过长(请精简到 3800 字以内)';
+        return;
+      }
+      btnSend.disabled = true;
+      msgEl.textContent = '提交中…';
+      void this.submitFeedback(text, errText)
+        .then(() => {
+          showToast('反馈已提交,感谢反馈', 'ok');
+          mask.remove();
+        })
+        .catch((err: unknown) => {
+          msgEl.textContent = err instanceof Error ? err.message : String(err);
+          btnSend.disabled = false;
+        });
+    });
+    foot.append(msgEl, btnCancel, btnSend);
+    card.append(title, sub, ta, foot);
+    mask.appendChild(card);
+    mask.addEventListener('mousedown', (e) => {
+      if (e.target === mask) mask.remove();
+    });
+    document.body.appendChild(mask);
+    ta.focus();
+  }
+
+  /** 提交反馈:复用社区 /api/feedback(kind=bug;自动附模型/通道/错误/会话上下文)。 */
+  private async submitFeedback(text: string, errText: string): Promise<void> {
+    const acct = this.deps.getAccount();
+    const base = acct.baseUrl.replace(/\/+$/, '');
+    if (!base) throw new Error('未连接玄铁服务器,无法提交反馈');
+    if (!acct.cookie) throw new Error('反馈需登录玄铁账号(右上角「账号」登录后重试)');
+    const t = this.deps.getTarget();
+    const ctxInfo = [
+      `模型: ${t.kind === 'official' ? this.deps.officialName() : t.provider.model}`,
+      `通道: ${t.kind === 'official' ? '官方' : '自定义'}`,
+      ...(errText ? [`错误: ${errText}`] : []),
+      `会话: ${this.deps.getSessionId()}`,
+    ].join('\n');
+    const r = await backend.httpJson(
+      'POST',
+      base + '/api/feedback',
+      { kind: 'bug', content: `${text}\n\n———— 自动附加 ————\n${ctxInfo}` },
+      `xt_session=${acct.cookie}`,
+    );
+    let j: { ok?: boolean; error?: string } = {};
+    try {
+      j = JSON.parse(r.body) as typeof j;
+    } catch {
+      // 非 JSON 响应按 HTTP 状态判定
+    }
+    if (r.status < 200 || r.status >= 300 || j.ok === false) {
+      throw new Error(j.error || `提交失败(HTTP ${r.status})`);
+    }
   }
 
   private hideStatsPop(): void {
@@ -1252,13 +1662,23 @@ export class AiChatPanel {
   }
 
   /** 「添加到对话」入口:引用 chip 进输入栏(打开 dock 由 main 侧负责) */
-  addSelectionRef(ref: SelectionRef): void {
+  addRef(ref: ChatRef): void {
     const dup = this.refs.some(
-      (r) => r.path === ref.path && r.startLine === ref.startLine && r.endLine === ref.endLine,
+      (r) =>
+        r.kind === ref.kind &&
+        r.path === ref.path &&
+        r.startLine === ref.startLine &&
+        r.endLine === ref.endLine &&
+        r.text === ref.text,
     );
     if (!dup) this.refs.push(ref);
     this.renderRefChips();
     this.els.input.focus();
+  }
+
+  /** 编辑器选中引用入口(SelectionRef 结构 × kind=code)。 */
+  addSelectionRef(ref: SelectionRef): void {
+    this.addRef({ kind: 'code', ...ref });
   }
 
   private clearRefs(): void {
@@ -1268,10 +1688,18 @@ export class AiChatPanel {
 
   private composeWithRefs(body: string): string {
     if (this.refs.length === 0) return body;
-    const blocks = this.refs
-      .map((r) => `引用 ${r.path}:${r.startLine}-${r.endLine}:\n\`\`\`xt\n${r.text}\n\`\`\``)
-      .join('\n\n');
+    const blocks = this.refs.map((r) => AiChatPanel.refBlock(r)).join('\n\n');
     return body ? `${body}\n\n${blocks}` : blocks;
+  }
+
+  /** 引用 chip → 发送时拼进的引用块(按来源措辞)。 */
+  private static refBlock(r: ChatRef): string {
+    if (r.kind === 'code') {
+      return `引用 ${r.path}:${r.startLine}-${r.endLine}:\n\`\`\`xt\n${r.text}\n\`\`\``;
+    }
+    if (r.kind === 'path') return `引用工程内路径: ${r.path}${r.text ? `\n${r.text}` : ''}`;
+    const label = r.kind === 'terminal' ? '终端输出' : r.kind === 'build' ? '构建输出' : '问题项';
+    return `${label}引用:\n\`\`\`\n${r.text}\n\`\`\``;
   }
 
   // ---- 附件 UI 与生命周期 ----
@@ -1505,7 +1933,16 @@ export class AiChatPanel {
       chip.className = 'ai-ref-chip';
       const label = document.createElement('span');
       const base = r.path.split(/[\\/]/).pop() ?? r.path;
-      label.textContent = `${base} ${r.startLine}-${r.endLine}`;
+      label.textContent =
+        r.kind === 'code'
+          ? `${base} ${r.startLine}-${r.endLine}`
+          : r.kind === 'terminal'
+            ? '终端输出'
+            : r.kind === 'build'
+              ? '构建输出'
+              : r.kind === 'problem'
+                ? '问题项'
+                : base;
       const rm = document.createElement('i');
       rm.className = 'codicon codicon-close';
       rm.title = '移除引用';
@@ -1606,6 +2043,8 @@ export class AiChatPanel {
         think.classList.remove('open');
         think.classList.add('done');
         thinkHead.textContent = `已完成思考(用时 ${Math.floor((Date.now() - thinkStart) / 1000)}s,点击展开)`;
+        // 思考完成即落盘一次(实时恢复现场;后续正文增量由 turn 结束的全量保存收口)
+        this.persistLive(this.liveStreamMsg(textBuf, thinkBuf));
       }
       this.scheduleScroll();
     };
@@ -1663,8 +2102,12 @@ export class AiChatPanel {
       target.kind === 'official'
         ? this.deps.getAccount().baseUrl.replace(/\/+$/, '') + '/api/ai/chat'
         : target.provider.baseUrl.replace(/\/+$/, '') + '/chat/completions';
+    const outgoing = this.buildOutgoingMessages(atts);
+    // 认知块:后台版本(本地缓存)→ 内置常量;官方通道由服务端拼进系统提示词
+    // (官方端点只允许 user/assistant 角色,客户端插 system 会被 400 拒绝,已核 ai.go)
+    const primer = (await this.deps.getPrimer?.().catch(() => '')) || XUANTIE_PRIMER;
     const body: Record<string, unknown> = {
-      messages: this.buildOutgoingMessages(atts),
+      messages: official ? outgoing : [{ role: 'system', content: primer }, ...outgoing],
       thinking: this.deps.getThinking(),
       stream: true,
       session_id: this.deps.getSessionId(),
@@ -1708,7 +2151,8 @@ export class AiChatPanel {
 
     wrap.remove();
     if (errMsg && !textBuf) {
-      this.addBubble('err', aborted ? '已停止' : errMsg);
+      if (aborted) this.addBubble('err', '已停止');
+      else this.showStreamError(errMsg, '');
       return;
     }
     const content = textBuf || (aborted ? '(已停止,无输出)' : '');
@@ -1724,7 +2168,7 @@ export class AiChatPanel {
       this.els.msgs.scrollTop = this.els.msgs.scrollHeight;
       this.deps.onConversationChange(this.richMessages());
     }
-    if (errMsg) this.addBubble('err', `流式结束后出错: ${errMsg}`);
+    if (errMsg) this.showStreamError(errMsg, textBuf, '流式结束后出错: ');
   }
 
   // ==================== Agent 模式(Phase-3 DSH;与上方简单对话逻辑分区,互不复用) ====================
@@ -1774,6 +2218,30 @@ export class AiChatPanel {
       },
       loadDocsIndex: () => backend.docsIndex().catch(() => null),
       getEnvSnapshot: () => this.buildEnvSnapshot(),
+      getLibDir: () => this.detectedLibDir || undefined,
+      getHistoryReplay: () => this.replayExcludingPending(),
+      getPrimer: async () => {
+        try {
+          const local = await backend.primerRead();
+          if (local && local.trim()) return local;
+        } catch {
+          // 读缓存失败回落内置
+        }
+        return XUANTIE_PRIMER;
+      },
+      getFsAccess: () => getSettings().ai.fsAccess ?? 'deny',
+      getXtcPath: () => resolveXtc(),
+      getTurnAttachments: () => this.pendingTurnMedia,
+      requestOutOfScope: async (path, op) => {
+        // 越界访问审批:复用内嵌审批卡片;「允许一次」放行,拒绝/关面板一律拒绝(fail-closed)
+        const v = await this.approvalLane.request({
+          toolName: 'fs-access',
+          kindLabel: '访问工作区外',
+          summary: `AI 请求${op}工程目录外的路径(设置「允许AI访问工程目录外的文件」当前为“询问”)`,
+          detail: path,
+        });
+        return v !== 'deny';
+      },
     });
     return this.agentCtl;
   }
@@ -1784,14 +2252,8 @@ export class AiChatPanel {
     const lines: string[] = [];
     const ws = this.deps.getWorkspace();
     lines.push(`- 工程根目录: ${ws || '(未打开工程)'}`);
-    if (ws) {
-      try {
-        const top = (await backend.fsListDir(ws)).filter((n) => n.toLowerCase().endsWith('.xt')).slice(0, 20);
-        if (top.length > 0) lines.push(`- 工程内顶层 .xt 文件: ${top.join('、')}`);
-      } catch {
-        // 列目录失败则略过该项
-      }
-    }
+    // 注:不放"工程内顶层 .xt 文件"列表——系统提示词前缀必须字节稳定(前缀随文件变化会
+    // 击穿提示词缓存),文件清单交给 list_files 工具按需获取。
     const xtc = await resolveXtc();
     if (xtc) {
       let ver = '';
@@ -1819,6 +2281,8 @@ export class AiChatPanel {
                 ? `(子库: ${subs.map((d) => d.slice(0, -1)).join('、')};每个子库含 tiepm.toml 与 <库名>.xt)`
                 : ''),
           );
+          // 缓存给 read_file/list_files 只读白名单(AI 可直接读库源码查证 API)
+          this.detectedLibDir = cand;
           break;
         } catch {
           // 探测失败继续下一候选
@@ -1829,8 +2293,29 @@ export class AiChatPanel {
     }
     const tiepm = await resolveTiepm();
     lines.push(tiepm ? `- 包管理器 tiepm: ${tiepm}` : '- 包管理器 tiepm: 未找到');
+    // 编译/运行命令与可写范围(实测反馈:AI 花十几次调用在问"这台机器的工具链长什么样")
+    lines.push(
+      '- 编译与运行命令: 编译 `xtc tie <源.xt> [-sc 输出.exe]`;编译并运行 `xtc pao <源.xt>`(产物自动清理);' +
+        '仅检查 `xtc tie <源.xt> -jc`(约 0.5 秒,写文件后 IDE 会自动做);帮助 `xtc -h`',
+    );
+    const fsMode = this.deps.getFsAccess?.() ?? 'deny';
+    const fsModeText = fsMode === 'allow' ? '可自由访问' : fsMode === 'ask' ? '越界需审批' : '越界禁止';
+    lines.push(
+      `- 可写范围与禁区: 工程根可读写;不确定的代码先用 check_code 工具验证(自动临时文件,不落工程根);` +
+        `临时/探针文件只放 <工程>/.foundry/,严禁写到工程根;官方库与玄铁文档目录只读;工程外${fsModeText}`,
+    );
     const s = getSettings();
     lines.push(`- 编译产物默认目录: ${s.buildDir && s.buildDir.trim() ? s.buildDir : ws ? backend.joinPath(ws, 'build') : '(未打开工程)'}`);
+    // 本地自检结果(IDE 自动跑的内置探针):基础语义实测事实,AI 直接采用
+    const pf = this.deps.getPreflight?.();
+    if (pf?.result) {
+      const r = pf.result;
+      // 不带耗时/时间戳——系统提示词前缀保持字节稳定以命中提示词缓存
+      lines.push(`- 本地玄铁环境自检(IDE 自动执行):${r.ok ? '全部通过' : '存在未通过项'}`);
+      for (const it of r.items) lines.push(`  · ${it.key} = ${it.value}`);
+      if (!r.ok && r.detail) lines.push(`  · 诊断: ${r.detail.split('\n').slice(-6).join(' / ')}`);
+      lines.push('  (以上为本地实测事实,直接采用;不要再写探针/冒烟/前置测试验证这些基础行为)');
+    }
     return (
       '\n\n<开发环境快照 由 IDE 实测提供,以下路径与版本均为事实,直接使用;禁止再用 dir/where/find 全盘探测这些信息>\n' +
       lines.join('\n') +
@@ -1950,7 +2435,8 @@ export class AiChatPanel {
     if (name === 'read_file' || name === 'list_files') return { icon: 'codicon-eye', kind: 'read' };
     if (name === 'write_file') return { icon: 'codicon-edit', kind: 'edit' };
     if (name === 'run_command') return { icon: 'codicon-terminal', kind: 'exec' };
-    if (name === 'docs_search') return { icon: 'codicon-search', kind: 'read' };
+    if (name === 'docs_search' || name === 'example_search') return { icon: 'codicon-search', kind: 'read' };
+    if (name === 'check_code') return { icon: 'codicon-beaker', kind: 'exec' };
     if (name === 'web_fetch' || name === 'web_search' || name === 'web_render') return { icon: 'codicon-globe', kind: 'web' };
     return { icon: 'codicon-tools', kind: 'other' };
   }
@@ -2091,12 +2577,34 @@ export class AiChatPanel {
     this.liveParts = tp;
     this.liveSegs = segs;
     const cardTimers = new Map<string, number>();
+    // 工具参数流式预卡:正式 tool/call 事件到达前立"准备中"卡,(空窗期可见)
+    const pendingCards = new Map<string, { el: HTMLElement; name: string; args: string; titleEl: HTMLElement }>();
+    /** 从流式(可能未闭合的)JSON 里宽松提取字符串参数(如 path/command),取不到返回空串。 */
+    const peekArg = (json: string, key: string): string => {
+      const m = json.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`));
+      if (!m) return '';
+      try {
+        return JSON.parse(`"${m[1]}"`) as string;
+      } catch {
+        return m[1];
+      }
+    };
     let segEl: HTMLElement | undefined;
     let segText = '';
     let thinkSegEl: HTMLElement | undefined;
     let thinkBodyEl: HTMLElement | undefined;
     let thinkSegSince = 0;
     let firstDeltaAt = 0; // 首 token 时刻(含思考增量)
+
+    // 环境自检未完成:状态行先显示校验提示并等其完成(随后结果进环境快照,AI 免自探)
+    const pfState = this.deps.getPreflight?.();
+    if (pfState?.running) {
+      statusText.textContent = '正在校验本地玄铁环境…';
+      await pfState.promise;
+    }
+
+    // 数据流静默监控:20s 无任何增量 → 状态行追加"(数据流静默 Ns)",与"模型在思考"可辨
+    let lastDataAt = Date.now();
 
     // 活动状态机:任何时刻给出一个明确的「正在工作」状态
     const tracker = new ActivityTracker();
@@ -2110,6 +2618,7 @@ export class AiChatPanel {
     };
     const ev = (e: Parameters<ActivityTracker['event']>[0]): void => {
       tracker.event(e, Date.now());
+      lastDataAt = Date.now(); // 任何活动都重置静默计时
       updateStatus();
     };
     updateStatus();
@@ -2127,6 +2636,11 @@ export class AiChatPanel {
     // 1s tick:状态行秒数、流式思考段头部时长、running 工具卡秒数、组行总耗时
     const tick = window.setInterval(() => {
       updateStatus();
+      // 静默提示:updateStatus 重写文本后追加(不叠加)——长静默时"正在思考"不再掩盖"流已卡住"
+      const gapMs = Date.now() - lastDataAt;
+      if (gapMs > 20000 && this.liveParts) {
+        statusText.textContent += `(数据流静默 ${Math.round(gapMs / 1000)}s)`;
+      }
       if (thinkSegEl && thinkSegSince > 0) {
         const head = thinkSegEl.querySelector('.ai-think-head');
         if (head) head.textContent = `思考中… ${fmtDur(Date.now() - thinkSegSince)}`;
@@ -2218,6 +2732,8 @@ export class AiChatPanel {
         tp.stepEnd(Date.now());
         this.usage.steps++;
         this.renderStats();
+        // 思考段关闭(思考完)即落盘一次
+        this.persistLive(this.liveTurnMsg());
       },
       onTextDelta: (d) => {
         if (!firstDeltaAt) firstDeltaAt = Date.now();
@@ -2242,6 +2758,12 @@ export class AiChatPanel {
         this.scheduleScroll();
       },
       onToolCall: (info) => {
+        // 预卡退场:正式调用事件(完整参数)已到,换常规卡接力
+        const pre = pendingCards.get(info.callId);
+        if (pre) {
+          pre.el.remove();
+          pendingCards.delete(info.callId);
+        }
         closeSeg();
         cardTimers.set(info.callId, Date.now());
         tp.toolCall(info, Date.now());
@@ -2274,9 +2796,51 @@ export class AiChatPanel {
         ev({ type: 'tool-call', callId: info.callId, name: info.name, summary: formatToolArgs(info.name, info.arguments) });
         this.scheduleScroll();
       },
+      onToolStreamDelta: (callId, name, argsDelta) => {
+        // 参数流式生成(write_file 大文件内容可达几十秒):立"准备中"卡,防空窗期无提示。
+        // 正式 tool/call 事件到达时按 callId 退场;titleEl 随 path/command 闭合逐步精确。
+        const key = callId || `anon-${name}`;
+        let pre = pendingCards.get(key);
+        if (!pre) {
+          const el = document.createElement('div');
+          el.className = 'ai-tool-card running';
+          const head = document.createElement('div');
+          head.className = 'ai-tool-head';
+          const ico = document.createElement('i');
+          ico.className = 'codicon codicon-loading ai-spin ai-tool-ico';
+          const titleEl = document.createElement('span');
+          titleEl.className = 'ai-tool-name';
+          titleEl.textContent = '正在生成工具参数…';
+          const st = document.createElement('span');
+          st.className = 'ai-tool-status';
+          st.textContent = '准备中…';
+          head.append(ico, titleEl, st);
+          el.appendChild(head);
+          segs.appendChild(el);
+          pre = { el, name: name || '', args: '', titleEl };
+          pendingCards.set(key, pre);
+        }
+        if (name) pre.name = name;
+        pre.args += argsDelta;
+        if (pre.name === 'write_file') {
+          const p = peekArg(pre.args, 'path');
+          pre.titleEl.textContent = p ? `正在编辑 ${p}…` : '正在生成文件内容…';
+        } else if (pre.name === 'run_command') {
+          const c = peekArg(pre.args, 'command');
+          pre.titleEl.textContent = c ? `正在生成命令 ${c.length > 50 ? `${c.slice(0, 50)}…` : c}` : '正在生成命令…';
+        } else if (pre.name) {
+          pre.titleEl.textContent = `正在生成 ${pre.name} 参数…`;
+        }
+        ev({ type: 'tool-call', callId: key, name: pre.name || '工具', summary: '' });
+        this.scheduleScroll();
+      },
       onToolStatus: (callId, status, detail) => {
         const terminal = status === 'done' || status === 'failed' || status === 'denied';
-        if (terminal) cardTimers.delete(callId);
+        if (terminal) {
+          cardTimers.delete(callId);
+          // 工具执行完毕即落盘一次(实时保存:此前只在整轮结束才保存)
+          this.persistLive(this.liveTurnMsg());
+        }
         tp.toolStatus(callId, status, detail, Date.now());
         this.updateToolCard(segs, callId, status, detail, tp.tool(callId)?.elapsedMs);
         if (activeGroup) this.updateGroupHead(activeGroup.head, runName, activeGroup.records);
@@ -2336,10 +2900,13 @@ export class AiChatPanel {
     } else {
       wrap.remove();
     }
+    for (const p of pendingCards.values()) p.el.remove();
+    pendingCards.clear();
     this.liveParts = undefined;
     this.liveSegs = undefined;
     if (!result.ok) {
-      this.addBubble('err', result.error === 'cancelled' ? '已停止' : `Agent 出错: ${result.error ?? '未知错误'}`);
+      if (result.error === 'cancelled') this.addBubble('err', '已停止');
+      else this.showStreamError(result.error ?? '未知错误', content, 'Agent 出错: ');
     } else if (result.error) {
       this.addBubble('err', result.error);
     }

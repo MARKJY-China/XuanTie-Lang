@@ -191,6 +191,7 @@ const TEMPLATE = `
 <div id="statusbar">
   <span class="sb-item" id="sb-project">未打开工程</span>
   <span class="sb-item" id="sb-lsp"><span class="dot pending"></span>LSP 未连接</span>
+  <span class="sb-item sb-click" id="sb-preflight" style="display:none" title="双击查看校验详情"></span>
   <span class="spacer"></span>
   <span class="sb-item sb-mode" id="sb-mode" style="display:none" title="以管理员权限运行"><i class="codicon codicon-shield"></i>管理员模式</span>
   <span class="sb-item sb-click" id="sb-encoding" title="文件编码:点击以其他编码重新打开或保存"></span>
@@ -289,63 +290,89 @@ function closeAllMenus(): void {
   document.querySelectorAll('.menu-btn.open').forEach((b) => b.classList.remove('open'));
 }
 
-// VSCode 式菜单栏:点击开合;开着时悬停另一个标题直接切换;点外部/Esc 收起
-function attachMenu(
-  btn: HTMLElement,
-  items: Array<{ act: string; label: string; shortcut?: string }>,
-  onAction: (act: string) => void,
-): void {
+// VSCode 式菜单栏:点击开合;开着时悬停另一个标题直接切换;点外部/Esc 收起。
+// 菜单内容在每次打开时重建 —— 供动态子菜单(如「打开最近工程」)取最新数据。
+function attachMenu(btn: HTMLElement, items: MenuItemDecl[], onAction: (act: string) => void): void {
   // 下拉挂在按钮自身(.menu-btn 为 relative 锚),避免落到未定位祖先
   const menu = document.createElement('div');
   menu.className = 'dropdown menudrop';
-  for (const item of items) {
-    if (item.act === 'sep') {
-      menu.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
-      continue;
+
+  const buildRows = (container: HTMLElement, list: MenuItemDecl[]): void => {
+    for (const item of list) {
+      if (item.act === 'sep') {
+        container.appendChild(Object.assign(document.createElement('div'), { className: 'ctx-sep' }));
+        continue;
+      }
+      const row = document.createElement('div');
+      row.className = 'dd-item';
+      const label = document.createElement('span');
+      label.textContent = item.label;
+      row.appendChild(label);
+      // 子菜单:VSCode 式 `>` 悬停展开;内容可为函数(打开时求值,动态列表)
+      if (item.submenu) {
+        row.classList.add('has-sub');
+        const chev = document.createElement('span');
+        chev.className = 'dd-chev';
+        chev.textContent = '›';
+        row.appendChild(chev);
+        const sub = document.createElement('div');
+        sub.className = 'dd-sub dropdown menudrop';
+        buildRows(sub, typeof item.submenu === 'function' ? item.submenu() : item.submenu);
+        row.appendChild(sub);
+        container.appendChild(row);
+        continue;
+      }
+      if (item.shortcut) {
+        const sc = document.createElement('span');
+        sc.className = 'shortcut';
+        sc.textContent = item.shortcut;
+        row.appendChild(sc);
+      }
+      row.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeAllMenus();
+        onAction(item.act);
+      });
+      container.appendChild(row);
     }
-    const row = document.createElement('div');
-    row.className = 'dd-item';
-    const label = document.createElement('span');
-    label.textContent = item.label;
-    row.appendChild(label);
-    if (item.shortcut) {
-      const sc = document.createElement('span');
-      sc.className = 'shortcut';
-      sc.textContent = item.shortcut;
-      row.appendChild(sc);
-    }
-    row.addEventListener('click', (e) => {
-      e.stopPropagation();
-      closeAllMenus();
-      onAction(item.act);
-    });
-    menu.appendChild(row);
-  }
+  };
+
   btn.appendChild(menu);
+
+  const openFresh = (): void => {
+    menu.innerHTML = '';
+    buildRows(menu, items);
+    menu.classList.add('open');
+    btn.classList.add('open');
+  };
 
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
     const willOpen = !menu.classList.contains('open');
     closeAllMenus();
-    if (willOpen) {
-      menu.classList.add('open');
-      btn.classList.add('open');
-    }
+    if (willOpen) openFresh();
   });
   btn.addEventListener('mouseenter', () => {
     const anyOpen = document.querySelector('.menudrop.open');
     if (anyOpen && anyOpen !== menu) {
       closeAllMenus();
-      menu.classList.add('open');
-      btn.classList.add('open');
+      openFresh();
     }
   });
 }
 
 // act === 'sep' 仅用于在声明里画分隔线,不会触发回调
+export interface MenuItemDecl {
+  act: string;
+  label: string;
+  shortcut?: string;
+  /** 子菜单(VSCode 式 `>` 悬停展开):数组或函数(菜单每次打开时求值,供动态列表) */
+  submenu?: MenuItemDecl[] | (() => MenuItemDecl[]);
+}
+
 export interface MenuDecl {
   btn: HTMLElement;
-  items: Array<{ act: string; label: string; shortcut?: string }>;
+  items: MenuItemDecl[];
 }
 
 export function initMenus(menus: MenuDecl[], onAction: (act: string) => void): void {

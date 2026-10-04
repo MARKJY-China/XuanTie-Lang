@@ -22,4 +22,10 @@ export interface SseTransport {
    * 传输错误(连接失败/非 200/读流失败)以异常抛出;中止时 signal.aborted 为 true。
    */
   stream(request: SseRequest): AsyncIterable<string>
+
+  /**
+   * 非流式 JSON POST(流截断恢复用:同一请求 stream:false 重取完整结果)。
+   * 可选实现:冒烟 stub 可不提供,调用方(adapter)自动回落报错路径。
+   */
+  json?(request: SseRequest): Promise<unknown>
 }

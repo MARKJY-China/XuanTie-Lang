@@ -87,6 +87,10 @@ export interface AiProvider {
   supportsVision?: boolean;
   /** 多模态能力(用户自报):视频输入 */
   supportsVideo?: boolean;
+  /** 模型输入上限(上下文窗口,token;0/未填 = 用默认阈值触发自动压缩) */
+  contextWindow?: number;
+  /** 模型输出上限(输出 token;0/未填 = 按默认 8192 预留) */
+  maxOutput?: number;
 }
 
 export interface AppSettings {
@@ -94,6 +98,8 @@ export interface AppSettings {
   xtcPath: string;
   tiepmPath: string;
   lastWorkspace: string;
+  /** 最近打开的工程(最近在前,去重,上限 10;老设置缺省为空) */
+  recentWorkspaces: string[];
   treeDisplay: TreeDisplay;
   // IDE 编译产物目录(「编译」菜单);留空 = 当前工程文件夹\build
   buildDir: string;
@@ -103,7 +109,16 @@ export interface AppSettings {
   // agentMode:Agent 审批模式 confirm(变更前确认,默认)/auto-edit(自动编辑)/full-control(完全控制)
   // cmdWhitelist:run_command 免审批白名单(命令行首 token 完全匹配,可选字段,老设置缺省为空)
   // dockWidth:AI 面板宽度(px,拖拽结束持久化,可选字段)
-  ai: { providers: AiProvider[]; active: string; thinking: string; agentMode?: string; cmdWhitelist?: string[]; dockWidth?: number };
+  ai: {
+    providers: AiProvider[];
+    active: string;
+    thinking: string;
+    agentMode?: string;
+    cmdWhitelist?: string[];
+    dockWidth?: number;
+    /** AI 访问工程目录外的文件:deny=禁止(默认)/ask=弹审批/allow=自由访问(高风险) */
+    fsAccess?: 'deny' | 'ask' | 'allow';
+  };
   account: AccountState;
   // 编辑器外观
   editor: { fontSize: number; fontFamily: string };
@@ -124,6 +139,7 @@ export function defaultSettings(): AppSettings {
     xtcPath: '',
     tiepmPath: '',
     lastWorkspace: '',
+    recentWorkspaces: [],
     treeDisplay: 'dim',
     buildDir: '',
     autoCheckTiepmUpdates: false,

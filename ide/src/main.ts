@@ -42,7 +42,11 @@ import { basename, copyText, dirname, relativeTo } from './util';
 import { ENCODINGS, defaultSettings, type AccountState, type FileNode, type TreeDisplay } from './types';
 import * as accountApi from './account/account';
 import { AiChatPanel, type ChatMsg } from './ai/aichat';
+import { listen } from '@tauri-apps/api/event';
 import { checkAndFetchDocs } from './ai/docs';
+import { PreflightConsole } from './ui/preflight-console';
+import { XUANTIE_PRIMER } from './ai/xuantie-primer';
+import type { PreflightState } from './ai/aichat';
 import { setAiLogEnabled, installGlobalErrorHooks } from './ai/log-bus';
 import type { AiProvider } from './types';
 
@@ -113,9 +117,16 @@ const sbLsp = document.getElementById('sb-lsp') as HTMLElement;
 const sbCursor = document.getElementById('sb-cursor') as HTMLElement;
 
 const lsp = new XtLspClient();
-const problems = new ProblemsPanel(L.problemsHost, (p, line, column) => {
-  void tabs.openFile(p, { line, column });
-});
+const problems = new ProblemsPanel(
+  L.problemsHost,
+  (p, line, column) => {
+    void tabs.openFile(p, { line, column });
+  },
+  (text) => {
+    setAiDock(true);
+    aiPanel.addRef({ kind: 'problem', path: '问题项', text });
+  },
+);
 const tabs = new TabManager(
   L.tabbar,
   editor,
@@ -193,7 +204,7 @@ function setAiDock(open: boolean): void {
 }
 
 // 官方 AI 前端展示配置(名称/思考档位),来自社区 /api/ai/config,失败回落默认
-let aiCfg = { name: '玄铁AI', thinking: ['off', 'low', 'high', 'max'], vision: false, video: false };
+let aiCfg = { name: '玄铁AI', thinking: ['off', 'low', 'high', 'max'], vision: false, video: false, ctxInput: 0, ctxOutput: 0, contactName: '', contactValue: '' };
 
 async function refreshAiConfig(): Promise<void> {
   const base = getSettings().account.baseUrl.replace(/\/+$/, '');
@@ -202,14 +213,28 @@ async function refreshAiConfig(): Promise<void> {
     const r = await backend.httpJson('GET', base + '/api/ai/config', null);
     const j = JSON.parse(r.body) as {
       ok?: boolean;
-      data?: { name?: string; thinking?: string[]; vision?: boolean; video?: boolean };
+      data?: {
+        name?: string;
+        thinking?: string[];
+        vision?: boolean;
+        video?: boolean;
+        ctxInput?: unknown;
+        ctxOutput?: unknown;
+        contactName?: unknown;
+        contactValue?: unknown;
+      };
     };
     if (j.ok && j.data) {
+      const ctxNum = (v: unknown): number => (typeof v === 'number' && v > 0 ? Math.floor(v) : 0);
       aiCfg = {
         name: j.data.name || '玄铁AI',
         thinking: Array.isArray(j.data.thinking) && j.data.thinking.length > 0 ? j.data.thinking : aiCfg.thinking,
         vision: j.data.vision === true,
         video: j.data.video === true,
+        ctxInput: ctxNum(j.data.ctxInput),
+        ctxOutput: ctxNum(j.data.ctxOutput),
+        contactName: typeof j.data.contactName === 'string' ? j.data.contactName : '',
+        contactValue: typeof j.data.contactValue === 'string' ? j.data.contactValue : '',
       };
       aiPanel.refreshModelLabel();
       aiPanel.refreshThinkLabel();
@@ -217,6 +242,106 @@ async function refreshAiConfig(): Promise<void> {
   } catch {
     // 离线/旧服务端:保持默认
   }
+}
+
+/** 后台玄铁基础认知块:启动时拉取覆盖本地缓存(离线沿用本地缓存/内置;后台留空不动)。 */
+async function refreshAiPrimer(): Promise<void> {
+  const base = getSettings().account.baseUrl.replace(/\/+$/, '');
+  if (!base) return;
+  try {
+    const r = await backend.httpJson('GET', base + '/api/ai/primer', null);
+    const j = JSON.parse(r.body) as { ok?: boolean; data?: { content?: unknown } };
+    const content = j.ok && j.data && typeof j.data.content === 'string' ? j.data.content : '';
+    if (content.trim()) await backend.primerWrite(content);
+  } catch {
+    // 离线/旧服务端:保留本地缓存或内置兜底
+  }
+}
+
+// ---- 玄铁环境自检(打开工程后台自动跑;AI 轮次开始若未完则等待,结果注入环境快照) ----
+let preflightState: PreflightState | null = null;
+const pfConsole = new PreflightConsole();
+
+/** 状态栏徽标(LSP 项右侧):running=橙/fail=红/ok=绿(5 分钟后自动隐藏)。 */
+let pfHideTimer: number | undefined;
+function setPreflightBadge(kind: 'running' | 'ok' | 'fail' | 'hidden'): void {
+  const el = document.getElementById('sb-preflight');
+  if (!el) return;
+  window.clearTimeout(pfHideTimer);
+  if (kind === 'hidden') {
+    el.style.display = 'none';
+    return;
+  }
+  el.style.display = '';
+  const conf =
+    kind === 'running'
+      ? { dot: 'pending', text: '本地玄铁环境可用性校验中' }
+      : kind === 'ok'
+        ? { dot: 'ok', text: '本地玄铁环境正常' }
+        : { dot: 'bad', text: '本地玄铁环境异常' };
+  el.innerHTML = `<span class="dot ${conf.dot}"></span>`;
+  el.appendChild(document.createTextNode(conf.text));
+  el.title = '双击查看校验详情';
+  if (kind === 'ok') {
+    pfHideTimer = window.setTimeout(() => {
+      el.style.display = 'none';
+    }, 5 * 60 * 1000);
+  }
+}
+document.getElementById('sb-preflight')?.addEventListener('dblclick', () => pfConsole.toggle());
+
+async function startPreflight(): Promise<void> {
+  const state: PreflightState = { running: true, promise: Promise.resolve(), result: null };
+  preflightState = state; // 新一轮覆盖旧一轮(切工程重跑;旧 promise 结果将被丢弃)
+  setPreflightBadge('running');
+  pfConsole.begin();
+  // 进度流:Rust 侧逐行发 preflight-progress(stage/log/done),控制台 CI 式呈现
+  const un = await listen<unknown>('preflight-progress', (e) => {
+    try {
+      // 兼容两种载荷形态:JSON 字符串(现行约定)与已反序列化对象(旧构建)
+      const raw = e.payload;
+      const d = (typeof raw === 'string' ? JSON.parse(raw) : raw) as {
+        type?: string;
+        text?: string;
+        tag?: string;
+        ok?: boolean;
+        ms?: number;
+      };
+      if (d.type === 'stage') pfConsole.stage(d.text ?? '');
+      else if (d.type === 'log') pfConsole.line(d.tag ?? '', d.text ?? '');
+      else if (d.type === 'done') pfConsole.finish(d.ok === true, d.ms ?? 0);
+    } catch {
+      // 单条进度解析失败忽略
+    }
+  });
+  state.promise = (async () => {
+    try {
+      const xtc = await resolveXtc();
+      if (!xtc) {
+        if (preflightState !== state) return;
+        state.result = { ok: false, items: [], detail: '未找到 xtc 编译器(设置 → 工具链路径)', ms: 0 };
+        setPreflightBadge('fail');
+        aiPanel.showPreflightWarning('本地环境自检无法执行:未找到 xtc 编译器,请在设置中配置');
+        return;
+      }
+      const r = await backend.preflightRun(xtc);
+      if (preflightState !== state) return; // 已有更新一轮,丢弃陈旧结果
+      state.result = r;
+      setPreflightBadge(r.ok ? 'ok' : 'fail');
+      if (!r.ok) {
+        const first = r.detail ? (r.detail.split('\n')[0] ?? '') : '探针未跑到收尾';
+        aiPanel.showPreflightWarning(`本地玄铁环境自检未通过:${first}`);
+      }
+    } catch (err) {
+      if (preflightState !== state) return;
+      setPreflightBadge('fail');
+      state.result = { ok: false, items: [], detail: String(err), ms: 0 };
+      aiPanel.showPreflightWarning(`本地玄铁环境自检失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      state.running = false;
+      void un();
+    }
+  })();
 }
 
 // Phase-2 DSH agent 内核:动态 import 入口。首次调用才加载 665KB 内核 chunk(独立分包,
@@ -276,6 +401,26 @@ const aiPanel = new AiChatPanel(
     officialName: () => aiCfg.name,
     getAccount: () => getSettings().account,
     getOfficialMediaCaps: () => ({ vision: aiCfg.vision, video: aiCfg.video }),
+    // 当前模型上下文配置(压缩阈值依据):自定义提供商用其设置,官方用社区后台下发;0 = 未配置
+    getSupportContact: () => ({ name: aiCfg.contactName, value: aiCfg.contactValue }),
+    getPrimer: async () => {
+      try {
+        const local = await backend.primerRead();
+        if (local && local.trim()) return local;
+      } catch {
+        // 读缓存失败回落内置
+      }
+      return XUANTIE_PRIMER;
+    },
+    getFsAccess: () => getSettings().ai.fsAccess ?? 'deny',
+    getXtcPath: () => resolveXtc(),
+    getPreflight: () => preflightState,
+    getModelContext: () => {
+      const ai = getSettings().ai;
+      const p = ai.providers.find((x) => x.name === ai.active);
+      if (p) return { input: p.contextWindow ?? 0, output: p.maxOutput ?? 0 };
+      return { input: aiCfg.ctxInput, output: aiCfg.ctxOutput };
+    },
     openFileInEditor: (p) => {
       const abs = /^[A-Za-z]:[\\/]/.test(p) ? p : backend.joinPath(workspace, p);
       void tabs
@@ -413,6 +558,17 @@ function aiProvidersModal(): Promise<unknown> {
     mkField('接口地址(OpenAI 兼容,含 /v1)', inBase);
     mkField('API Key', inKey);
     mkField('模型名', inModel);
+    // 上下文配置(压缩阈值依据):留空/0 = IDE 用默认阈值(90K)触发自动压缩
+    const inCtx = document.createElement('input');
+    inCtx.type = 'number';
+    inCtx.min = '0';
+    inCtx.placeholder = '如 128000(留空 = 默认)';
+    const inOut = document.createElement('input');
+    inOut.type = 'number';
+    inOut.min = '0';
+    inOut.placeholder = '如 8192(留空 = 默认)';
+    mkField('输入上限(上下文窗口,token;决定何时自动压缩)', inCtx);
+    mkField('输出上限(max tokens)', inOut);
     // 多模态能力(用户自报;发送图片/视频前据此校验)
     const mkCheck = (label: string): HTMLInputElement => {
       const r = document.createElement('div');
@@ -444,6 +600,10 @@ function aiProvidersModal(): Promise<unknown> {
         msg.textContent = '名称、接口地址、模型名必填';
         return;
       }
+      const num = (v: string): number => {
+        const n = Math.floor(Number(v));
+        return Number.isFinite(n) && n > 0 ? n : 0;
+      };
       const ai = getSettings().ai;
       const provider: AiProvider = {
         name,
@@ -452,6 +612,8 @@ function aiProvidersModal(): Promise<unknown> {
         model,
         supportsVision: cbVision.checked,
         supportsVideo: cbVideo.checked,
+        contextWindow: num(inCtx.value),
+        maxOutput: num(inOut.value),
       };
       const providers = ai.providers.filter((x) => x.name !== (editing ?? name));
       providers.push(provider);
@@ -462,6 +624,7 @@ function aiProvidersModal(): Promise<unknown> {
           editing = null;
           refreshList();
           inName.value = inBase.value = inKey.value = inModel.value = '';
+          inCtx.value = inOut.value = '';
           cbVision.checked = false;
           cbVideo.checked = false;
         })
@@ -491,7 +654,11 @@ function aiProvidersModal(): Promise<unknown> {
         nm.textContent = p.name;
         const info = document.createElement('span');
         info.className = 'pkg-info';
-        info.textContent = `${p.model} · ${p.baseUrl}`;
+        const ctxInfo =
+          p.contextWindow && p.contextWindow > 0
+            ? ` · 上下文 ${p.contextWindow}${p.maxOutput && p.maxOutput > 0 ? '/' + p.maxOutput : ''}`
+            : '';
+        info.textContent = `${p.model} · ${p.baseUrl}${ctxInfo}`;
         const btnEdit = document.createElement('button');
         btnEdit.className = 'mbtn mbtn-sm';
         btnEdit.textContent = '编辑';
@@ -503,6 +670,8 @@ function aiProvidersModal(): Promise<unknown> {
           inModel.value = p.model;
           cbVision.checked = p.supportsVision === true;
           cbVideo.checked = p.supportsVideo === true;
+          inCtx.value = p.contextWindow && p.contextWindow > 0 ? String(p.contextWindow) : '';
+          inOut.value = p.maxOutput && p.maxOutput > 0 ? String(p.maxOutput) : '';
         });
         const btnDel = document.createElement('button');
         btnDel.className = 'mbtn mbtn-sm';
@@ -609,7 +778,35 @@ function aiProvidersModal(): Promise<unknown> {
     refreshWhitelist();
     sec2.append(wlList, wlInputRow, wlMsg);
 
-    body.append(sec1, sec2);
+    // ---- 分区 3:AI 文件访问范围(三态) ----
+    const sec3 = document.createElement('div');
+    sec3.className = 'm-section';
+    const sec3Title = document.createElement('div');
+    sec3Title.className = 'm-sec-title';
+    sec3Title.textContent = 'AI 文件访问范围';
+    const sec3Hint = document.createElement('div');
+    sec3Hint.className = 'm-sec-hint';
+    sec3Hint.textContent = '控制 Agent 读写工程目录(与文档/官方库白名单)之外的文件';
+    const selFs = document.createElement('select');
+    selFs.className = 'm-select';
+    const fsOpts: Array<{ v: 'deny' | 'ask' | 'allow'; label: string }> = [
+      { v: 'deny', label: '禁止:越界直接拒绝,不询问(默认)' },
+      { v: 'ask', label: '询问:越界时弹审批卡片,由你决定是否放行' },
+      { v: 'allow', label: '允许:自由访问电脑任意路径(高风险,慎用)' },
+    ];
+    for (const o of fsOpts) {
+      const opt = document.createElement('option');
+      opt.value = o.v;
+      opt.textContent = o.label;
+      if ((getSettings().ai.fsAccess ?? 'deny') === o.v) opt.selected = true;
+      selFs.appendChild(opt);
+    }
+    selFs.addEventListener('change', () => {
+      void saveSettings({ ...getSettings(), ai: { ...getSettings().ai, fsAccess: selFs.value as 'deny' | 'ask' | 'allow' } });
+    });
+    sec3.append(sec3Title, sec3Hint, selFs);
+
+    body.append(sec1, sec2, sec3);
     const foot = document.createElement('div');
     foot.className = 'm-foot';
     const btnClose = document.createElement('button');
@@ -854,10 +1051,15 @@ async function openWorkspace(dir: string): Promise<void> {
   L.sidebarTitle.textContent = basename(dir);
   sbProject.textContent = entryFile ? `${basename(dir)} · 入口 ${entryFile}` : basename(dir);
   await startLsp();
+  // 打开工程即后台跑玄铁环境自检(不阻塞后续流程;结果注入 AI 快照)
+  void startPreflight();
   const s = getSettings();
-  if (s.lastWorkspace !== dir) {
+  // 最近工程:最近在前、去重、上限 10(与 lastWorkspace 合并一次保存)
+  const recents = [dir, ...(s.recentWorkspaces ?? []).filter((p) => p !== dir)].slice(0, 10);
+  const recentsChanged = JSON.stringify(recents) !== JSON.stringify(s.recentWorkspaces ?? []);
+  if (s.lastWorkspace !== dir || recentsChanged) {
     try {
-      await saveSettings({ ...s, lastWorkspace: dir });
+      await saveSettings({ ...s, lastWorkspace: dir, recentWorkspaces: recents });
     } catch {
       // 设置写失败不阻塞主流程
     }
@@ -920,6 +1122,26 @@ function showTreeMenu(e: MouseEvent, node: FileNode | null): void {
       });
     },
   });
+  items.push(CONTEXT_SEP);
+  // 多选(ctrl/shift/框选)后的批量添加;单选即该项
+  const sel = fileTree.selectedEntries();
+  if (sel.length > 1) {
+    items.push({
+      label: `添加 ${sel.length} 项到对话`,
+      action: () => {
+        setAiDock(true);
+        for (const ent of sel) aiPanel.addRef({ kind: 'path', path: ent.path, text: ent.isDir ? '(目录)' : '' });
+      },
+    });
+  } else {
+    items.push({
+      label: '添加到对话',
+      action: () => {
+        setAiDock(true);
+        aiPanel.addRef({ kind: 'path', path: node.path, text: node.isDir ? '(目录)' : '' });
+      },
+    });
+  }
   items.push(CONTEXT_SEP);
   items.push({ label: '重命名', action: () => void renameNode(node) });
   items.push({ label: '删除', danger: true, action: () => void deleteNode(node) });
@@ -2178,16 +2400,76 @@ function bindUi(): void {
     },
     onAddToChat: (ref) => {
       setAiDock(true);
-      aiPanel.addSelectionRef(ref);
+      aiPanel.addRef({ kind: 'code', ...ref });
     },
   });
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyI, () => selTools.triggerEdit());
   editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyU, () => selTools.triggerAdd());
 
+  // 文本区「添加到对话」:松开鼠标即捕获选中文本(终端/构建共用);xterm 选区不随点击丢失
+  const attachSelectionAdder = (
+    host: HTMLElement,
+    getText: () => string,
+    makeRef: (text: string) => { kind: 'terminal' | 'build'; path: string; text: string },
+  ): void => {
+    let pop: HTMLElement | null = null;
+    const hide = (): void => {
+      pop?.remove();
+      pop = null;
+    };
+    host.addEventListener('mouseup', (e) => {
+      if (e.button !== 0) return;
+      window.setTimeout(() => {
+        const text = getText().trim();
+        hide();
+        if (!text) return;
+        const btn = document.createElement('button');
+        btn.className = 'sel-add-pop';
+        btn.innerHTML = '<i class="codicon codicon-add"></i>添加到对话';
+        btn.style.left = `${Math.max(8, Math.min(e.clientX, window.innerWidth - 150))}px`;
+        btn.style.top = `${Math.max(8, e.clientY - 36)}px`;
+        btn.addEventListener('mousedown', (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+        });
+        btn.addEventListener('click', () => {
+          setAiDock(true);
+          aiPanel.addRef(makeRef(text));
+          hide();
+        });
+        pop = btn;
+        document.body.appendChild(btn);
+      }, 0);
+    });
+    document.addEventListener(
+      'mousedown',
+      (e) => {
+        if (pop && !pop.contains(e.target as Node)) hide();
+      },
+      true,
+    );
+    host.addEventListener('scroll', hide, true);
+  };
+  attachSelectionAdder(L.termHost, () => term.activeSelection(), (t) => ({ kind: 'terminal', path: '终端输出', text: t }));
+  attachSelectionAdder(L.buildHost, () => term.buildSelection(), (t) => ({ kind: 'build', path: '构建输出', text: t }));
+
   const openFolder = (): void => {
     void pickDir('选择玄铁工程文件夹').then((d) => {
       if (d) void openWorkspace(d);
     });
+  };
+
+  /** 打开最近工程:目录已不存在时提示并从最近列表移除(VSCode 行为) */
+  const openRecentWorkspace = async (dir: string): Promise<void> => {
+    if (!(await backend.fsExists(dir))) {
+      showToast('该工程文件夹已不存在,已从最近列表移除', 'err');
+      await saveSettings({
+        ...getSettings(),
+        recentWorkspaces: (getSettings().recentWorkspaces ?? []).filter((p) => p !== dir),
+      }).catch(() => undefined);
+      return;
+    }
+    await openWorkspace(dir);
   };
 
   // VSCode 式菜单栏:只放铸造厂支持的功能
@@ -2198,11 +2480,27 @@ function bindUi(): void {
         items: [
           { act: 'open-folder', label: '打开文件夹…' },
           { act: 'new-project', label: '新建工程…' },
+          {
+            act: 'open-recent',
+            label: '打开最近工程',
+            // 动态子菜单:每次打开菜单时求值,取最新最近列表(VSCode 式,含清除入口)
+            submenu: () => {
+              const recents = getSettings().recentWorkspaces ?? [];
+              if (recents.length === 0) return [{ act: 'noop', label: '(暂无最近工程)' }];
+              return [
+                ...recents.map((p, i) => ({ act: `recent-open:${i}`, label: p })),
+                { act: 'sep', label: '' },
+                { act: 'recent-clear', label: '清除最近打开记录' },
+              ];
+            },
+          },
           { act: 'sep', label: '' },
           { act: 'save', label: '保存', shortcut: 'Ctrl+S' },
           { act: 'save-all', label: '全部保存' },
           { act: 'sep', label: '' },
           { act: 'refresh-tree', label: '刷新文件树' },
+          { act: 'sep', label: '' },
+          { act: 'relaunch-admin', label: '以管理员身份重启' },
         ],
       },
       {
@@ -2245,6 +2543,8 @@ function bindUi(): void {
         items: [
           { act: 'help-docs', label: '官方文档 (xt.markjy.com)' },
           { act: 'sep', label: '' },
+          { act: 'feedback', label: '反馈问题' },
+          { act: 'sep', label: '' },
           { act: 'help-about', label: '关于铸造厂…' },
         ],
       },
@@ -2252,6 +2552,25 @@ function bindUi(): void {
     (act) => {
       if (act === 'open-folder') openFolder();
       else if (act === 'new-project') void newProjectModal();
+      else if (act.startsWith('recent-open:')) {
+        const idx = Number(act.slice('recent-open:'.length));
+        const dir = (getSettings().recentWorkspaces ?? [])[idx];
+        if (dir) void openRecentWorkspace(dir);
+      } else if (act === 'recent-clear') {
+        void saveSettings({ ...getSettings(), recentWorkspaces: [] })
+          .then(() => showToast('已清除最近打开记录', 'ok'))
+          .catch((err: unknown) => showToast(String(err), 'err'));
+      } else if (act === 'feedback') {
+        aiPanel.openFeedback();
+      } else if (act === 'relaunch-admin') {
+        void (async () => {
+          if (await backend.isElevated()) {
+            showToast('当前已是管理员模式', 'ok');
+            return;
+          }
+          await backend.relaunchAsAdmin();
+        })().catch((err: unknown) => showToast(String(err), 'err'));
+      }
       else if (act === 'save') void saveActive();
       else if (act === 'save-all') void tabs.saveAll().catch((err: unknown) => showToast(`保存失败: ${String(err)}`, 'err'));
       else if (act === 'refresh-tree') void reloadTree();
@@ -2489,6 +2808,8 @@ async function boot(): Promise<void> {
   void checkAndFetchDocs().then((r) => {
     if (r) showToast(`玄铁文档已更新(版本 ${r.version},共 ${r.count} 篇)`, 'ok');
   });
+  // 启动拉取后台自定义的玄铁基础认知块(有网即覆盖本地缓存;离线沿用本地/内置)
+  void refreshAiPrimer();
   updateAccountLabel();
   const s = getSettings();
   if (s.lastWorkspace) {

@@ -97,6 +97,18 @@ export class TerminalPane {
     }
   }
 
+  /** 当前活动终端会话的选中文本(「添加到对话」用);无选中返回空串。 */
+  activeSelection(): string {
+    const s = this.activeId ? this.sessions.get(this.activeId) : undefined;
+    return s ? s.term.getSelection() : '';
+  }
+
+  /** 构建视图(编译输出)的选中文本;无选中返回空串。 */
+  buildSelection(): string {
+    const s = this.sessions.get('build');
+    return s ? s.term.getSelection() : '';
+  }
+
   private writeSession(s: TermSession, data: string): void {
     s.term.write(data);
   }

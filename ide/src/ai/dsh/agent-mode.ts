@@ -8,11 +8,12 @@
  * 挂审批弹窗(write_file/run_command 逐次批准,拒绝即 deny)。
  */
 import { createAgentRuntime, type AgentRuntime, type AgentSessionHandle } from './runtime'
-import type { OpenAiChannelConfig } from './adapter-openai'
+import type { OpenAiChannelConfig, TurnAttachment } from './adapter-openai'
 import { createIdeTools, APPROVAL_GATED_TOOLS, approvalPreview, commandToken } from './tools'
 import type { ApprovalPrompt, ApprovalVerdict } from './approval'
 import type { SseTransport } from './transport'
 import { aiLog } from '../log-bus'
+import { XUANTIE_PRIMER } from '../xuantie-primer'
 import type { AssistantStreamFrame, SessionEvent } from '@dsh-core'
 
 /** Agent 审批模式:confirm(变更前确认,默认)/auto-edit(自动编辑)/full-control(完全控制)。 */
@@ -45,6 +46,21 @@ export interface AgentModeDeps {
   loadDocsIndex?(): Promise<{ dir: string; index: string; count: number } | null>
   /** 开发环境快照(编译器/包管理器路径与版本、工程根/入口、官方库目录;IDE 实测注入) */
   getEnvSnapshot?(): Promise<string>
+  /** 官方库根(只读白名单;未探测到返回 undefined) */
+  getLibDir?(): string | undefined
+  /** 历史回放兜底:会话因换模型/换档位等原因重建且无显式注入记录时,向面板取一份
+   *  此前对话节选(不实现则按无历史重建) */
+  getHistoryReplay?(): string
+  /** 工程外访问策略(设置项「允许AI访问工程目录外的文件」;缺省 deny) */
+  /** 玄铁基础认知块:后台版本(本地缓存)优先,缺省用内置常量 */
+  getPrimer?(): Promise<string>
+  getFsAccess?(): 'deny' | 'ask' | 'allow'
+  /** 越界访问审批(ask 策略;返回 true 放行) */
+  requestOutOfScope?(path: string, op: string): Promise<boolean>
+  /** xtc 路径(校验工具用) */
+  getXtcPath?(): Promise<string | null>
+  /** 本轮待发附件(Agent 媒体注入;turn 内所有请求都带) */
+  getTurnAttachments?(): readonly TurnAttachment[]
 }
 
 /** 面板档位 → OpenAI reasoning_effort;off/none 省略该参数,其余原样透传(含 xhigh/max)。
@@ -71,6 +87,9 @@ export interface AgentTurnUI {
   onReasoningDelta(delta: string): void
   onToolCall(info: { callId: string; name: string; arguments: string }): void
   onToolStatus(callId: string, status: ToolCardStatus, detail?: string): void
+  /** 工具参数流式生成阶段(write_file 的大文件内容可达几十秒):面板据此立"准备中"卡,
+   *  否则在正式 tool/call 事件到达前 IDE 侧完全无提示(实测反馈的空窗期) */
+  onToolStreamDelta?(callId: string, name: string, argumentsDelta: string): void
   onUsage(usage: { inputTokens: number; outputTokens: number; totalTokens?: number }): void
 }
 
@@ -119,6 +138,12 @@ export class AgentMode {
     await this.disposeInner()
 
     await this.loadInstructions()
+    // 无显式注入记录时向面板兜底取回放:覆盖换模型/换推理档/重启恢复等一切重建路径,
+    // 否则新会话的模型只看得到本次消息(实测反馈:重新生成后"这是会话的第一条消息")
+    if (!this.contextNote) {
+      const replay = this.deps.getHistoryReplay?.() ?? ''
+      if (replay) this.contextNote = replay
+    }
     const dsh = await import('@dsh-core')
     this.runtime = await createAgentRuntime({
       channel,
@@ -126,10 +151,18 @@ export class AgentMode {
       reasoningEffort: effort,
       projectInstructions: this.instructions?.block ?? '',
       ...(this.deps.transport ? { transport: this.deps.transport } : {}),
+      ...(this.deps.getTurnAttachments ? { getTurnAttachments: () => this.deps.getTurnAttachments!() } : {}),
       tools: createIdeTools(dsh.defineTool, {
         workspace: this.deps.getWorkspace(),
-        // 文档库根必须传入:read_file/list_files 双根白名单靠它,漏传会让 AI 读文档全部越界
+        // 文档库根与官方库根必须传入:read_file/list_files 只读白名单靠它们,
+        // 漏传会让 AI 读文档/库源码全部越界(实测踩到),只能靠反复试错
         ...(this.docsDir ? { docsDir: this.docsDir } : {}),
+        ...(this.deps.getLibDir?.() ? { libDir: this.deps.getLibDir?.() } : {}),
+        fsAccess: () => this.deps.getFsAccess?.() ?? 'deny',
+        ...(this.deps.requestOutOfScope
+          ? { requestOutOfScope: (p: string, op: string) => this.deps.requestOutOfScope!(p, op) }
+          : {}),
+        ...(this.deps.getXtcPath ? { getXtcPath: () => this.deps.getXtcPath!() } : {}),
         ...(this.deps.onFileWritten ? { onFileWritten: this.deps.onFileWritten } : {}),
         ...(this.deps.onWriteDiff ? { onWriteDiff: this.deps.onWriteDiff } : {}),
       }),
@@ -198,6 +231,8 @@ export class AgentMode {
         const chunk = frame.chunk
         if (chunk.type === 'text-delta') this.ui.onTextDelta(chunk.text)
         else if (chunk.type === 'reasoning-delta') this.ui.onReasoningDelta(chunk.text)
+        else if (chunk.type === 'tool-call-delta')
+          this.ui.onToolStreamDelta?.(String(chunk.id ?? ''), chunk.name ?? '', chunk.argumentsDelta)
         else if (chunk.type === 'usage') this.ui.onUsage(chunk.usage)
         else if (chunk.type === 'finish') aiLog('info', 'agent-mode', `assistant finish: ${chunk.reason.kind}`)
       }),
@@ -256,8 +291,8 @@ export class AgentMode {
 
   /** 工程指令(懒加载一次,会话重建不重读——同一工程生命周期内文件不变) */
   private instructions: { names: string[]; block: string } | undefined
-  /** 上下文压缩摘要(IDE 面板注入;随会话重建重携) */
-  private compressionNote = ''
+  /** 会话重建注入记录(压缩摘要/历史回放;随会话重建重携进系统提示词) */
+  private contextNote = ''
   private docsCount = 0
   private docsDir = ''
 
@@ -282,12 +317,22 @@ export class AgentMode {
       aiLog('warn', 'agent-mode', `环境快照读取失败(跳过): ${error instanceof Error ? error.message : String(error)}`);
       env = '';
     }
-    let block = env;
-    if (this.compressionNote) {
+    // 玄铁语言基础认知放最前:模型必须知道语言是什么/基础语法,否则会按其他语言直觉乱猜
+    // (实测:把 elif 猜成「否 若」,实为「抑」)
+    // 认知块:后台自定义版本(本地缓存)优先,内置常量兜底(模型须知道语言事实,防按他语言直觉乱猜)
+    let primer = XUANTIE_PRIMER;
+    try {
+      const remote = (await this.deps.getPrimer?.()) ?? '';
+      if (remote.trim()) primer = remote;
+    } catch (error) {
+      aiLog('warn', 'agent-mode', `基础认知读取失败(用内置): ${error instanceof Error ? error.message : String(error)}`);
+    }
+    let block = '\n\n' + primer + env;
+    if (this.contextNote) {
       block +=
-        '\n\n<历史对话摘要 本会话较早前的对话已被 IDE 自动压缩为下述要点,继续任务时以此为准;细节可按需重新读取文件核实>\n' +
-        this.compressionNote +
-        '\n</历史对话摘要>';
+        '\n\n<先前会话记录 由 IDE 注入:本次会话重建前的对话内容(压缩摘要或历史回放),继续任务时以此为准;细节可按需重新读取文件核实>\n' +
+        this.contextNote +
+        '\n</先前会话记录>';
     }
     if (files.length > 0) {
       block +=
@@ -358,10 +403,11 @@ export class AgentMode {
     }
   }
 
-  /** 上下文压缩:记录摘要并强制重建会话——下次 ensureSession 重读环境快照/工程指令/
-   *  文档索引并拼接摘要(loadInstructions 缓存一并失效)。 */
-  async applyCompression(note: string): Promise<void> {
-    this.compressionNote = note
+  /** 注入会话重建记录(压缩摘要/历史回放)并强制重建会话——下次 ensureSession 重读
+   *  环境快照/工程指令/文档索引并拼接本记录(loadInstructions 缓存一并失效)。
+   *  回退/重新生成/压缩一律走这里:漏注入会让重建后的模型"失忆"(实测反馈)。 */
+  async injectContext(note: string): Promise<void> {
+    this.contextNote = note
     this.instructions = undefined
     await this.dropSession()
   }

@@ -9,6 +9,7 @@ mod fsops;
 mod exec;
 mod http;
 mod lsp;
+mod preflight;
 mod pty;
 mod scaffold;
 mod tools;
@@ -62,6 +63,10 @@ fn main() {
             docs::fetch_docs,
             docs::docs_index,
             docs::docs_search,
+            docs::docs_examples,
+            docs::primer_read,
+            preflight::preflight_run,
+            docs::primer_write,
             tools::attach_read,
             lsp::lsp_start,
             lsp::lsp_send,

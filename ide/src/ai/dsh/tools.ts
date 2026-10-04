@@ -19,10 +19,18 @@ export interface IdeToolsOptions {
   workspace: string
   /** 玄铁语言文档库根(app 数据目录下 docs/;read_file/list_files 对该目录同样放行) */
   docsDir?: string
+  /** 官方库根(xtc 邻近 lib/;只读放行,供 AI 直接读库源码查证 API) */
+  libDir?: string
   /** write_file 成功落盘后回调(绝对路径,已过 resolveInside 守卫);用于 IDE 刷新文件树/编辑器 */
   onFileWritten?(absPath: string): void
   /** write_file 的行级 diff 结果(执行时算好);面板据此渲染「写入 <路径> +N -M」标题 */
   onWriteDiff?(info: { callId: string; path: string; added: number; removed: number; isNew: boolean }): void
+  /** 工程外访问策略:deny=直接拒绝(默认)/ask=逐次审批/allow=自由访问(高风险) */
+  fsAccess?(): 'deny' | 'ask' | 'allow'
+  /** ask 策略下越界访问的审批回调(返回 true 放行);op 如 "读取"/"写入"/"列目录" */
+  requestOutOfScope?(path: string, op: string): Promise<boolean>
+  /** xtc 路径(校验工具用;未配置返回 null) */
+  getXtcPath?(): Promise<string | null>
 }
 
 /** 行级 diff 计数(LCS;任一侧超 5000 行只对前 5000 行算并标注 truncated)。 */
@@ -125,8 +133,71 @@ function renderTree(nodes: FileNode[], depth: number, prefix: string, budget: { 
 
 /** 构建 v1 工具集;defineTool 注入自懒加载的 @dsh-core。 */
 export function createIdeTools(defineTool: DefineTool, options: IdeToolsOptions): ToolDefinition[] {
-  const { workspace, docsDir, onFileWritten, onWriteDiff } = options
-  const allowedRoots: readonly string[] = docsDir ? [workspace, docsDir] : [workspace]
+  const { workspace, docsDir, libDir, onFileWritten, onWriteDiff } = options
+  // 只读白名单:工程根 + 文档库 + 官方库(write_file 不受影响,仍只限工程根)
+  const allowedRoots: readonly string[] = [
+    workspace,
+    ...(docsDir ? [docsDir] : []),
+    ...(libDir ? [libDir] : []),
+  ]
+
+  const isAbsPath = (p: string): boolean =>
+    /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\') || p.startsWith('/')
+  /** 越界路径的绝对化(相对路径按工程根解释;'.' 特判工程根) */
+  const absolutize = (input: string): string => {
+    const raw = input.trim()
+    if (isAbsPath(raw)) return raw
+    if (raw === '.' || raw === '') return workspace
+    return `${workspace}\\${raw}`
+  }
+  /** 路径解析(异步):根内直通;越界按 fsAccess 策略——禁止=原报错 / 允许=放行 / 询问=弹审批后放行 */
+  const resolvePath = async (roots: readonly string[], input: string, op: string): Promise<string> => {
+    try {
+      return resolveInside(roots, input)
+    } catch (err) {
+      const mode = options.fsAccess?.() ?? 'deny'
+      if (mode === 'deny') throw err
+      const abs = absolutize(input)
+      if (mode === 'allow') return abs
+      if (!options.requestOutOfScope) throw err
+      const ok = await options.requestOutOfScope(abs, op)
+      if (!ok) throw new Error(`用户拒绝访问工作区外路径(${op}): ${input}`)
+      return abs
+    }
+  }
+
+  /** 目录尾斜杠剥离(校验内核拼临时文件名用) */
+  const trimDir = (p: string): string => p.replace(/[\\/]+$/, '')
+
+  /**
+   * xtc 快速校验内核:代码写入工程 .foundry/ 临时文件 → `xtc tie -jc`(仅检查,约 0.5s)
+   * 或 `xtc pao`(编译并运行,产物落缓存自动清理) → 返回输出 → 删除临时文件。
+   * 绝不污染工程根(AI 实测教训:残留 _captest.xt 于工程根)。
+   */
+  const runXtcOnCode = async (code: string, run: boolean): Promise<string> => {
+    const xtc = (await options.getXtcPath?.()) ?? null
+    if (!xtc) return '未找到 xtc 编译器(设置 → 工具链路径),无法校验'
+    const sc = `${trimDir(workspace)}/.foundry`
+    const file = `${sc}/校验_${Date.now()}.xt`
+    try {
+      if (!(await backend.fsExists(sc))) await backend.fsCreateDir(sc)
+      await backend.fsWriteFile(file, code)
+      const args = run ? ['pao', file] : ['tie', file, '-jc']
+      const res = await backend.execCapture(xtc, args, trimDir(workspace), 90)
+      const out = [res.stdout, res.stderr].map((x) => x.trim()).filter(Boolean).join('\n')
+      const okNote = res.status === 0 ? (run ? '编译并运行成功' : '检查通过(词法/语法/语义)') : `未通过(退出码 ${res.status})`
+      const timeoutNote = res.timedOut ? ' [超时强制终止]' : ''
+      return `${run ? '编译并运行(xtc pao)' : '编译检查(xtc -jc)'}:${okNote}${timeoutNote}\n${out || '(无输出)'}`
+    } catch (e) {
+      return `校验失败(工具层): ${e instanceof Error ? e.message : String(e)}`
+    } finally {
+      try {
+        await backend.fsDelete(file)
+      } catch {
+        // 临时文件删除失败不影响结论(文件在 .foundry/ 内,不污染工程根)
+      }
+    }
+  }
 
   const readFile = defineTool({
     name: 'read_file',
@@ -138,7 +209,7 @@ export function createIdeTools(defineTool: DefineTool, options: IdeToolsOptions)
     },
     isConcurrencySafe: () => true,
     async execute(args: { path: string }) {
-      const abs = resolveInside(allowedRoots, args.path)
+      const abs = await resolvePath(allowedRoots, args.path, '读取')
       const { text } = await backend.fsReadFile(abs)
       return truncate(text, READ_TRUNCATE_CHARS, '文件')
     },
@@ -157,7 +228,7 @@ export function createIdeTools(defineTool: DefineTool, options: IdeToolsOptions)
     },
     isConcurrencySafe: () => true,
     async execute(args: { path?: string; depth?: number }) {
-      const abs = resolveInside(allowedRoots, args.path ?? '.')
+      const abs = await resolvePath(allowedRoots, args.path ?? '.', '列目录')
       const depth = Math.max(0, Math.min(args.depth ?? 2, 6))
       const tree = await backend.fsListTree(abs)
       const budget = { left: LIST_MAX_ENTRIES }
@@ -179,8 +250,8 @@ export function createIdeTools(defineTool: DefineTool, options: IdeToolsOptions)
       render: (_args, value) => [{ type: 'text', text: String(value) }],
     },
     async execute(args: { path: string; content: string }, exec: { callId?: string }) {
-      // write_file 只允许工程根(玄铁文档库只读):不并入 allowedRoots
-    const abs = resolveInside([workspace], args.path)
+      // write_file 默认只允许工程根(文档库只读);fsAccess=allow/ask 时按同一策略放行工程外
+      const abs = await resolvePath([workspace], args.path, '写入')
       // 写前读旧内容算行级 diff(读不到 = 新文件)
       let diff: { added: number; removed: number; isNew: boolean } | undefined
       try {
@@ -196,7 +267,65 @@ export function createIdeTools(defineTool: DefineTool, options: IdeToolsOptions)
       if (onWriteDiff && exec.callId) {
         onWriteDiff({ callId: exec.callId, path: args.path, ...diff })
       }
-      return `已写入 ${args.path}(${args.content.length} 字符)`
+      // .xt 文件写后即编译校验(约 0.5s):把错误从"下一轮编译"提前到"写下即知"
+      let checkNote = ''
+      if (abs.toLowerCase().endsWith('.xt')) {
+        const xtc = (await options.getXtcPath?.()) ?? null
+        if (xtc) {
+          try {
+            const res = await backend.execCapture(xtc, ['tie', abs, '-jc'], trimDir(workspace), 60)
+            if (res.status === 0) {
+              checkNote = '\n编译器检查(xtc -jc):未发现问题'
+            } else {
+              const out = [res.stdout, res.stderr].map((x) => x.trim()).filter(Boolean).join('\n')
+              checkNote = `\n编译器检查(xtc -jc)发现问题(退出码 ${res.status}):\n${out}`
+            }
+          } catch {
+            // 校验失败不掩盖写入结果本身
+          }
+        }
+      }
+      return `已写入 ${args.path}(${args.content.length} 字符)${checkNote}`
+    },
+  })
+
+  const exampleSearch = defineTool({
+    name: 'example_search',
+    description:
+      '检索可直接抄改的完整玄铁代码示例(本地官方文档的代码块,按关键词命中数排序返回完整片段,' +
+      '标明来源文件与行号)。需要"某个功能怎么写"的完整模板时优先用它(比 docs_search 更直接);' +
+      '不熟悉某个库/语法时先抄示例改,而不是凭记忆推演。',
+    parameters: { query: { type: 'string', required: true } },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    isConcurrencySafe: () => true,
+    async execute(args: { query: string }) {
+      const q = args.query.trim()
+      if (!q) throw new Error('query 不能为空')
+      return await backend.docsExamples(q)
+    },
+  })
+
+  const checkCode = defineTool({
+    name: 'check_code',
+    description:
+      '编译校验一段玄铁代码(约 0.5 秒):代码写入工程 .foundry/ 下临时文件,校验后即删除,' +
+      '绝不污染工程根。不确定语法/库用法时先验证再写正式文件;run=true 时编译并运行(xtc pao)' +
+      '返回真实运行输出,用于验证运行行为。禁止用 run_command 在工程根手写探针测试文件。',
+    parameters: {
+      code: { type: 'string', required: true },
+      run: { type: 'boolean' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: String(value) }],
+    },
+    async execute(args: { code: string; run?: boolean }) {
+      const code = args.code
+      if (!code.trim()) throw new Error('code 不能为空')
+      return await runXtcOnCode(code, args.run === true)
     },
   })
 
@@ -289,7 +418,7 @@ export function createIdeTools(defineTool: DefineTool, options: IdeToolsOptions)
     },
   })
 
-  return [readFile, listFiles, writeFile, runCommand, webFetch, webSearch, docsSearch]
+  return [readFile, listFiles, writeFile, runCommand, webFetch, webSearch, docsSearch, exampleSearch, checkCode]
 }
 
 /** run_command 白名单匹配键:命令行首个 token(程序名)。 */

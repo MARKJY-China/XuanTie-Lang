@@ -231,6 +231,9 @@ export function docsIndex(): Promise<DocsIndexData | null> {
   return invoke('docs_index');
 }
 
+export function docsExamples(query: string, maxExamples?: number): Promise<string> {
+  return invoke<string>('docs_examples', { query, maxExamples: maxExamples ?? null });
+}
 export function docsSearch(query: string, maxResults?: number): Promise<string> {
   return invoke('docs_search', { query, maxResults: maxResults ?? null });
 }
@@ -284,3 +287,26 @@ export function joinPath(dir: string, name: string): string {
 }
 
 export type { AppSettings, FileNode };
+
+// ---- 玄铁基础认知块(社区后台版本覆盖本地缓存;离线用本地/内置) ----
+export function primerRead(): Promise<string | null> {
+  return invoke<string | null>('primer_read');
+}
+export function primerWrite(content: string): Promise<void> {
+  return invoke('primer_write', { content });
+}
+
+// ---- 玄铁环境自检(打开工程后台自动跑;结果注入 AI 环境快照) ----
+export interface PreflightItem {
+  key: string;
+  value: string;
+}
+export interface PreflightResult {
+  ok: boolean;
+  items: PreflightItem[];
+  detail: string;
+  ms: number;
+}
+export function preflightRun(xtc: string): Promise<PreflightResult> {
+  return invoke<PreflightResult>('preflight_run', { xtc });
+}

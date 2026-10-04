@@ -1,4 +1,4 @@
-// 文件树:三态显示(眼睛按钮) + codicon/专属图标 + 右键(含空白区)
+// 文件树:三态显示(眼睛按钮) + codicon/专属图标 + 右键(含空白区) + 多选(ctrl/shift/框选)
 // 模式(由 main.ts 注入,持久化在设置里):
 //   all  = 完全显示:所有文件原位、正常亮度
 //   dim  = 半显示:IDE 认准类型(.xt/已知文本)原位;其余(二进制/未知文本)淡化并整组折叠到整个树末尾
@@ -87,6 +87,12 @@ export class FileTree {
   private expanded = new Set<string>();
   private roots: FileNode[] = [];
   private rootPath = '';
+  // 多选:selected 为路径集,anchor 为 shift 连选锚点;rowEls/order 记录当前可见行(渲染时重建)
+  private selected = new Set<string>();
+  private anchor: string | null = null;
+  private rowEls = new Map<string, HTMLElement>();
+  private order: string[] = [];
+  private meta = new Map<string, boolean>(); // path → isDir(跨渲染保留)
 
   constructor(
     private host: HTMLElement,
@@ -98,6 +104,81 @@ export class FileTree {
       e.preventDefault();
       this.hooks.onContext(e, null);
     });
+    this.setupBandDrag();
+  }
+
+  /** 框选(橡皮筋):空白处按下拖动,松开后按矩形覆盖率选中可见行。
+   *  滚动条上的按下不触发(offsetX 越界判定)。 */
+  private setupBandDrag(): void {
+    this.host.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('.tree-row')) return;
+      if (e.target === this.host && (e.offsetX >= this.host.clientWidth || e.offsetY >= this.host.clientHeight))
+        return;
+      e.preventDefault(); // 抑制文本选择
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const band = document.createElement('div');
+      band.className = 'tree-band';
+      document.body.appendChild(band);
+      let hovered = new Set<string>();
+      const onMove = (ev: MouseEvent): void => {
+        const x1 = Math.min(startX, ev.clientX);
+        const y1 = Math.min(startY, ev.clientY);
+        const x2 = Math.max(startX, ev.clientX);
+        const y2 = Math.max(startY, ev.clientY);
+        band.style.left = x1 + 'px';
+        band.style.top = y1 + 'px';
+        band.style.width = x2 - x1 + 'px';
+        band.style.height = y2 - y1 + 'px';
+        hovered = new Set<string>();
+        for (const [path, el] of this.rowEls) {
+          const r = el.getBoundingClientRect();
+          const hit = r.left < x2 && r.right > x1 && r.top < y2 && r.bottom > y1;
+          el.classList.toggle('band', hit);
+          if (hit) hovered.add(path);
+        }
+      };
+      const onUp = (): void => {
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseup', onUp, true);
+        band.remove();
+        for (const el of this.rowEls.values()) el.classList.remove('band');
+        if (hovered.size > 0) {
+          this.selected = new Set(hovered);
+          this.anchor = this.order.find((p) => this.selected.has(p)) ?? null;
+          this.applySelection();
+        }
+      };
+      document.addEventListener('mousemove', onMove, true);
+      document.addEventListener('mouseup', onUp, true);
+    });
+  }
+
+  /** 当前多选项(右键菜单「添加到对话」用;按树内可见顺序)。 */
+  selectedEntries(): { path: string; isDir: boolean }[] {
+    return this.order
+      .filter((p) => this.selected.has(p))
+      .map((p) => ({ path: p, isDir: this.meta.get(p) === true }));
+  }
+
+  private applySelection(): void {
+    for (const [path, el] of this.rowEls) el.classList.toggle('sel', this.selected.has(path));
+  }
+
+  private selectRange(from: string, to: string): void {
+    const a = this.order.indexOf(from);
+    const b = this.order.indexOf(to);
+    if (a < 0 || b < 0) {
+      this.selected = new Set([to]);
+      this.anchor = to;
+      this.applySelection();
+      return;
+    }
+    const [lo, hi] = a <= b ? [a, b] : [b, a];
+    this.selected = new Set(this.order.slice(lo, hi + 1));
+    this.applySelection();
   }
 
   setDisplay(d: TreeDisplay): void {
@@ -114,6 +195,8 @@ export class FileTree {
   private render(): void {
     const top = this.host.scrollTop;
     this.host.innerHTML = '';
+    this.rowEls.clear();
+    this.order = [];
     for (const node of this.roots) {
       // 根层与目录子项同规则:非 all 模式下,非认准文件不原位渲染(dim 模式进树尾分组,hide 模式消失)
       if (!node.isDir && this.display !== 'all' && !isRecognized(node, this.rootPath)) continue;
@@ -199,18 +282,44 @@ export class FileTree {
     name.title = node.path;
     row.append(twist, icon, name);
 
-    row.addEventListener('click', () => {
+    // 多选登记:路径 → 行元素(框选/选中态刷新用)
+    this.rowEls.set(node.path, row);
+    this.order.push(node.path);
+    this.meta.set(node.path, node.isDir);
+    if (this.selected.has(node.path)) row.classList.add('sel');
+
+    row.addEventListener('click', (e) => {
+      if (e.shiftKey && this.anchor) {
+        this.selectRange(this.anchor, node.path);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) {
+        if (this.selected.has(node.path)) this.selected.delete(node.path);
+        else this.selected.add(node.path);
+        this.anchor = node.path;
+        this.applySelection();
+        return;
+      }
+      this.selected = new Set([node.path]);
+      this.anchor = node.path;
       if (node.isDir) {
         if (this.expanded.has(node.path)) this.expanded.delete(node.path);
         else this.expanded.add(node.path);
         this.render();
       } else {
+        this.applySelection();
         this.hooks.openFile(node.path);
       }
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
+      // 右键落在未选中行上 → 先单选该行(标准文件管理器行为);已在选区内则保留多选
+      if (!this.selected.has(node.path)) {
+        this.selected = new Set([node.path]);
+        this.anchor = node.path;
+        this.applySelection();
+      }
       this.hooks.onContext(e, node);
     });
     return row;

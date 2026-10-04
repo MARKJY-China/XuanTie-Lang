@@ -58,9 +58,13 @@ pub async fn http_stream(
         cancel_slot(id, None);
     };
 
+    // 流式通道不设总超时:原 300s 总超时会拦腰切断长思考/大输出的正常长流——实测
+    // "IDE 放后台跑长任务时流中断高发"(长任务总耗时必然撞线)。改为只约束连接与读空闲:
+    // 180s 无任何数据才算真死,正常 SSE 长流不受总时长限制。
     let client = reqwest::Client::builder()
         .user_agent("xuantie-foundry/0.2")
-        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| format!("HTTP 客户端初始化失败: {}", e))?;
     let mut req = match method.to_uppercase().as_str() {
@@ -114,18 +118,31 @@ pub async fn http_stream(
     let mut buf: Vec<u8> = Vec::new();
     let community = format == "community";
     let sse_raw = format == "sse-raw";
+    // 流诊断统计:块数/字节/总时长/末次数据时间/是否见到 [DONE]。
+    // 结束路径必须能回答"流为什么结束"——上游 EOF 断连与正常 [DONE] 此前无法区分,
+    // 导致 IDE 侧只报"未收到 finish_reason"而无任何线索(实测反馈:控制台看不到根因)。
+    let t0 = std::time::Instant::now();
+    let mut n_chunks: u64 = 0;
+    let mut n_bytes: u64 = 0;
+    let mut last_data = std::time::Instant::now();
+    let mut saw_done = false;
+    let mut aborted = false;
     'outer: while let Some(chunk) = stream.next().await {
         if flag.load(Ordering::Relaxed) {
+            aborted = true;
             let _ = emit_chunk(&app, &id, serde_json::json!({"type":"aborted"}));
             break;
         }
         let bytes = match chunk {
             Ok(b) => b,
             Err(e) => {
-                let _ = emit_chunk(&app, &id, serde_json::json!({"type":"error","message":format!("读取流失败: {}", e)}));
+                let _ = emit_chunk(&app, &id, serde_json::json!({"type":"error","message":format!("读取流失败: {} (已收 {} 块/{} 字节/{} ms)", e, n_chunks, n_bytes, t0.elapsed().as_millis())}));
                 break;
             }
         };
+        n_chunks += 1;
+        n_bytes += bytes.len() as u64;
+        last_data = std::time::Instant::now();
         buf.extend_from_slice(&bytes);
         // 按空行切分 SSE 事件
         while let Some(pos) = find_event_end(&buf) {
@@ -136,6 +153,7 @@ pub async fn http_stream(
                     let payload = payload.trim();
                     if payload == "[DONE]" {
                         // [DONE] 不转发,统一转成末尾的 {type:"done"}(sse-raw 同此约定)
+                        saw_done = true;
                         break 'outer;
                     }
                     if sse_raw {
@@ -186,6 +204,34 @@ pub async fn http_stream(
             }
         }
     }
+    // 结束原因诊断:EOF 且未见 [DONE] = 上游/网关在流中途切断了连接(IDE 侧将表现为截断)
+    if !aborted && !saw_done {
+        let _ = emit_chunk(
+            &app,
+            &id,
+            serde_json::json!({
+                "type": "warn",
+                "message": format!(
+                    "上游连接在流中途结束(EOF,未收到 [DONE]):已收 {} 块/{} 字节/总 {} ms,末次数据距今 {} ms——多为网关/服务端空闲或总时长切断",
+                    n_chunks, n_bytes, t0.elapsed().as_millis(), last_data.elapsed().as_millis()
+                )
+            }),
+        );
+    }
+    let _ = emit_chunk(
+        &app,
+        &id,
+        serde_json::json!({
+            "type": "stat",
+            "data": {
+                "chunks": n_chunks,
+                "bytes": n_bytes,
+                "ms": t0.elapsed().as_millis(),
+                "end": if aborted { "aborted" } else if saw_done { "done" } else { "eof" },
+                "silentMs": last_data.elapsed().as_millis(),
+            }
+        }),
+    );
     let _ = emit_chunk(&app, &id, serde_json::json!({"type":"done"}));
     cleanup(&id);
     Ok(())
