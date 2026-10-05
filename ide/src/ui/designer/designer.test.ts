@@ -1,10 +1,24 @@
 // 铸造厂可视化 UI 设计器 —— 切片 1 自检(纯函数:解析/生成/区段读写)
 // 运行: npm run test:designer   (esbuild 打包 + node 执行;无新增依赖)
 // 判定: 往返幂等 / 生成确定性(规范序、无尾随逗号) / 区外零改动(含 CRLF 保持) / 非子集→只读
-import { parseDesignFunction } from './parser';
+import { parseDesignFunction, type DesignNode } from './parser';
 import { generateDesignFunction } from './generator';
 import { findRegions, replaceRegion, appendRegion, regionText } from './region';
 import { layoutTree, type Measure } from './layout';
+import {
+  applyMove,
+  applyResize,
+  findParent,
+  findPath,
+  levelOp,
+  lockedAxes,
+  moveMode,
+  nodeAtPath,
+  numOpt,
+  snapMove,
+  snapResize,
+  MIN_SIZE,
+} from './edit';
 
 declare const process: { exitCode?: number };
 
@@ -343,6 +357,167 @@ t('布局:平移叠加 / 可视=假淡显 / 滚动容器裁剪区', () => {
   const scrolled = rects[2];
   ok(!!scrolled.clip, '滚动容器内子项带裁剪区' + 现场);
   eq([scrolled.clip!.w, scrolled.clip!.h], [100, 60], '裁剪区 = 视口尺寸' + 现场);
+});
+
+// ---------------- 切片 3:编辑内核 ----------------
+
+/** 解析 → 取根(编辑类用例的起点) */
+function rootOf(src: string): DesignNode {
+  const r = parseDesignFunction(src);
+  ok(r.ok, '样例解析应通过;issues=' + JSON.stringify(r.issues));
+  return r.root!;
+}
+
+/** 改树 → 重发整区 → 重解析(复刻面板写回闭环);返回新树 */
+function roundTrip(root: DesignNode): { root: DesignNode; text: string } {
+  const text = generateDesignFunction('界面', 's', root);
+  const r = parseDesignFunction(text);
+  ok(r.ok, '生成文本应可被解析;issues=' + JSON.stringify(r.issues));
+  return { root: r.root!, text };
+}
+
+// 子集约束:容器必须 设 成变量,children 里只许 叶子调用 | 已设容器名(故 行 先写、绝对 后写)
+const EDIT_SAMPLE = [
+  '函 界面(s) {',
+  '    设 条 = UI.行([UI.文本("甲", {}), UI.文本("乙", {})], {"宽": 300, "高": 40})',
+  '    设 根 = UI.绝对([',
+  '        UI.矩形({"x": 40, "y": 24, "宽": 200, "高": 80, "平移x": 5}),',
+  '        UI.矩形({"x": 100, "y": 100, "宽": 50, "高": 50}),',
+  '        UI.矩形({"宽": 60, "高": 30, "锚": {"左": 0.5}, "偏": {"左": -30}}),',
+  '        条',
+  '    ], {"宽": 800, "高": 560})',
+  '    返 根',
+  '}',
+  '',
+].join('\n');
+
+t('编辑:移动模式判定(绝对子项=x/y,锚定/流式=平移,根=不可动)', () => {
+  const root = rootOf(EDIT_SAMPLE); // 根即 绝对 容器
+  const anchored = root.children[2];
+  const row = root.children[3];
+  eq(moveMode(root.children[0], root), 'xy', '绝对容器的非锚定子项 → 写 x/y');
+  eq(moveMode(anchored, root), 'offset', '带锚的节点 → 写 平移(x/y 会被忽略)');
+  eq(moveMode(row.children[0], row), 'offset', '行容器子项 → 写 平移(不改兄弟排布)');
+  eq(moveMode(root, null), 'none', '根无父 → 不可移动');
+});
+
+t('编辑:applyMove 增量语义(delta=0 不留噪声键)', () => {
+  const root = rootOf(EDIT_SAMPLE);
+  const r0 = root.children[0];
+  ok(applyMove(r0, 'xy', 20, -5), '移动应有写入');
+  eq(numOpt(r0, 'x'), 60, 'x = 原值 + 20');
+  eq(numOpt(r0, 'y'), 19, 'y = 原值 - 5');
+  eq(numOpt(r0, '平移x'), 5, '原有 平移x 不受 x/y 写入影响');
+  const anchored = root.children[2];
+  ok(applyMove(anchored, 'offset', 10, 0), '锚定节点移动写 平移x');
+  eq(numOpt(anchored, '平移y'), undefined, '未动的轴不产生 "平移y": 0 噪声');
+  eq(applyMove(root, 'none', 10, 10), false, '根不可移动');
+});
+
+t('编辑:移动后布局盒位移恰等于增量(编辑内核 ⇄ 布局引擎闭环)', () => {
+  const cases: Array<[number[], number, number, string]> = [
+    [[0], 20, -5, '绝对子项写 x/y'],
+    [[2], 10, 4, '锚定节点写 平移'],
+    [[3, 1], -12, 7, '行容器子项写 平移'],
+  ];
+  for (const [path, dx, dy, label] of cases) {
+    const root = rootOf(EDIT_SAMPLE);
+    const node = nodeAtPath(root, path)!;
+    if (!node) throw new Error('路径无效: ' + path.join('.'));
+    const b0 = layoutTree(root, MEASURE).boxes.find((v) => v.node === node)!;
+    const ox = b0.x;
+    const oy = b0.y;
+    const mode = moveMode(node, findParent(root, node));
+    ok(applyMove(node, mode, dx, dy), label + ':写回应成功');
+    const rt = roundTrip(root);
+    const node2 = nodeAtPath(rt.root, path)!;
+    const b1 = layoutTree(rt.root, MEASURE).boxes.find((v) => v.node === node2)!;
+    eq([b1.x - ox, b1.y - oy], [dx, dy], label + ':盒位移应等于拖拽增量');
+  }
+});
+
+t('编辑:缩放写 宽/高,左/上手柄同步移动原点,下限截断,锁定轴忽略', () => {
+  const root = rootOf(EDIT_SAMPLE);
+  const boxOf = (n: DesignNode): { x: number; y: number; w: number; h: number } => {
+    const b = layoutTree(root, MEASURE).boxes.find((v) => v.node === n)!;
+    return { x: b.x, y: b.y, w: b.w, h: b.h };
+  };
+  const r0 = root.children[0];
+  ok(applyResize(r0, 'xy', boxOf(r0), 'se', 30, 10, { x: false, y: false }), 'se 应写入');
+  eq([numOpt(r0, '宽'), numOpt(r0, '高')], [230, 90], '宽/高 各加增量');
+  eq([numOpt(r0, 'x'), numOpt(r0, 'y')], [40, 24], 'se 不动原点');
+  const r1 = root.children[1];
+  ok(applyResize(r1, 'xy', boxOf(r1), 'w', 20, 0, { x: false, y: false }), 'w 应写入');
+  eq(numOpt(r1, '宽'), 30, 'w:宽 - 20');
+  eq(numOpt(r1, 'x'), 120, 'w:左边缘跟手(x + 20)');
+  ok(applyResize(r1, 'xy', boxOf(r1), 'e', -1000, 0, { x: false, y: false }), '触底仍写入');
+  eq(numOpt(r1, '宽'), MIN_SIZE, '宽 截断到尺寸下限');
+  eq(applyResize(r0, 'xy', boxOf(r0), 'e', 10, 0, { x: true, y: false }), false, '锁定轴整体忽略');
+});
+
+t('编辑:锁定轴判定(双锚轴与弹性主轴)', () => {
+  const srcA = [
+    '函 界面(s) {',
+    '    设 根 = UI.绝对([',
+    '        UI.矩形({"宽": 100, "高": 50, "锚": {"左": 0, "右": 1}}),',
+    '        UI.矩形({"宽": 40, "高": 40, "锚": {"上": 0.5}})',
+    '    ], {"宽": 800, "高": 560})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const rootA = rootOf(srcA); // 根即 绝对 容器
+  eq(lockedAxes(rootA.children[0], rootA), { x: true, y: false }, '双锚(左+右)→ 水平尺寸锁定');
+  eq(lockedAxes(rootA.children[1], rootA), { x: false, y: false }, '单锚不锁尺寸');
+  const srcB = [
+    '函 界面(s) {',
+    '    设 根 = UI.行([',
+    '        UI.文本("甲", {}),',
+    '        UI.矩形({"宽": 40, "高": 40, "弹性": 1})',
+    '    ], {"宽": 300, "高": 40})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const rootB = rootOf(srcB); // 根即 行 容器
+  eq(lockedAxes(rootB.children[0], rootB), { x: false, y: false }, '无弹性:行主轴可手调');
+  eq(lockedAxes(rootB.children[1], rootB), { x: true, y: false }, '有弹性份额:行主轴锁定');
+});
+
+t('编辑:吸附(对位取最近一条,阈值外不动,给出参考线)', () => {
+  const box = { x: 100, y: 100, w: 50, h: 50 };
+  const target = { x: 198, y: 300, w: 60, h: 20 }; // x 线:198 / 228 / 258
+  const s = snapMove(box, [target], 100, 0, 6); // 落点左边缘 200,距 198 差 2
+  eq(s.dx, 98, '左边缘吸附到参考左边缘');
+  eq(s.dy, 0, '垂直方向无对位');
+  ok(s.guides.length === 1 && s.guides[0].axis === 'x' && s.guides[0].pos === 198, '给出竖向参考线(pos=198)');
+  const s2 = snapMove(box, [target], 0, 0, 6);
+  eq([s2.dx, s2.dy], [0, 0], '阈值外不动');
+  eq(s2.guides.length, 0, '无吸附则无参考线');
+  const s3 = snapResize(box, [target], 'e', 46, 0, 6); // 右边缘 196,距 198 差 2
+  eq(s3.dx, 48, '缩放的被拖边吸附到参考线');
+  ok(s3.guides.length === 1 && s3.guides[0].pos === 198, '缩放同样给参考线');
+});
+
+t('编辑:层级操作与选中路径', () => {
+  const root = rootOf(EDIT_SAMPLE); // 根即 绝对 容器,children = [矩形, 矩形, 矩形, 条]
+  const [a, b, c] = root.children;
+  const order = (): string[] => root.children.map((n) => (n === a ? 'a' : n === b ? 'b' : n === c ? 'c' : 'd'));
+  eq(findPath(root, c), [2], '路径定位');
+  eq(nodeAtPath(root, [2]), c, '按路径还原节点');
+  eq(order(), ['a', 'b', 'c', 'd'], '初始序');
+  ok(levelOp(root, c, 'up'), 'c 上移一层');
+  eq(order(), ['a', 'c', 'b', 'd'], '上移=与前一位置换');
+  ok(levelOp(root, c, 'top'), 'c 置顶');
+  eq(order(), ['a', 'b', 'd', 'c'], '置顶=移到末尾');
+  ok(levelOp(root, c, 'bottom'), 'c 置底');
+  eq(order(), ['c', 'a', 'b', 'd'], '置底=移到开头');
+  eq(levelOp(root, c, 'up'), false, '已在开头,上移不动');
+  eq(levelOp(root, c, 'bottom'), false, '已在开头,置底不动');
+  eq(levelOp(root, root, 'up'), false, '根无层级');
+  const rt = roundTrip(root);
+  eq(rt.root.children.length, 4, '层级改动往返后子项数不变');
+  eq(findPath(rt.root, rt.root.children[0]), [0], '往返后路径语义不变(底 = 位置0)');
 });
 
 console.log('\n设计器自检: 通过 ' + pass + ' / 失败 ' + fail);

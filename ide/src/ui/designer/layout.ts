@@ -35,6 +35,18 @@ export interface Measure {
 
 export const DEFAULT_FRAME = { w: 800, h: 560 };
 
+/**
+ * 弹性份额:弹性 控件取其一号实参;其余控件取 弹性 选项(库:两处都可给弹性份额)。
+ * 编辑内核(edit.ts)判"主轴尺寸能否手调"也用它,故独立导出,勿与 layoutTree 内各留一份。
+ */
+export function flexShare(node: DesignNode): number {
+  if (node.widget === '弹性') {
+    const v = node.args[0];
+    return v && v.t === 'num' ? Number(v.raw) || 0 : 0;
+  }
+  return numOpt(node, '弹性') ?? 0;
+}
+
 // ---------- 选项取数 ----------
 
 function opt(node: DesignNode, key: string): Val | undefined {
@@ -290,21 +302,13 @@ export function layoutTree(root: DesignNode, m: Measure): LayoutResult {
     const mains: number[] = [];
     const margins: Insets[] = [];
     const flexes: number[] = [];
-    // 弹性系数:弹性 控件取其一号实参;其余控件取 弹性 选项(库:两处都可给弹性份额)
-    const flexOf = (ch: DesignNode): number => {
-      if (ch.widget === '弹性') {
-        const v = ch.args[0];
-        return v && v.t === 'num' ? Number(v.raw) || 0 : 0;
-      }
-      return numOpt(ch, '弹性') ?? 0;
-    };
     for (const ch of kids) {
       const o = resolvedSize(ch, m);
       mains.push(horizontal ? o.w : o.h);
       const mg = insetsOpt(ch, '外边距');
       // 外边距对锚定节点不适用(库行为);此处按是否存在锚决定是否计入
       margins.push(anchorOpt(ch) ? { l: 0, t: 0, r: 0, b: 0 } : mg);
-      flexes.push(flexOf(ch));
+      flexes.push(flexShare(ch));
     }
     const base = mains.reduce((s, v, i) => s + v + (horizontal ? margins[i].l + margins[i].r : margins[i].t + margins[i].b), 0) + gap * Math.max(0, kids.length - 1);
     let leftover = Math.max(0, mainSlot - base);

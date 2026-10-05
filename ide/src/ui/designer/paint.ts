@@ -55,13 +55,23 @@ function leafLabel(node: DesignNode): { text: string; dynamic: boolean } {
 export interface PaintResult {
   /** data-ix → 节点(面板用于命中回查) */
   nodes: DesignNode[];
+  /** data-ix → 盒子元素(拖拽预览改 transform/尺寸用) */
+  els: HTMLElement[];
+  /** 节点 → 布局矩形(拖拽算增量、吸附取参考线用) */
+  boxes: Map<DesignNode, LayoutBox>;
+  /** 画布框(参考线挂载点) */
+  frame: HTMLElement;
 }
+
+/** 八角缩放手柄(顺序即 DOM 顺序;data-h 命中用) */
+const HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const;
 
 export function paintDesign(host: HTMLElement, laid: LayoutResult, selected: DesignNode | null, onPick: (n: DesignNode) => void): PaintResult {
   host.innerHTML = '';
   const byNode = new Map<DesignNode, LayoutBox>();
   for (const b of laid.boxes) byNode.set(b.node, b);
   const nodes: DesignNode[] = [];
+  const els: HTMLElement[] = [];
 
   const frame = document.createElement('div');
   frame.className = 'ds-frame';
@@ -84,6 +94,7 @@ export function paintDesign(host: HTMLElement, laid: LayoutResult, selected: Des
     }
     el.dataset.ix = String(nodes.length);
     el.dataset.w = node.widget;
+    els.push(el);
     nodes.push(node);
 
     const bg = colorOf(optVal(node, '底色'));
@@ -144,7 +155,16 @@ export function paintDesign(host: HTMLElement, laid: LayoutResult, selected: Des
         break;
     }
 
-    if (node === selected) el.classList.add('ds-sel');
+    if (node === selected) {
+      el.classList.add('ds-sel');
+      // 八角手柄:命中落点用;是否可用(锁定轴/根)由面板在拖拽开始时判定
+      for (const h of HANDLES) {
+        const hp = document.createElement('div');
+        hp.className = 'ds-h ds-h-' + h;
+        hp.dataset.h = h;
+        el.appendChild(hp);
+      }
+    }
     if (b) {
       for (const ch of node.children) el.appendChild(build(ch, b.x, b.y));
     }
@@ -162,5 +182,5 @@ export function paintDesign(host: HTMLElement, laid: LayoutResult, selected: Des
     if (n) onPick(n);
   });
   host.appendChild(frame);
-  return { nodes };
+  return { nodes, els, boxes: byNode, frame };
 }

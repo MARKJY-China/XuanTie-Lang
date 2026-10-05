@@ -277,19 +277,23 @@ async function refreshAiPrimer(): Promise<void> {
 let preflightState: PreflightState | null = null;
 const pfConsole = new PreflightConsole();
 
-// UI 设计器(Tab 栏右侧开关 ⇄ 编辑器内嵌视图):解析当前文件设计区 → 画布预览 + 检视
+// UI 设计器(Tab 栏右侧开关 ⇄ 编辑器内嵌视图):解析当前文件设计区 → 画布预览 + 编辑
 const designerPanel = new DesignerPanel(L.designerHost, {
   getActive: () => {
     const p = tabs.getActivePath();
     const text = editor.getModel()?.getValue();
     return p && text !== undefined ? { path: p, text } : null;
   },
-  appendToFile: (text) => {
+  // 整文替换,单步可撤销:oldText 与编辑器现状不符(外部改过)时不写入,由面板重读
+  replaceAll: (oldText, newText) => {
     const model = editor.getModel();
-    if (!model) return false;
+    if (!model || model.getValue() !== oldText) return false;
     const last = model.getLineCount();
-    const col = model.getLineMaxColumn(last);
-    editor.executeEdits('ui-designer', [{ range: new monaco.Range(last, col, last, col), text }]);
+    editor.pushUndoStop();
+    editor.executeEdits('ui-designer', [
+      { range: new monaco.Range(1, 1, last, model.getLineMaxColumn(last)), text: newText },
+    ]);
+    editor.pushUndoStop();
     return true;
   },
   copy: (text) => copyText(text),
@@ -306,6 +310,8 @@ function setDesignerMode(on: boolean): void {
   else designerPanel.close();
 }
 L.btnDesignerToggle.addEventListener('click', () => setDesignerMode(!designerOn));
+// 模型变更(设计器写回 / Ctrl+Z 撤销重做 / AI 改写)→ 设计器开着就重读重绘(拖拽中不打断)
+editor.onDidChangeModelContent(() => designerPanel.refreshIfOpen());
 
 /** 未保存计数同步给 Rust(关机拦截 WM_QUERYENDSESSION 需同步读取,读不到 JS 状态) */
 function syncUnsaved(): void {
@@ -2803,6 +2809,20 @@ function bindUi(): void {
   }
 
   window.addEventListener('keydown', (e) => {
+    // 设计器模式下 Monaco 不可见,撤销/重做转发到编辑器(设计器每次落点都是一步可撤销编辑)
+    if (
+      designerOn &&
+      (e.ctrlKey || e.metaKey) &&
+      !e.altKey &&
+      (e.code === 'KeyZ' || e.code === 'KeyY') &&
+      !(e.target instanceof HTMLInputElement) &&
+      !(e.target instanceof HTMLTextAreaElement)
+    ) {
+      e.preventDefault();
+      const redo = e.code === 'KeyY' || e.shiftKey;
+      editor.trigger('ui-designer', redo ? 'redo' : 'undo', null);
+      return;
+    }
     if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === 'KeyS') {
       e.preventDefault();
       void saveActive();
