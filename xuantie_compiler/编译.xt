@@ -197,6 +197,47 @@
         此.函数表["时.微秒"] = 真
         此.符号表["时.睡"] = "@\"xt_time_sleep\""
         此.函数表["时.睡"] = 真
+        // --- 批次一:时间日期结构化(本地时区,对标易语言时间命令) ---
+        此.符号表["时.部分"] = "@\"xt_time_parts\""
+        此.函数表["时.部分"] = 真
+        此.符号表["时.格式"] = "@\"xt_time_format\""
+        此.函数表["时.格式"] = 真
+        此.符号表["时.指定"] = "@\"xt_time_make\""
+        此.函数表["时.指定"] = 真
+        此.符号表["时.间隔"] = "@\"xt_time_diff\""
+        此.函数表["时.间隔"] = 真
+        // --- 批次一:数学扩充 ---
+        此.符号表["数学.取符号"] = "@\"xt_math_sign\""
+        此.函数表["数学.取符号"] = 真
+        此.符号表["数学.正切"] = "@\"xt_math_tan\""
+        此.函数表["数学.正切"] = 真
+        此.符号表["数学.反正弦"] = "@\"xt_math_asin\""
+        此.函数表["数学.反正弦"] = 真
+        此.符号表["数学.反余弦"] = "@\"xt_math_acos\""
+        此.函数表["数学.反余弦"] = 真
+        此.符号表["数学.反正切"] = "@\"xt_math_atan\""
+        此.函数表["数学.反正切"] = 真
+        此.符号表["数学.自然对数"] = "@\"xt_math_log\""
+        此.函数表["数学.自然对数"] = 真
+        此.符号表["数学.反对数"] = "@\"xt_math_exp\""
+        此.函数表["数学.反对数"] = 真
+        此.符号表["数学.随机小数"] = "@\"xt_math_random_float\""
+        此.函数表["数学.随机小数"] = 真
+        // --- 批次一:文件系统扩充 ---
+        此.符号表["文件.建目录"] = "@\"xt_dir_make\""
+        此.函数表["文件.建目录"] = 真
+        此.符号表["文件.删目录"] = "@\"xt_dir_remove\""
+        此.函数表["文件.删目录"] = 真
+        此.符号表["文件.改目录"] = "@\"xt_dir_change\""
+        此.函数表["文件.改目录"] = 真
+        此.符号表["文件.复制"] = "@\"xt_file_copy\""
+        此.函数表["文件.复制"] = 真
+        此.符号表["文件.移动"] = "@\"xt_file_move\""
+        此.函数表["文件.移动"] = 真
+        此.符号表["文件.尺寸"] = "@\"xt_file_size\""
+        此.函数表["文件.尺寸"] = 真
+        此.符号表["文件.修改时间"] = "@\"xt_file_mtime\""
+        此.函数表["文件.修改时间"] = 真
         此.符号表["化"] = "@\"xt_json_serialize\""
         此.函数表["化"] = 真
         此.符号表["解"] = "@\"xt_json_deserialize\""
@@ -1030,6 +1071,31 @@
         // P3 浮点 raw 除零路径:活动尝试块查询 + 可捕捉异常抛投(与装箱 xt_div 同约定)
         此.写出("declare i32 @\"xt_exc_active\"()")
         此.写出("declare void @\"xt_exc_raise\"(i8*)")
+        // 批次一:核心支持库扩充
+        此.写出("declare i64 @\"xt_math_sign\"(i64)")
+        此.写出("declare i64 @\"xt_math_tan\"(i64)")
+        此.写出("declare i64 @\"xt_math_asin\"(i64)")
+        此.写出("declare i64 @\"xt_math_acos\"(i64)")
+        此.写出("declare i64 @\"xt_math_atan\"(i64)")
+        此.写出("declare i64 @\"xt_math_log\"(i64)")
+        此.写出("declare i64 @\"xt_math_exp\"(i64)")
+        此.写出("declare i64 @\"xt_math_random_float\"(i64)")
+        此.写出("declare i64 @\"xt_time_parts\"(i64)")
+        此.写出("declare i64 @\"xt_time_format\"(i64, i64)")
+        此.写出("declare i64 @\"xt_time_make\"(i64, i64, i64, i64, i64, i64)")
+        此.写出("declare i64 @\"xt_time_diff\"(i64, i64)")
+        此.写出("declare i64 @\"xt_dir_make\"(i64)")
+        此.写出("declare i64 @\"xt_dir_remove\"(i64)")
+        此.写出("declare i64 @\"xt_dir_change\"(i64)")
+        此.写出("declare i64 @\"xt_file_copy\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_move\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_size\"(i64)")
+        此.写出("declare i64 @\"xt_file_mtime\"(i64)")
+        此.写出("declare i64 @\"xt_string_find\"(i64, i64, i64)")
+        此.写出("declare i64 @\"xt_string_rfind\"(i64, i64)")
+        此.写出("declare i64 @\"xt_string_upper\"(i64)")
+        此.写出("declare i64 @\"xt_string_lower\"(i64)")
+        此.写出("declare i64 @\"xt_string_repeat\"(i64, i64)")
         此.写出("declare i32 @\"xt_is_type\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append_lit\"(i64, i8*, i64)")
@@ -5958,6 +6024,62 @@
                 此.写出("  " & res & " = call i64 @xt_string_split(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            // 批次一:文本操作扩充(寻找/倒找/大小写/重复)——位置按逻辑字符,与 截取/字符数 同单位
+            若 成员名 == "寻找" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译子 = 此.编译表达式(节点.调用参数[0])
+                设 子Xt = 此.确保I64(翻译子[0], 翻译子[1])
+                设 起Xt = "1"   // tagged 0(缺省从头)
+                设 _有起 = 假
+                若 节点.调用参数.长度 > 1 {
+                    设 翻译起 = 此.编译表达式(节点.调用参数[1])
+                    起Xt = 此.符(此.确保I64(翻译起[0], 翻译起[1]))
+                    _有起 = 真
+                }
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_string_find\"(i64 " & 对象Xt & ", i64 " & 子Xt & ", i64 " & 起Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 子Xt & ")")
+                若 _有起 { 此.写出("  call void @xt_release(i64 " & 起Xt & ")") }
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "倒找" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译子 = 此.编译表达式(节点.调用参数[0])
+                设 子Xt = 此.确保I64(翻译子[0], 翻译子[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_string_rfind\"(i64 " & 对象Xt & ", i64 " & 子Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 子Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "到大写" 或 成员名 == "到小写" {
+                设 _rt名 = "xt_string_upper"
+                若 成员名 == "到小写" { _rt名 = "xt_string_lower" }
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"" & _rt名 & "\"(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "重复" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译次 = 此.编译表达式(节点.调用参数[0])
+                设 次Xt = 此.确保I64(翻译次[0], 翻译次[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_string_repeat\"(i64 " & 对象Xt & ", i64 " & 次Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 次Xt & ")")
                 设 _r = [res, "i64"]
                 返 _r
             }

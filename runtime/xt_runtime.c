@@ -31,6 +31,7 @@
 #include <shellapi.h>
 #include <io.h>
 #include <fcntl.h>
+#include <direct.h>  // _wmkdir/_wrmdir/_wchdir(批次一文件系统扩充)
 #else
 #include <unistd.h>  // readlink / usleep（非 Windows 必需）
 #include <sys/wait.h>  // WIFEXITED/WEXITSTATUS（POSIX 子进程退出码归一化,issue #30）
@@ -3784,6 +3785,309 @@ XTValue xt_time_sleep(XTValue ms_val) {
     usleep(ms * 1000);
 #endif
     return XT_NULL;
+}
+
+/* ==================== 批次一:核心支持库扩充 ==================== */
+
+/* ---- 数学扩充(取符号/三角/反三角/对数/随机小数) ---- */
+
+XTValue xt_math_sign(XTValue v) {
+    double d = xt_f64_of(v);
+    if (d > 0) return XT_FROM_INT(1);
+    if (d < 0) return XT_FROM_INT(-1);
+    return XT_FROM_INT(0);
+}
+XTValue xt_math_tan(XTValue v)  { return (XTValue)xt_float_new(tan(xt_f64_of(v))); }
+XTValue xt_math_asin(XTValue v) { return (XTValue)xt_float_new(asin(xt_f64_of(v))); }
+XTValue xt_math_acos(XTValue v) { return (XTValue)xt_float_new(acos(xt_f64_of(v))); }
+XTValue xt_math_atan(XTValue v) { return (XTValue)xt_float_new(atan(xt_f64_of(v))); }
+XTValue xt_math_log(XTValue v)  { return (XTValue)xt_float_new(log(xt_f64_of(v))); }
+XTValue xt_math_exp(XTValue v)  { return (XTValue)xt_float_new(exp(xt_f64_of(v))); }
+XTValue xt_math_random_float(XTValue unused) {
+    (void)unused;
+    return (XTValue)xt_float_new((double)rand() / ((double)RAND_MAX + 1.0));
+}
+
+/* ---- 时间日期结构化(本地时区,与易语言语义一致) ---- */
+
+// 内部助手:字典写入 整 值键值对(键为 C 字符串;dict_set 会 retain,键份额随即释放)
+static void _xt_dict_put_int(XTValue dict, const char* key, int64_t val) {
+    XTValue k = (XTValue)xt_string_new(key);
+    xt_dict_set(dict, k, (XTValue)XT_FROM_INT(val));
+    xt_release(k);
+}
+
+// 时.部分(时间戳) → 字典 {年,月,日,时,分,秒,星期(1=周一..7=周日),年积日}
+XTValue xt_time_parts(XTValue ts_val) {
+    time_t t = (time_t)xt_to_int(ts_val);
+    struct tm* tmv = localtime(&t);
+    if (!tmv) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("时间戳无效"));
+    XTValue d = (XTValue)xt_dict_new(0);
+    _xt_dict_put_int(d, "年", tmv->tm_year + 1900);
+    _xt_dict_put_int(d, "月", tmv->tm_mon + 1);
+    _xt_dict_put_int(d, "日", tmv->tm_mday);
+    _xt_dict_put_int(d, "时", tmv->tm_hour);
+    _xt_dict_put_int(d, "分", tmv->tm_min);
+    _xt_dict_put_int(d, "秒", tmv->tm_sec);
+    int w = tmv->tm_wday; if (w == 0) w = 7;
+    _xt_dict_put_int(d, "星期", w);
+    _xt_dict_put_int(d, "年积日", tmv->tm_yday + 1);
+    return d;
+}
+
+// 时.格式(时间戳, 格式串) → 文本(strftime 原样暴露,如 "%Y-%m-%d %H:%M:%S")
+XTValue xt_time_format(XTValue ts_val, XTValue fmt_val) {
+    if (!XT_IS_REAL_PTR(fmt_val) || ((XTObject*)fmt_val)->type_id != XT_TYPE_STRING) {
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("格式串无效"));
+    }
+    time_t t = (time_t)xt_to_int(ts_val);
+    struct tm* tmv = localtime(&t);
+    if (!tmv) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("时间戳无效"));
+    char buf[256];
+    size_t n = strftime(buf, sizeof(buf), ((XTString*)fmt_val)->data, tmv);
+    if (n == 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("格式化失败(格式串为空或结果超长)"));
+    return (XTValue)xt_result_new(1, (void*)xt_string_new(buf), NULL);
+}
+
+// 时.指定(年,月,日,时,分,秒) → Unix 时间戳(本地时区 mktime)
+XTValue xt_time_make(XTValue y, XTValue mo, XTValue d, XTValue h, XTValue mi, XTValue s) {
+    struct tm tmv;
+    memset(&tmv, 0, sizeof(tmv));
+    tmv.tm_year = (int)xt_to_int(y) - 1900;
+    tmv.tm_mon  = (int)xt_to_int(mo) - 1;
+    tmv.tm_mday = (int)xt_to_int(d);
+    tmv.tm_hour = (int)xt_to_int(h);
+    tmv.tm_min  = (int)xt_to_int(mi);
+    tmv.tm_sec  = (int)xt_to_int(s);
+    tmv.tm_isdst = -1;
+    time_t t = mktime(&tmv);
+    return XT_FROM_INT((int64_t)t);
+}
+
+// 时.间隔(t1, t2) → 秒差(小数,t1 - t2)
+XTValue xt_time_diff(XTValue a, XTValue b) {
+    time_t ta = (time_t)xt_to_int(a);
+    time_t tb = (time_t)xt_to_int(b);
+    return (XTValue)xt_float_new(difftime(ta, tb));
+}
+
+/* ---- 文件系统扩充(建删目录/复制/移动/尺寸/修改时间/改目录) ---- */
+
+// 内部助手:取 XTString 路径,非法返回 NULL
+static XTString* _xt_path_of(XTValue v) {
+    if (!XT_IS_REAL_PTR(v)) return NULL;
+    if (((XTObject*)v)->type_id != XT_TYPE_STRING) return NULL;
+    return (XTString*)v;
+}
+
+XTValue xt_dir_make(XTValue path_val) {
+    XTString* p = _xt_path_of(path_val);
+    if (!p) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    int rc;
+#ifdef _WIN32
+    wchar_t* wp = xt_utf8_to_utf16(p->data);
+    rc = wp ? _wmkdir(wp) : -1;
+    free(wp);
+#else
+    rc = mkdir(p->data, 0755);
+#endif
+    if (rc != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("创建目录失败(已存在或无权)"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+XTValue xt_dir_remove(XTValue path_val) {
+    XTString* p = _xt_path_of(path_val);
+    if (!p) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    int rc;
+#ifdef _WIN32
+    wchar_t* wp = xt_utf8_to_utf16(p->data);
+    rc = wp ? _wrmdir(wp) : -1;
+    free(wp);
+#else
+    rc = rmdir(p->data);
+#endif
+    if (rc != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("删除目录失败(非空或不存在)"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+XTValue xt_dir_change(XTValue path_val) {
+    XTString* p = _xt_path_of(path_val);
+    if (!p) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    int rc;
+#ifdef _WIN32
+    wchar_t* wp = xt_utf8_to_utf16(p->data);
+    rc = wp ? _wchdir(wp) : -1;
+    free(wp);
+#else
+    rc = chdir(p->data);
+#endif
+    if (rc != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("改变目录失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+XTValue xt_file_copy(XTValue src_val, XTValue dst_val) {
+    XTString* sp = _xt_path_of(src_val);
+    XTString* dp = _xt_path_of(dst_val);
+    if (!sp || !dp) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    FILE* in = NULL; FILE* out = NULL;
+#ifdef _WIN32
+    wchar_t* ws = xt_utf8_to_utf16(sp->data);
+    wchar_t* wd = xt_utf8_to_utf16(dp->data);
+    if (ws) in = _wfopen(ws, L"rb");
+    if (wd) out = _wfopen(wd, L"wb");
+    free(ws); free(wd);
+#else
+    in = fopen(sp->data, "rb");
+    out = fopen(dp->data, "wb");
+#endif
+    if (!in) { if (out) fclose(out); return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法打开源文件")); }
+    if (!out) { fclose(in); return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法创建目标文件")); }
+    char buf[8192]; size_t n; int ioerr = 0;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { ioerr = 1; break; }
+    }
+    fclose(in);
+    if (fclose(out) != 0) ioerr = 1;
+    if (ioerr) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("复制过程读写错误"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+XTValue xt_file_move(XTValue src_val, XTValue dst_val) {
+    XTString* sp = _xt_path_of(src_val);
+    XTString* dp = _xt_path_of(dst_val);
+    if (!sp || !dp) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    int rc;
+#ifdef _WIN32
+    wchar_t* ws = xt_utf8_to_utf16(sp->data);
+    wchar_t* wd = xt_utf8_to_utf16(dp->data);
+    rc = (ws && wd) ? _wrename(ws, wd) : -1;
+    free(ws); free(wd);
+#else
+    rc = rename(sp->data, dp->data);
+#endif
+    if (rc != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("移动/更名失败(跨盘移动请用 复制+删除)"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+// 内部助手:取文件 stat(UTF-8 路径感知),成功返 0
+static int _xt_stat_path(XTString* p, int64_t* out_size, int64_t* out_mtime) {
+#ifdef _WIN32
+    struct _stat64 st;
+    wchar_t* wp = xt_utf8_to_utf16(p->data);
+    int rc = wp ? _wstat64(wp, &st) : -1;
+    free(wp);
+    if (rc != 0) return -1;
+#else
+    struct stat st;
+    if (stat(p->data, &st) != 0) return -1;
+#endif
+    *out_size = (int64_t)st.st_size;
+    *out_mtime = (int64_t)st.st_mtime;
+    return 0;
+}
+
+XTValue xt_file_size(XTValue path_val) {
+    XTString* p = _xt_path_of(path_val);
+    if (!p) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    int64_t sz = 0, mt = 0;
+    if (_xt_stat_path(p, &sz, &mt) != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法获取文件信息"));
+    return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(sz), NULL);
+}
+
+XTValue xt_file_mtime(XTValue path_val) {
+    XTString* p = _xt_path_of(path_val);
+    if (!p) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径无效"));
+    int64_t sz = 0, mt = 0;
+    if (_xt_stat_path(p, &sz, &mt) != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法获取文件信息"));
+    return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(mt), NULL);
+}
+
+/* ---- 文本操作扩充(寻找/倒找/大小写/重复) ---- */
+
+// 内部助手:UTF-8 字节偏移 → 逻辑字符位置
+static int64_t _xt_byte_to_char_pos(const char* data, int64_t byte_pos) {
+    int64_t cp = 0;
+    for (int64_t i = 0; i < byte_pos; ) {
+        unsigned char c = (unsigned char)data[i];
+        if (c < 0x80) i += 1;
+        else if ((c & 0xE0) == 0xC0) i += 2;
+        else if ((c & 0xF0) == 0xE0) i += 3;
+        else if ((c & 0xF8) == 0xF0) i += 4;
+        else i += 1;
+        cp++;
+    }
+    return cp;
+}
+
+// 串.寻找(子, 起始字符位置?) → 字符位置,找不到 -1
+XTValue xt_string_find(XTValue s_val, XTValue sub_val, XTValue start_val) {
+    XTString* s = _xt_path_of(s_val);
+    XTString* sub = _xt_path_of(sub_val);
+    if (!s || !sub) return XT_FROM_INT(-1);
+    int64_t start_char = xt_to_int(start_val);
+    // 字符位置 → 字节偏移
+    int64_t byte_off = 0, cc = 0;
+    while (s->data[byte_off] && cc < start_char) {
+        unsigned char c = (unsigned char)s->data[byte_off];
+        byte_off += (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0) ? 2 : ((c & 0xF0) == 0xE0) ? 3 : ((c & 0xF8) == 0xF0) ? 4 : 1;
+        cc++;
+    }
+    const char* hit = strstr(s->data + byte_off, sub->data);
+    if (!hit) return XT_FROM_INT(-1);
+    int64_t byte_pos = (int64_t)(hit - s->data);
+    return XT_FROM_INT(_xt_byte_to_char_pos(s->data, byte_pos));
+}
+
+// 串.倒找(子) → 最后一次出现的字符位置,找不到 -1
+XTValue xt_string_rfind(XTValue s_val, XTValue sub_val) {
+    XTString* s = _xt_path_of(s_val);
+    XTString* sub = _xt_path_of(sub_val);
+    if (!s || !sub) return XT_FROM_INT(-1);
+    if (sub->data[0] == '\0') return XT_FROM_INT(xt_string_char_count((XTValue)s));
+    const char* last = NULL;
+    const char* cur = s->data;
+    while ((cur = strstr(cur, sub->data)) != NULL) { last = cur; cur++; }
+    if (!last) return XT_FROM_INT(-1);
+    return XT_FROM_INT(_xt_byte_to_char_pos(s->data, (int64_t)(last - s->data)));
+}
+
+// 串.到大写() / 串.到小写() —— ASCII 大小写(中文等宽字符原样保留)
+XTValue xt_string_upper(XTValue s_val) {
+    XTString* s = _xt_path_of(s_val);
+    if (!s) return (XTValue)xt_string_new("");
+    XTString* r = xt_string_new(s->data);
+    for (size_t i = 0; i < r->length; i++) {
+        char c = r->data[i];
+        if (c >= 'a' && c <= 'z') r->data[i] = (char)(c - 32);
+    }
+    return (XTValue)r;
+}
+
+XTValue xt_string_lower(XTValue s_val) {
+    XTString* s = _xt_path_of(s_val);
+    if (!s) return (XTValue)xt_string_new("");
+    XTString* r = xt_string_new(s->data);
+    for (size_t i = 0; i < r->length; i++) {
+        char c = r->data[i];
+        if (c >= 'A' && c <= 'Z') r->data[i] = (char)(c + 32);
+    }
+    return (XTValue)r;
+}
+
+// 串.重复(n) → 自身重复 n 次拼接(n<=0 返空串)
+XTValue xt_string_repeat(XTValue s_val, XTValue n_val) {
+    XTString* s = _xt_path_of(s_val);
+    if (!s) return (XTValue)xt_string_new("");
+    int64_t n = xt_to_int(n_val);
+    if (n <= 0 || s->length == 0) return (XTValue)xt_string_new("");
+    size_t total = s->length * (size_t)n;
+    char* buf = (char*)malloc(total + 1);
+    if (!buf) return (XTValue)xt_string_new("");
+    for (int64_t i = 0; i < n; i++) memcpy(buf + i * (ptrdiff_t)s->length, s->data, s->length);
+    buf[total] = '\0';
+    XTString* r = xt_string_new_len(buf, total);
+    free(buf);
+    return (XTValue)r;
 }
 
 /**

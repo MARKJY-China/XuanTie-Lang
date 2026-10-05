@@ -532,4 +532,34 @@ XTValue xt_bit_shr(XTValue a, XTValue b);
 /// 检查两个对象是否相等
 int xt_eq(XTValue a, XTValue b);
 
+// --- 批次一:核心支持库扩充 ---
+// 数学
+XTValue xt_math_sign(XTValue v);
+XTValue xt_math_tan(XTValue v);
+XTValue xt_math_asin(XTValue v);
+XTValue xt_math_acos(XTValue v);
+XTValue xt_math_atan(XTValue v);
+XTValue xt_math_log(XTValue v);
+XTValue xt_math_exp(XTValue v);
+XTValue xt_math_random_float(XTValue unused);
+// 时间日期结构化(本地时区)
+XTValue xt_time_parts(XTValue ts_val);
+XTValue xt_time_format(XTValue ts_val, XTValue fmt_val);
+XTValue xt_time_make(XTValue y, XTValue mo, XTValue d, XTValue h, XTValue mi, XTValue s);
+XTValue xt_time_diff(XTValue a, XTValue b);
+// 文件系统
+XTValue xt_dir_make(XTValue path_val);
+XTValue xt_dir_remove(XTValue path_val);
+XTValue xt_dir_change(XTValue path_val);
+XTValue xt_file_copy(XTValue src_val, XTValue dst_val);
+XTValue xt_file_move(XTValue src_val, XTValue dst_val);
+XTValue xt_file_size(XTValue path_val);
+XTValue xt_file_mtime(XTValue path_val);
+// 文本
+XTValue xt_string_find(XTValue s_val, XTValue sub_val, XTValue start_val);
+XTValue xt_string_rfind(XTValue s_val, XTValue sub_val);
+XTValue xt_string_upper(XTValue s_val);
+XTValue xt_string_lower(XTValue s_val);
+XTValue xt_string_repeat(XTValue s_val, XTValue n_val);
+
 #endif
