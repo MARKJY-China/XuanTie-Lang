@@ -96,6 +96,7 @@ XTArena* xt_arena_new(size_t size);
 void* xt_arena_alloc_raw(size_t size);
 void* xt_arena_alloc(size_t size, uint32_t type_id);
 static uint64_t xt_hash_value(XTValue val);
+static void xt_dict_grow(XTDict* dict);
 
 /**
  * @brief 初始化运行时环境
@@ -1370,6 +1371,13 @@ void xt_dict_set_weak(XTValue dict_val, XTValue key, XTValue value) {
         }
         entry = entry->next;
     }
+
+    // 与 xt_dict_set 同规:负载因子 > 0.75 触发倍增扩容
+    if ((dict->size + 1) * 4 > dict->capacity * 3) {
+        xt_dict_grow(dict);
+        idx = hash % dict->capacity;
+    }
+
     // 新建条目
     XTDictEntry* new_entry = (XTDictEntry*)malloc(sizeof(XTDictEntry));
     if (!new_entry) return;
@@ -2428,6 +2436,31 @@ int xt_compare(XTValue a, XTValue b) {
 }
 
 /**
+ * @brief 字典动态扩容:负载因子超 0.75 时容量倍增并重哈希。
+ * 此前字典容量恒定(默认 16),大量插入坍缩成深链(1e4 条 → 每桶 ~625 深,
+ * 每次插入全链 xt_eq,O(n²)——实测比 Python 慢 9.1 倍)。
+ * 遍历安全:编译器字典遍历经 xt_dict_keys 先快照键集,迭代期扩容无影响。
+ */
+static void xt_dict_grow(XTDict* dict) {
+    size_t newcap = dict->capacity * 2;
+    XTDictEntry** nb = (XTDictEntry**)calloc(newcap, sizeof(XTDictEntry*));
+    if (!nb) return;  /* 分配失败保持原表(仅性能退化,不丢数据) */
+    for (size_t i = 0; i < dict->capacity; i++) {
+        XTDictEntry* e = dict->buckets[i];
+        while (e) {
+            XTDictEntry* next = e->next;
+            size_t idx = xt_hash_value(e->key) % newcap;
+            e->next = nb[idx];
+            nb[idx] = e;
+            e = next;
+        }
+    }
+    free(dict->buckets);
+    dict->buckets = nb;
+    dict->capacity = newcap;
+}
+
+/**
  * @brief 创建字典
  */
 XTValue xt_dict_new(size_t capacity) {
@@ -2460,6 +2493,12 @@ void xt_dict_set(XTValue dict_val, XTValue key, XTValue value) {
             return;
         }
         entry = entry->next;
+    }
+
+    // 负载因子 > 0.75 触发倍增扩容(仅新插入路径;命中路径无成本)
+    if ((dict->size + 1) * 4 > dict->capacity * 3) {
+        xt_dict_grow(dict);
+        idx = hash % dict->capacity;
     }
 
     XTDictEntry* new_entry = (XTDictEntry*)malloc(sizeof(XTDictEntry));

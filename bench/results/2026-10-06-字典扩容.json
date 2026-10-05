@@ -1,0 +1,184 @@
+{
+  "date": "2026-10-06",
+  "time": "04:40:59",
+  "kind": "measured",
+  "method": {
+    "runs": 5,
+    "aggregate": "median",
+    "note": "玄铁用 XTC 默认优化等级(与 2026-08-15 历史口径同); 编译计时分冷/热(冷=空缓存目录)"
+  },
+  "machine": {
+    "platform": "Windows-11-10.0.22621-SP0",
+    "machine": "AMD64",
+    "cpu_count": 12,
+    "python": "3.13.3",
+    "cpu": "12th Gen Intel(R) Core(TM) i5-12400F"
+  },
+  "toolchain": {
+    "xtc_path": "G:\\FUsed_Folders\\Project\\XuanTie\\build\\xtc_s4.exe",
+    "xtc_md5": "c4707dc3fb29bfc2745717cb834f11de",
+    "xtc_version": "玄铁 (XuanTie) 编译器驱动 v1.0-rc.3",
+    "bootstrap_chain": {
+      "s1": {
+        "size": 1996535,
+        "md5": "ecea886ff72b3b66ad99f974aa34b4ef"
+      },
+      "s2": {
+        "size": 3068458,
+        "md5": "768da8ec68df4ae5824cfa83c754738f"
+      },
+      "s3": {
+        "size": 3068458,
+        "md5": "c4707dc3fb29bfc2745717cb834f11de"
+      },
+      "s4": {
+        "size": 3068458,
+        "md5": "c4707dc3fb29bfc2745717cb834f11de"
+      }
+    },
+    "go": "go version go1.26.1 windows/386",
+    "node": "v22.17.1",
+    "java": "java version \"21.0.8\" 2025-07-15 LTS",
+    "python": "Python 3.13.3",
+    "clang": "clang version 22.1.0 (https://github.com/llvm/llvm-project 4434dabb69916856b824f68a64b029c67175e532)",
+    "gcc": "gcc (tdm64-1) 10.3.0",
+    "go_host_arch": "386"
+  },
+  "compile_and_binary": {
+    "lang": "玄铁",
+    "source": "bench\\cases\\xt_bench.xt",
+    "compile_cold_ms": 868.4,
+    "compile_warm_ms": 843.7,
+    "binary_bytes": 647780
+  },
+  "startup": {
+    "min_ms": 15.321,
+    "median_ms": 16.276,
+    "all_ms": [
+      21.992,
+      15.321,
+      16.276,
+      16.409,
+      15.764
+    ]
+  },
+  "cases": [
+    {
+      "lang": "玄铁",
+      "name": "空函数调用1e6",
+      "median_us": 5363.0,
+      "min_us": 5036.0,
+      "all_us": [
+        7281.0,
+        5363.0,
+        9281.0,
+        5068.0,
+        5036.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "字符串拼接1e5",
+      "median_us": 2216.0,
+      "min_us": 2152.0,
+      "all_us": [
+        2451.0,
+        2152.0,
+        2928.0,
+        2189.0,
+        2216.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "列表添加1e5",
+      "median_us": 2607.0,
+      "min_us": 2500.0,
+      "all_us": [
+        2607.0,
+        2500.0,
+        3425.0,
+        2648.0,
+        2594.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "字典插入1e4",
+      "median_us": 3260.0,
+      "min_us": 3251.0,
+      "all_us": [
+        3256.0,
+        3620.0,
+        4681.0,
+        3260.0,
+        3251.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "浮点累加1e6",
+      "median_us": 205810.0,
+      "min_us": 199531.0,
+      "all_us": [
+        205810.0,
+        199531.0,
+        220125.0,
+        212903.0,
+        205702.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "乘模1e6",
+      "median_us": 17133.0,
+      "min_us": 17060.0,
+      "all_us": [
+        17073.0,
+        17133.0,
+        18173.0,
+        17343.0,
+        17060.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "分支1e7",
+      "median_us": 206214.0,
+      "min_us": 203032.0,
+      "all_us": [
+        203032.0,
+        204322.0,
+        211008.0,
+        206214.0,
+        206886.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "嵌套循环1e6",
+      "median_us": 15381.0,
+      "min_us": 14992.0,
+      "all_us": [
+        15381.0,
+        14992.0,
+        15375.0,
+        15831.0,
+        15483.0
+      ]
+    },
+    {
+      "lang": "玄铁",
+      "name": "fib30递归",
+      "median_us": 16136.0,
+      "min_us": 15020.0,
+      "all_us": [
+        16136.0,
+        16351.0,
+        17526.0,
+        15020.0,
+        15539.0
+      ]
+    }
+  ]
+}
