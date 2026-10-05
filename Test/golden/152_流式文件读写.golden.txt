@@ -1,0 +1,33 @@
+compile_ok=True
+exit=0
+PASS 打开写
+PASS 写行
+PASS 写文本
+PASS 写文本2
+PASS 取位置写入后
+PASS 刷新
+PASS 关闭
+PASS 关闭幂等
+PASS 打开读
+PASS 读一行1
+PASS 读一行2
+PASS 读一行到尾
+PASS 尾?
+PASS 取长度
+PASS 移动位置
+PASS 取位置
+PASS 读全部自当前
+PASS 到文件尾
+PASS 尾后位置
+PASS 读字节
+PASS 读字节短读
+PASS 打开追加
+PASS 追加生效
+PASS 打开读写
+PASS 移动覆写
+PASS GC句柄可读
+PASS 只读不可写
+PASS 只写不可读
+PASS 打开不存在
+PASS 模式无效
+批次二 全绿

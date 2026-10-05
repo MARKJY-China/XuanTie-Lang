@@ -238,6 +238,9 @@
         此.函数表["文件.尺寸"] = 真
         此.符号表["文件.修改时间"] = "@\"xt_file_mtime\""
         此.函数表["文件.修改时间"] = 真
+        // --- 批次二:流式文件读写(句柄方法见成员调用分派) ---
+        此.符号表["文件.打开"] = "@\"xt_file_open\""
+        此.函数表["文件.打开"] = 真
         此.符号表["化"] = "@\"xt_json_serialize\""
         此.函数表["化"] = 真
         此.符号表["解"] = "@\"xt_json_deserialize\""
@@ -1096,6 +1099,20 @@
         此.写出("declare i64 @\"xt_string_upper\"(i64)")
         此.写出("declare i64 @\"xt_string_lower\"(i64)")
         此.写出("declare i64 @\"xt_string_repeat\"(i64, i64)")
+        // 批次二:流式文件读写
+        此.写出("declare i64 @\"xt_file_open\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_close\"(i64)")
+        此.写出("declare i64 @\"xt_file_read_line\"(i64)")
+        此.写出("declare i64 @\"xt_file_read_all\"(i64)")
+        此.写出("declare i64 @\"xt_file_read_n\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_write_text\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_write_line\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_seek\"(i64, i64)")
+        此.写出("declare i64 @\"xt_file_seek_end\"(i64)")
+        此.写出("declare i64 @\"xt_file_tell\"(i64)")
+        此.写出("declare i64 @\"xt_file_length\"(i64)")
+        此.写出("declare i64 @\"xt_file_eof\"(i64)")
+        此.写出("declare i64 @\"xt_file_flush\"(i64)")
         此.写出("declare i32 @\"xt_is_type\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append_lit\"(i64, i8*, i64)")
@@ -6080,6 +6097,62 @@
                 此.写出("  " & res & " = call i64 @\"xt_string_repeat\"(i64 " & 对象Xt & ", i64 " & 次Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 次Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            // 批次二:流式文件句柄方法(runtime 侧按 type_id 守卫,非文件句柄返错误结果)
+            若 成员名 == "读一行" 或 成员名 == "读全部" 或 成员名 == "取位置" 或 成员名 == "取长度" 或 成员名 == "到文件尾" 或 成员名 == "尾?" 或 成员名 == "刷新" 或 成员名 == "关闭" {
+                设 _rt名 = "xt_file_read_line"
+                若 成员名 == "读全部" { _rt名 = "xt_file_read_all" }
+                若 成员名 == "取位置" { _rt名 = "xt_file_tell" }
+                若 成员名 == "取长度" { _rt名 = "xt_file_length" }
+                若 成员名 == "到文件尾" { _rt名 = "xt_file_seek_end" }
+                若 成员名 == "尾?" { _rt名 = "xt_file_eof" }
+                若 成员名 == "刷新" { _rt名 = "xt_file_flush" }
+                若 成员名 == "关闭" { _rt名 = "xt_file_close" }
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"" & _rt名 & "\"(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "读字节" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_file_read_n\"(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "写文本" 或 成员名 == "写行" {
+                设 _rt名 = "xt_file_write_text"
+                若 成员名 == "写行" { _rt名 = "xt_file_write_line" }
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"" & _rt名 & "\"(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "移动位置" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_file_seek\"(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
                 设 _r = [res, "i64"]
                 返 _r
             }

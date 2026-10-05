@@ -1519,6 +1519,12 @@ static void xt_free_obj(XTObject* obj) {
             xt_net_close_obj(s);
             break;
         }
+        case XT_TYPE_FILE: {
+            XTFile* f = (XTFile*)obj;
+            if (!f->closed && f->fp) { fclose(f->fp); f->fp = NULL; }
+            f->closed = 1;
+            break;
+        }
         case XT_TYPE_BYTES: {
             XTBytes* bytes = (XTBytes*)obj;
             if (bytes->data && !bytes->header.type_id) { // 简单判断是否在 arena
@@ -1815,6 +1821,7 @@ static const char* xt_type_label_zh(XTValue v) {
         case XT_TYPE_TASK:     return "任务";
         case XT_TYPE_CHANNEL:  return "通道";
         case XT_TYPE_SOCKET:   return "网络流";
+        case XT_TYPE_FILE:     return "文件句柄";
         default:               return "其它对象";
     }
 }
@@ -4088,6 +4095,199 @@ XTValue xt_string_repeat(XTValue s_val, XTValue n_val) {
     XTString* r = xt_string_new_len(buf, total);
     free(buf);
     return (XTValue)r;
+}
+
+/* ==================== 批次二:流式文件读写(XTFile 句柄) ==================== */
+
+// 内部助手:取 XTFile 句柄(未关闭),非法/已关闭返回 NULL
+static XTFile* _xt_file_of(XTValue v) {
+    if (!XT_IS_REAL_PTR(v)) return NULL;
+    if (((XTObject*)v)->type_id != XT_TYPE_FILE) return NULL;
+    XTFile* f = (XTFile*)v;
+    if (f->closed || !f->fp) return NULL;
+    return f;
+}
+
+// 文件.打开(路径, 模式) → 结果<句柄>;模式: "读"/"写"/"追加"/"读写"(不存在则失败)/"写读"(截断)
+XTValue xt_file_open(XTValue path_val, XTValue mode_val) {
+    XTString* p = _xt_path_of(path_val);
+    XTString* m = _xt_path_of(mode_val);
+    if (!p || !m) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径或模式无效"));
+    const char* cmode = NULL;
+    int readable = 0, writable = 0;
+    if (strcmp(m->data, "读") == 0)        { cmode = "rb";  readable = 1; }
+    else if (strcmp(m->data, "写") == 0)   { cmode = "wb";  writable = 1; }
+    else if (strcmp(m->data, "追加") == 0) { cmode = "ab";  writable = 1; }
+    else if (strcmp(m->data, "读写") == 0) { cmode = "r+b"; readable = 1; writable = 1; }
+    else if (strcmp(m->data, "写读") == 0) { cmode = "w+b"; readable = 1; writable = 1; }
+    else return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("模式无效(可用: 读/写/追加/读写/写读)"));
+    FILE* fp = NULL;
+#ifdef _WIN32
+    wchar_t* wp = xt_utf8_to_utf16(p->data);
+    wchar_t* wm = xt_utf8_to_utf16(cmode);
+    if (wp && wm) fp = _wfopen(wp, wm);
+    free(wp); free(wm);
+#else
+    fp = fopen(p->data, cmode);
+#endif
+    if (!fp) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法打开文件"));
+    XTFile* f = (XTFile*)xt_malloc(sizeof(XTFile), XT_TYPE_FILE);
+    f->fp = fp;
+    f->readable = readable;
+    f->writable = writable;
+    f->closed = 0;
+    return (XTValue)xt_result_new(1, (void*)f, NULL);
+}
+
+// 句柄.关闭() → 结果(幂等;句柄被 GC 回收时也会自动关闭)
+XTValue xt_file_close(XTValue file_val) {
+    if (!XT_IS_REAL_PTR(file_val) || ((XTObject*)file_val)->type_id != XT_TYPE_FILE) {
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("不是文件句柄"));
+    }
+    XTFile* f = (XTFile*)file_val;
+    if (!f->closed && f->fp) { fclose(f->fp); f->fp = NULL; }
+    f->closed = 1;
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+// 句柄.读一行() → 结果<字>(剥掉行尾 \r\n 或 \n);已到文件尾返 .成功=假,.错误="已到文件尾"
+XTValue xt_file_read_line(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    if (!f->readable) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄不可读"));
+    size_t cap = 256, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (!buf) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内存不足"));
+    int c;
+    while ((c = fgetc(f->fp)) != EOF && c != '\n') {
+        if (len + 1 >= cap) {
+            cap *= 2;
+            char* nb = (char*)realloc(buf, cap);
+            if (!nb) { free(buf); return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内存不足")); }
+            buf = nb;
+        }
+        buf[len++] = (char)c;
+    }
+    if (c == EOF && len == 0) {
+        free(buf);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("已到文件尾"));
+    }
+    // 剥行尾 \r
+    if (len > 0 && buf[len - 1] == '\r') len--;
+    XTString* r = xt_string_new_len(buf, len);
+    free(buf);
+    return (XTValue)xt_result_new(1, (void*)r, NULL);
+}
+
+// 句柄.读全部() → 结果<字>(当前位置到文件尾)
+XTValue xt_file_read_all(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    if (!f->readable) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄不可读"));
+    size_t cap = 4096, len = 0;
+    char* buf = (char*)malloc(cap);
+    if (!buf) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内存不足"));
+    size_t n;
+    while ((n = fread(buf + len, 1, cap - len, f->fp)) > 0) {
+        len += n;
+        if (len == cap) {
+            cap *= 2;
+            char* nb = (char*)realloc(buf, cap);
+            if (!nb) { free(buf); return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内存不足")); }
+            buf = nb;
+        }
+    }
+    XTString* r = xt_string_new_len(buf, len);
+    free(buf);
+    return (XTValue)xt_result_new(1, (void*)r, NULL);
+}
+
+// 句柄.读字节(n) → 结果<字>(原始字节流,按长度构造,可含 NUL;短读即不足 n 亦正常返回)
+XTValue xt_file_read_n(XTValue file_val, XTValue n_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    if (!f->readable) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄不可读"));
+    int64_t want = xt_to_int(n_val);
+    if (want < 0) want = 0;
+    char* buf = (char*)malloc((size_t)want + 1);
+    if (!buf) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内存不足"));
+    size_t got = fread(buf, 1, (size_t)want, f->fp);
+    XTString* r = xt_string_new_len(buf, got);
+    free(buf);
+    return (XTValue)xt_result_new(1, (void*)r, NULL);
+}
+
+// 句柄.写文本(内容) / 句柄.写行(内容) → 结果
+static XTValue _xt_file_write_common(XTValue file_val, XTValue content_val, int with_lf) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    if (!f->writable) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄不可写"));
+    XTString* s = _xt_path_of(content_val);
+    if (!s) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内容必须是字符串"));
+    if (s->length > 0 && fwrite(s->data, 1, s->length, f->fp) != s->length) {
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("写入失败"));
+    }
+    if (with_lf && fputc('\n', f->fp) == EOF) {
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("写入失败"));
+    }
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+XTValue xt_file_write_text(XTValue file_val, XTValue content_val) { return _xt_file_write_common(file_val, content_val, 0); }
+XTValue xt_file_write_line(XTValue file_val, XTValue content_val) { return _xt_file_write_common(file_val, content_val, 1); }
+
+// 句柄.移动位置(偏移) → 结果(绝对位置,自文件首)
+XTValue xt_file_seek(XTValue file_val, XTValue off_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    int64_t off = xt_to_int(off_val);
+    if (off < 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("偏移不能为负"));
+    if (fseek(f->fp, (long)off, SEEK_SET) != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("移动读写位置失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+// 句柄.到文件尾() → 结果
+XTValue xt_file_seek_end(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    if (fseek(f->fp, 0, SEEK_END) != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("移动读写位置失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
+// 句柄.取位置() → 结果<整>
+XTValue xt_file_tell(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    long pos = ftell(f->fp);
+    if (pos < 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("取读写位置失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_FROM_INT((int64_t)pos), NULL);
+}
+
+// 句柄.取长度() → 结果<整>(保持当前读写位置不变)
+XTValue xt_file_length(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    long cur = ftell(f->fp);
+    if (cur < 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("取文件长度失败"));
+    if (fseek(f->fp, 0, SEEK_END) != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("取文件长度失败"));
+    long end = ftell(f->fp);
+    fseek(f->fp, cur, SEEK_SET);
+    if (end < 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("取文件长度失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_FROM_INT((int64_t)end), NULL);
+}
+
+// 句柄.尾?() → 布尔(上次读已越过末尾,或位置已在长度处)
+XTValue xt_file_eof(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return XT_TRUE;
+    return feof(f->fp) ? XT_TRUE : XT_FALSE;
+}
+
+// 句柄.刷新() → 结果(冲刷写缓冲到磁盘)
+XTValue xt_file_flush(XTValue file_val) {
+    XTFile* f = _xt_file_of(file_val);
+    if (!f) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("句柄无效或已关闭"));
+    if (fflush(f->fp) != 0) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("刷新失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
 }
 
 /**

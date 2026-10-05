@@ -109,6 +109,7 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_CHANNEL   12 ///< 并发通道 (Channel)
 #define XT_TYPE_ARENA     13 ///< 区域分配器 (Arena)
 #define XT_TYPE_SOCKET    14 ///< 网络 socket
+#define XT_TYPE_FILE      15 ///< 流式文件句柄
 
 // 内存管理常量
 #define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
@@ -228,6 +229,17 @@ typedef struct XTSocket {
     int is_listener;  // 是否为监听 socket
     int nb_set;       // 是否已置为非阻塞(fiber I/O 懒置位;阻塞路径靠 EWOULDBLOCK 重试兼容)
 } XTSocket;
+
+/**
+ * @brief 流式文件句柄 (批次二;ARC 回收时自动 fclose)
+ */
+typedef struct XTFile {
+    XTObject header;
+    FILE* fp;         // 平台文件句柄
+    int readable;     // 打开模式含读
+    int writable;     // 打开模式含写
+    int closed;       // 是否已关闭(关闭幂等;回收时自动关闭)
+} XTFile;
 
 /**
  * @brief 装箱整数结构 (较少直接使用，优先使用标记指针)
@@ -561,5 +573,20 @@ XTValue xt_string_rfind(XTValue s_val, XTValue sub_val);
 XTValue xt_string_upper(XTValue s_val);
 XTValue xt_string_lower(XTValue s_val);
 XTValue xt_string_repeat(XTValue s_val, XTValue n_val);
+
+// --- 批次二:流式文件读写(XTFile 句柄) ---
+XTValue xt_file_open(XTValue path_val, XTValue mode_val);
+XTValue xt_file_close(XTValue file_val);
+XTValue xt_file_read_line(XTValue file_val);
+XTValue xt_file_read_all(XTValue file_val);
+XTValue xt_file_read_n(XTValue file_val, XTValue n_val);
+XTValue xt_file_write_text(XTValue file_val, XTValue content_val);
+XTValue xt_file_write_line(XTValue file_val, XTValue content_val);
+XTValue xt_file_seek(XTValue file_val, XTValue off_val);
+XTValue xt_file_seek_end(XTValue file_val);
+XTValue xt_file_tell(XTValue file_val);
+XTValue xt_file_length(XTValue file_val);
+XTValue xt_file_eof(XTValue file_val);
+XTValue xt_file_flush(XTValue file_val);
 
 #endif
