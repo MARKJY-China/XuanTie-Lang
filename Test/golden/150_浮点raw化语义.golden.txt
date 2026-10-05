@@ -1,0 +1,25 @@
+compile_ok=True
+exit=0
+PASS 浮点累加1e3==500
+PASS 字面量比较
+PASS 字面量相等
+PASS 注解小数乘
+PASS 整浮混合
+PASS 浮点除零返0
+PASS 浮点模零返0
+PASS 浮点除零可捕捉
+PASS 函数返回浮点
+PASS 注解参数
+PASS 前缀负号
+PASS 双重负号
+PASS 浮点拼接
+PASS 浮点真值
+PASS 零浮为假
+PASS 数组元素浮点和
+PASS 字典元素浮点
+PASS 闭包捕获浮点
+PASS 若表达式汇聚
+PASS 混合四则
+PASS 浮点粘整值
+PASS 异步捕获浮点
+P3 冒烟全绿
