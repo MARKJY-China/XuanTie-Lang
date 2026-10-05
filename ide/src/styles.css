@@ -686,7 +686,8 @@ body {
   overflow-x: auto; overflow-y: hidden;
 }
 /* Tab 栏最右端:UI 设计器开关(开启后编辑器区整体切换为设计器视图) */
-.tbtoggle { flex: 0 0 auto; width: 34px; border-left: 1px solid var(--border); color: var(--fg-dim); }
+#tabbar-row { align-items: center; }
+.tbtoggle { flex: 0 0 auto; align-self: center; width: 30px; height: 26px; margin-right: 4px; border-radius: 4px; color: var(--fg-dim); }
 .tbtoggle:hover { color: var(--fg); }
 .tbtoggle.active { color: var(--accent); background: var(--bg-active); }
 #tabbar::-webkit-scrollbar { height: 3px; }
@@ -1232,8 +1233,36 @@ body.ds-col-resize, body.ds-col-resize * { cursor: col-resize; }
 .ds-guide-x { width: 1px; }
 .ds-guide-y { height: 1px; }
 .ds-tip { color: var(--fg-dim); font-size: 11.5px; opacity: 0.85; }
+/* 自绘下拉(替代原生 select:WebView2 的原生弹层不跟随 color-scheme,暗色下是亮块) */
+.ds-dd {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  background: var(--bg-input, rgba(0, 0, 0, 0.25)); color: inherit;
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px;
+  font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+}
+.ds-dd:hover { border-color: var(--fg-dim); }
+.ds-dd .ds-dd-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ds-dd .codicon { font-size: 12px; color: var(--fg-dim); }
+.ds-swatch { flex: none; width: 12px; height: 12px; border-radius: 2px; border: 1px solid var(--border); }
 .ds-actions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 .ds-act { border: 1px solid var(--border); padding: 2px 7px; font-size: 12px; }
+/* 属性行(可编辑):键 + 控件 */
+.ds-prow { display: flex; gap: 8px; padding: 2px 0; align-items: center; }
+.ds-prow .ds-k { flex: none; min-width: 76px; color: var(--fg-dim); }
+.ds-pctl { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-width: 0; flex: 1; }
+.ds-in {
+  background: var(--bg-input, rgba(0, 0, 0, 0.25)); color: inherit;
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 5px;
+  font: inherit; font-size: 12px; min-width: 0;
+}
+.ds-in:focus { outline: 1px solid var(--accent-dim); border-color: var(--accent-dim); }
+.ds-num { width: 76px; }
+.ds-edge { width: 52px; }
+.ds-text { width: 100%; }
+.ds-chk { width: 14px; height: 14px; accent-color: var(--accent); }
+.ds-hex { color: var(--fg-dim); font-size: 11.5px; }
+.ds-edge-tag { color: var(--fg-dim); font-size: 10.5px; }
+.ds-ro { color: var(--fg-dim); font-size: 10.5px; border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; }
 .ds-label { display: inline-block; color: var(--fg); white-space: pre; overflow: hidden; }
 .ds-label.ds-center { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
 .ds-label.ds-dyn { font-style: italic; color: #c792ea; } /* 状态绑定占位 */

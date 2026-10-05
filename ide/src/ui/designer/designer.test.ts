@@ -2,23 +2,33 @@
 // 运行: npm run test:designer   (esbuild 打包 + node 执行;无新增依赖)
 // 判定: 往返幂等 / 生成确定性(规范序、无尾随逗号) / 区外零改动(含 CRLF 保持) / 非子集→只读
 import { parseDesignFunction, type DesignNode } from './parser';
-import { generateDesignFunction } from './generator';
+import { generateDesignFunction, CANONICAL_KEYS } from './generator';
 import { findRegions, replaceRegion, appendRegion, regionText } from './region';
 import { layoutTree, type Measure } from './layout';
 import {
   applyMove,
   applyResize,
+  cloneSubtree,
+  defaultWidget,
   findParent,
   findPath,
+  insertNode,
   levelOp,
   lockedAxes,
   moveMode,
   nodeAtPath,
   numOpt,
+  removeNode,
+  removeOpt,
+  setInsets,
   snapMove,
   snapResize,
   MIN_SIZE,
 } from './edit';
+import { COLOR_PALETTE, TOOLBOX, specOf } from './props';
+
+/** 与 lib/UI/UI.xt:99-110 的 色彩 键逐字一致(改库色板必须同步改这里与 props.ts) */
+const PALETTE_CHECK = ['白', '黑', '红', '绿', '蓝', '黄', '灰', '深灰', '浅灰', '透明', '主题', '强调'];
 
 declare const process: { exitCode?: number };
 
@@ -518,6 +528,151 @@ t('编辑:层级操作与选中路径', () => {
   const rt = roundTrip(root);
   eq(rt.root.children.length, 4, '层级改动往返后子项数不变');
   eq(findPath(rt.root, rt.root.children[0]), [0], '往返后路径语义不变(底 = 位置0)');
+});
+
+// ---------------- 切片 4:属性编辑与工具箱 ----------------
+
+t('值白名单:UI.色16("#hex") 与 UI.<常量> 解析/生成往返(含子字典内)', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.行([',
+    '        UI.矩形({"宽": 120, "高": 80, "底色": UI.色16("#3B82F6"), "底色2": UI.色16("#8B5CF6")}),',
+    '        UI.文本("甲", {"主轴对齐": UI.对齐中, "叉轴对齐": UI.叉撑, "锚": {"左": 0.5, "右": 0.5}, "悬底色": UI.色16("#FF0000")})',
+    '    ], {"宽": 400, "高": 200})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  const rect = root.children[0];
+  const hex = rect.options.find((o) => o.key === '底色')?.value;
+  eq(hex?.t, 'hex16', '色16 解析为 hex16');
+  eq(hex && hex.t === 'hex16' ? hex.v : '', '#3B82F6', '保留原始 hex 文本');
+  const align = root.children[1].options.find((o) => o.key === '主轴对齐')?.value;
+  eq(align?.t, 'libConst', 'UI.对齐中 解析为库常量');
+  const sub = root.children[1].options.find((o) => o.key === '锚')?.value;
+  eq(sub?.t, 'dict', '锚 仍是子字典');
+  const subColor = root.children[1].options.find((o) => o.key === '悬底色')?.value;
+  eq(subColor?.t, 'hex16', '色16 出现在子字典里也认(此处为顶层键,三态覆写同形)');
+  const rt = roundTrip(root);
+  eq(rt.text.includes('UI.色16("#3B82F6")'), true, '生成器按原样回写 色16');
+  eq(rt.text.includes('UI.对齐中'), true, '库常量按原样回写');
+  eq(rt.root.children[0].options.find((o) => o.key === '底色')?.value.t, 'hex16', '往返后仍为 hex16');
+});
+
+t('值白名单:色16 参数非字符串 / UI.<名>(…) 调用形态仍判非子集', () => {
+  const bad1 = ['函 界面(s) {', '    设 根 = UI.矩形({"底色": UI.色16(123)})', '    返 根', '}', ''].join('\n');
+  eq(parseDesignFunction(bad1).ok, false, '色16 参数必须是字符串字面量');
+  const bad2 = ['函 界面(s) {', '    设 根 = UI.矩形({"底色": UI.对齐中(1)})', '    返 根', '}', ''].join('\n');
+  eq(parseDesignFunction(bad2).ok, false, '未支持的 UI.<名>(…) 调用形态应拒绝');
+});
+
+t('属性写入:setInsets 数字↔子字典升降级与清除', () => {
+  const root = rootOf(EDIT_SAMPLE);
+  const r0 = root.children[0];
+  ok(setInsets(r0, '内边距', { 左: 8, 上: 8, 右: 8, 下: 8 }), '四边同值写入');
+  eq(numOpt(r0, '内边距'), 8, '四边同值保持数字形态');
+  ok(setInsets(r0, '内边距', { 左: 12, 上: 8, 右: 8, 下: 8 }), '改为不等值');
+  const d = r0.options.find((o) => o.key === '内边距')?.value;
+  eq(d?.t, 'dict', '不等值升级为子字典');
+  ok(removeOpt(r0, 'x'), '删除选项');
+  eq(numOpt(r0, 'x'), undefined, 'x 已删除');
+  eq(removeOpt(r0, 'x'), false, '重复删除返回 false');
+});
+
+t('工具箱:默认节点逐个控件可生成且可再解析(形状合法)', () => {
+  const WIDGET_LIST = ['行', '列', '叠', '绝对', '滚动容器', '文本', '按钮', '矩形', '图片', '图标按钮', '输入栏', '多行编辑', '空白', '弹性'];
+  const root = rootOf(EDIT_SAMPLE);
+  for (const w of WIDGET_LIST) {
+    const host = w === '行' || w === '列' || w === '叠' || w === '绝对' || w === '滚动容器' ? root : root;
+    const fresh = defaultWidget(w, 's');
+    ok(insertNode(root, host, fresh, 'child'), `${w}: 插入应成功`);
+    const rt = roundTrip(root);
+    const found = rt.root.children.some((c) => c.widget === w);
+    ok(found, `${w}: 生成→再解析后应仍在树中;文本=\n` + rt.text);
+    eq(rt.root.children.length, root.children.length, `${w}: 子项数一致`);
+    ok(removeNode(root, fresh), `${w}: 删除应成功`);
+    eq(root.children.length, rt.root.children.length - 1, `${w}: 删除后回到原状`);
+  }
+});
+
+t('工具箱:插入位置(child/after)、复制命名避撞、根不可删', () => {
+  const root = rootOf(EDIT_SAMPLE);
+  const row = root.children[3]; // 条(行容器)
+  const fresh = defaultWidget('文本', 's');
+  ok(insertNode(root, row, fresh, 'child'), '容器:追加为子项');
+  eq(row.children.length, 3, '行容器子项 +1');
+  const afterNode = defaultWidget('矩形', 's');
+  ok(insertNode(root, row, afterNode, 'after'), '叶子:插在其父的后一位');
+  ok(root.children.indexOf(afterNode) === root.children.indexOf(row) + 1, '插入位置紧随其后');
+  eq(insertNode(root, root, afterNode, 'after'), false, '根没有"后一位"');
+  eq(removeNode(root, root), false, '根不可删');
+
+  // 复制:容器名清空并避让既有名(条 已是变量名;复制后必须拿到新名)
+  const row2 = cloneSubtree(row);
+  ok(insertNode(root, row, row2, 'after'), '复制体插入');
+  const rt = roundTrip(root);
+  const names = rt.text.match(/设 (\S+) = UI\./g) ?? [];
+  const uniq = new Set(names);
+  eq(uniq.size, names.length, '生成文本中变量名不重复\n' + rt.text);
+  eq(parseDesignFunction(rt.text).ok, true, '复制后仍可解析');
+});
+
+t('属性元数据:调色板键与库一致、未知键只读、工具箱覆盖全部构造器', () => {
+  eq(COLOR_PALETTE.length, 12, '调色板 12 色');
+  eq(PALETTE_CHECK.every((k) => (COLOR_PALETTE as readonly string[]).includes(k)), true, '调色板键与 lib/UI/UI.xt 的 色彩 键一致');
+  eq(specOf('不存在的键').kind, 'readonly', '未知键 → 只读');
+  const boxWidgets = TOOLBOX.flatMap((g) => [...g.widgets]);
+  eq(boxWidgets.length, 14, '工具箱列出全部 14 个构造器');
+  eq(boxWidgets.includes('滚动容器') && boxWidgets.includes('弹性'), true, '容器与特殊叶子都在列');
+  eq(specOf('底色').kind, 'color', '底色 → 颜色编辑器');
+  eq(specOf('主轴对齐').kind, 'enum', '主轴对齐 → 枚举编辑器');
+});
+
+t('值白名单:UI.色(r,g,b[,a]) 通道色解析/生成往返,通道非数字仍拒', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.行([',
+    '        UI.按钮("甲", {"悬底色": UI.色(255, 60, 60, 255), "按底色": UI.色(36, 40, 52)})',
+    '    ], {"宽": 400, "高": 200})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  const btn = root.children[0];
+  const v1 = btn.options.find((o) => o.key === '悬底色')?.value;
+  eq(v1?.t, 'rgba', 'UI.色(4 通道)解析为 rgba');
+  eq(v1 && v1.t === 'rgba' ? v1.channels.join(',') : '', '255,60,60,255', '通道原文');
+  const v2 = btn.options.find((o) => o.key === '按底色')?.value;
+  eq(v2 && v2.t === 'rgba' ? v2.channels.length : 0, 3, '3 通道也接受(a 由库补 255)');
+  const rt = roundTrip(root);
+  eq(rt.text.includes('UI.色(255, 60, 60, 255)'), true, '生成器原样回写');
+  const bad = ['函 界面(s) {', '    设 根 = UI.矩形({"底色": UI.色(255, 60)})', '    返 根', '}', ''].join('\n');
+  eq(parseDesignFunction(bad).ok, false, '通道数不足应拒绝');
+  const bad2 = ['函 界面(s) {', '    设 根 = UI.矩形({"底色": UI.色(255, 60, "x")})', '    返 根', '}', ''].join('\n');
+  eq(parseDesignFunction(bad2).ok, false, '通道非数字应拒绝');
+});
+
+t('字对齐(库 v1.5.4):解析/生成往返,枚举归一,规范序按"组末尾追加"落位', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.行([',
+    '        UI.文本("居中", {"宽": 300, "字对齐": UI.对齐中}),',
+    '        UI.文本("靠右", {"宽": 200, "字对齐": UI.对齐末})',
+    '    ], {"宽": 500, "高": 100})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  const v = root.children[0].options.find((o) => o.key === '字对齐')?.value;
+  eq(v?.t, 'libConst', '字对齐 解析为库常量');
+  const rt = roundTrip(root);
+  eq(rt.text.includes('"字对齐": UI.对齐中'), true, '生成器原样回写');
+  eq(specOf('字对齐').kind, 'enum', '属性面板按枚举编辑');
+  eq(specOf('字对齐').enums?.length, 3, '三档:始/中/末');
+  ok(CANONICAL_KEYS.indexOf('字对齐') > CANONICAL_KEYS.indexOf('裁剪'), '新键追加在视觉组末尾(不插乱既有顺序)');
 });
 
 console.log('\n设计器自检: 通过 ' + pass + ' / 失败 ' + fail);

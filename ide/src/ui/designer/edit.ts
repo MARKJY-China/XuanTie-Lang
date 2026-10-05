@@ -305,8 +305,7 @@ export function applyResize(
  * 缩放的吸附:把"被拖的那条边"对到参考矩形边/中线(阈值内),返回修正增量与参考线。
  * 只吸附正在动的边,不动边不参与(否则会看到尺寸莫名跳动)。
  */
-export function snapResize(box: Rect, targets: Rect[], handle: HandleCode, dx: number, dy: number, thr: number): SnapResult {
-  const guides: Guide[] = [];
+export function snapResize(box: Rect, targets: Rect[], handle: HandleCode, dx: number, dy: number, thr: number): SnapResult {  const guides: Guide[] = [];
   let ax = dx;
   let ay = dy;
   const tx: number[] = [];
@@ -332,4 +331,137 @@ export function snapResize(box: Rect, targets: Rect[], handle: HandleCode, dx: n
     }
   }
   return { dx: ax, dy: ay, guides };
+}
+
+// ---------------------------------------------------------------- 属性写入(切片 4)
+
+/** 增/改任意选项值(排序交给 generator;值必须来自值白名单,由调用方保证) */
+export function setVal(node: DesignNode, key: string, val: Val): void {
+  const i = node.options.findIndex((o) => o.key === key);
+  if (i >= 0) node.options[i] = { key, value: val };
+  else node.options.push({ key, value: val });
+}
+
+/** 删选项;键本来不存在 → false(调用方据此判断"没改动") */
+export function removeOpt(node: DesignNode, key: string): boolean {
+  const i = node.options.findIndex((o) => o.key === key);
+  if (i < 0) return false;
+  node.options.splice(i, 1);
+  return true;
+}
+
+export function numVal(n: number): Val {
+  return { t: 'num', raw: fmtNum(n) };
+}
+
+/** 四边子字典(锚/偏/内边距/外边距):只写给出的边;空 → 删键;四边同值 → 收成数字形态(规范允许) */
+export function setInsets(node: DesignNode, key: string, edges: Partial<Record<'左' | '上' | '右' | '下', number | undefined>>): boolean {
+  const order = ['左', '上', '右', '下'] as const;
+  const vals = order.map((e) => edges[e]);
+  const given = vals.filter((v) => v !== undefined) as number[];
+  if (given.length === 0) return removeOpt(node, key);
+  if (given.length === 4 && given.every((v) => v === given[0])) {
+    setVal(node, key, numVal(given[0]));
+    return true;
+  }
+  const entries = order
+    .filter((e) => edges[e] !== undefined)
+    .map((e) => ({ key: e, value: numVal(edges[e] as number) }));
+  setVal(node, key, { t: 'dict', entries });
+  return true;
+}
+
+// ---------------------------------------------------------------- 树结构编辑(工具箱)
+
+/** 从父节点里摘除(根不可删);成功返 true */
+export function removeNode(root: DesignNode, node: DesignNode): boolean {
+  const p = findParent(root, node);
+  if (!p) return false;
+  const i = p.children.indexOf(node);
+  if (i < 0) return false;
+  p.children.splice(i, 1);
+  return true;
+}
+
+/**
+ * 插入新节点:pos='child' 追加为 ref 的子项(要求 ref 是容器);
+ * pos='after' 插到 ref 在其父中的后一位。
+ */
+export function insertNode(root: DesignNode, ref: DesignNode, fresh: DesignNode, pos: 'child' | 'after'): boolean {
+  if (pos === 'child') {
+    if (ref.kind !== 'container') return false;
+    ref.children.push(fresh);
+    return true;
+  }
+  const p = findParent(root, ref);
+  if (!p) return false; // 根没有"后一位"
+  const i = p.children.indexOf(ref);
+  if (i < 0) return false;
+  p.children.splice(i + 1, 0, fresh);
+  return true;
+}
+
+/** 值的深拷贝(子字典递归;其余值类型无嵌套,浅拷贝即可) */
+function cloneVal(v: Val): Val {
+  if (v.t === 'dict') return { t: 'dict', entries: v.entries.map((e) => ({ key: e.key, value: cloneVal(e.value) })) };
+  return { ...v };
+}
+
+/** 深拷贝子树;容器名清空(生成前由 ensureVarNames 分配不撞名的默认名) */
+export function cloneSubtree(node: DesignNode): DesignNode {
+  return {
+    widget: node.widget,
+    kind: node.kind,
+    varName: undefined,
+    args: node.args.map(cloneVal),
+    options: node.options.map((o) => ({ key: o.key, value: cloneVal(o.value) })),
+    children: node.children.map(cloneSubtree),
+    line: node.line,
+    endLine: node.endLine,
+  };
+}
+
+/** 工具箱默认节点:参数按 spec.ts WIDGETS 的形态给足,可直接编译运行 */
+export function defaultWidget(widget: string, stateParam: string): DesignNode {
+  const leaf = (args: Val[], options: Array<{ key: string; value: Val }>): DesignNode => ({
+    widget, kind: 'leaf', args, options, children: [], line: 0, endLine: 0,
+  });
+  const box = (w: number, h: number): Array<{ key: string; value: Val }> => [
+    { key: '高', value: numVal(h) },
+    { key: '宽', value: numVal(w) },
+  ];
+  switch (widget) {
+    case '文本':
+      return leaf([{ t: 'str', raw: '"文本"', v: '文本' }], [{ key: '字号', value: numVal(16) }]);
+    case '按钮':
+      return leaf([{ t: 'str', raw: '"按钮"', v: '按钮' }], box(100, 32));
+    case '矩形':
+      return leaf([], [{ key: '宽', value: numVal(120) }, { key: '高', value: numVal(80) }, { key: '底色', value: { t: 'colorConst', key: '主题' } }]);
+    case '图片':
+    case '图标按钮':
+      return leaf([{ t: 'str', raw: '"图片.png"', v: '图片.png' }], box(100, 100));
+    case '输入栏':
+      return leaf([{ t: 'idRef', name: stateParam }, { t: 'str', raw: '"输入"', v: '输入' }], box(200, 32));
+    case '多行编辑':
+      return leaf([{ t: 'idRef', name: stateParam }, { t: 'str', raw: '"文本"', v: '文本' }], box(240, 120));
+    case '空白':
+      return leaf([], box(20, 20));
+    case '弹性':
+      return leaf([numVal(1)], []);
+    default:
+      // 容器:默认给合理初值(绝对 给画布尺寸,行/列 给 间距)
+      return {
+        widget,
+        kind: 'container',
+        varName: undefined,
+        args: [],
+        options:
+          widget === '行' || widget === '列'
+            ? [{ key: '间距', value: numVal(8) }]
+            : box(320, 200),
+        children: [],
+        line: 0,
+        endLine: 0,
+      };
+  }
 }

@@ -41,6 +41,16 @@ function textNode(host: HTMLElement, text: string, node: DesignNode, center: boo
   s.style.fontSize = fs + 'px';
   const fc = colorOf(optVal(node, '字色'));
   if (fc) s.style.color = fc;
+  // 字对齐(库 v1.5.4):文本在自身盒内的水平落点;仅 文本 控件吃这个键(按钮恒居中)
+  if (!center) {
+    const align = optVal(node, '字对齐');
+    const key = align && align.t === 'libConst' ? align.name : align && align.t === 'str' ? align.v : '';
+    const css = key === 'UI.对齐中' || key === '中' ? 'center' : key === 'UI.对齐末' || key === '末' ? 'right' : '';
+    if (css) {
+      host.style.textAlign = css;
+      s.style.width = '100%';
+    }
+  }
   host.appendChild(s);
 }
 

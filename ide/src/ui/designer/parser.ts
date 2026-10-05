@@ -11,6 +11,9 @@ export type Val =
   | { t: 'bool'; v: boolean }
   | { t: 'stateGet'; state: string; key: string } // UI.态取(s, "键")
   | { t: 'colorConst'; key: string }              // UI.色彩["键"]
+  | { t: 'hex16'; v: string }                     // UI.色16("#RRGGBB")
+  | { t: 'rgba'; channels: string[] }             // UI.色(r, g, b[, a]) 通道数字字面量原文
+  | { t: 'libConst'; name: string }               // UI.对齐中 / UI.叉撑 等库常量(本质是字符串常量)
   | { t: 'fnRef'; name: string }                  // 具名函引用(可跨模块:B.处理点击)
   | { t: 'idRef'; name: string }                  // 标识符引用(子容器名/状态实参)
   | { t: 'dict'; entries: Array<{ key: string; value: Val }> }; // 子字典(锚/偏/内边距/外边距/三态覆写;值仍限字面量/子字典)
@@ -183,18 +186,18 @@ function parseDictValue(c: Cursor): Val | undefined {
   return { t: 'dict', entries };
 }
 
-/** 子字典的叶子值:字面量 / UI.色彩["键"] / 更深一层子字典(三态覆写等真实写法) */
+/** 子字典的叶子值:字面量 / UI.色彩["键"] / UI.色16("#hex") / UI.<常量> / 更深一层子字典(三态覆写等真实写法) */
 function parseDictLeaf(c: Cursor): Val | undefined {
   const v = parseValue(c, 'option');
   if (!v) return undefined;
   if (v.t === 'stateGet' || v.t === 'fnRef' || v.t === 'idRef') {
-    bad(c, '子字典的值只允许 字面量 / UI.色彩 / 子字典');
+    bad(c, '子字典的值只允许 字面量 / UI.色彩 / UI.色16 / UI.<常量> / 子字典');
     return undefined;
   }
   return v;
 }
 
-/** 值白名单:字面量 / 子字典 / UI.态取(s,"键") / UI.色彩["键"] / 具名引用(可跨模块) / 负数字面量 */
+/** 值白名单:字面量 / 子字典 / UI.态取(s,"键") / UI.色彩["键"] / UI.色16("#hex") / UI.<常量> / 具名引用(可跨模块) / 负数字面量 */
 function parseValue(c: Cursor, slot: 'option' | 'value' | 'src' | 'state' | 'key' | 'num'): Val | undefined {
   const t = peek(c);
   if (t.t === 'str') { next(c); return { t: 'str', raw: t.raw, v: t.v }; }
@@ -232,7 +235,40 @@ function parseValue(c: Cursor, slot: 'option' | 'value' | 'src' | 'state' | 'key
         if (!expectP(c, ']')) return undefined;
         return { t: 'colorConst', key: key.v };
       }
-      bad(c, `值槽只允许 字面量 / ${LIB_ALIAS}.态取 / ${LIB_ALIAS}.色彩 / 具名引用(发现 ${LIB_ALIAS}.${mem.t === 'id' ? mem.v : '?'})`);
+      if (mem.t === 'id' && mem.v === '色16') {
+        next(c); next(c); next(c); // UI . 色16
+        if (!expectP(c, '(')) return undefined;
+        const hex = peek(c);
+        if (hex.t !== 'str') { bad(c, `${LIB_ALIAS}.色16 的参数应为字符串字面量(如 "#3B82F6")`); return undefined; }
+        next(c);
+        if (!expectP(c, ')')) return undefined;
+        return { t: 'hex16', v: hex.v };
+      }
+      if (mem.t === 'id' && mem.v === '色') {
+        next(c); next(c); next(c); // UI . 色
+        if (!expectP(c, '(')) return undefined;
+        const channels: string[] = [];
+        for (;;) {
+          const n1 = peek(c);
+          if (n1.t !== 'num') { bad(c, `${LIB_ALIAS}.色 的通道应为数字字面量(0-255)`); return undefined; }
+          next(c);
+          channels.push(n1.raw);
+          if (peek(c).t === 'p' && peek(c).v === ',') { next(c); continue; }
+          break;
+        }
+        if (!expectP(c, ')')) return undefined;
+        if (channels.length !== 3 && channels.length !== 4) { bad(c, `${LIB_ALIAS}.色 需要 3 或 4 个通道(r,g,b[,a])`); return undefined; }
+        return { t: 'rgba', channels };
+      }
+      // 库常量(UI.对齐中 / UI.叉撑 …):本质是字符串常量,裸用即可;带 ( 或 [ 的形态只认上面三种
+      if (mem.t === 'id') {
+        const after = peek(c, 3);
+        if (!(after.t === 'p' && (after.v === '(' || after.v === '['))) {
+          next(c); next(c); next(c); // UI . 常量名
+          return { t: 'libConst', name: LIB_ALIAS + '.' + mem.v };
+        }
+      }
+      bad(c, `值槽只允许 字面量 / ${LIB_ALIAS}.态取 / ${LIB_ALIAS}.色彩 / ${LIB_ALIAS}.色16 / ${LIB_ALIAS}.<常量>(发现 ${LIB_ALIAS}.${mem.t === 'id' ? mem.v : '?'})`);
       return undefined;
     }
     let name = t.v;

@@ -4,23 +4,38 @@
 // "改树 → 生成器重发整区 → region 替换 → 替换编辑器全文",每次落点 = 一步 Monaco 撤销
 // (Ctrl+Z / Ctrl+Y 由 main.ts 转发到编辑器)。
 // 只读边界:没有设计区、或解析未通过子集(parsed.ok=false)时,编辑入口全部关闭(平移视区不受限)。
-import { parseDesignFunction, type DesignNode, type ParseResult } from './parser';
+import { parseDesignFunction, type DesignNode, type ParseResult, type Val } from './parser';
 import { findRegions, regionText, replaceRegion, type RegionRef } from './region';
 import { layoutTree, type Measure } from './layout';
 import { paintDesign, type PaintResult } from './paint';
 import { valText, generateDesignFunction } from './generator';
 import { markBegin, markEnd } from './spec';
+import { COLOR_PALETTE, TOOLBOX, specOf } from './props';
+import {
+  CONTEXT_SEP,
+  showContextMenu,
+  showCustomModal,
+  type ContextMenuEntry,
+} from '../dialogs';
 import {
   applyMove,
   applyResize,
+  cloneSubtree,
+  defaultWidget,
   findParent,
   findPath,
   handleAxes,
   handleMovesNearEdge,
+  insertNode,
   levelOp,
   lockedAxes,
   moveMode,
   nodeAtPath,
+  numVal,
+  removeNode,
+  removeOpt,
+  setInsets,
+  setVal,
   snapMove,
   snapResize,
   MIN_SIZE,
@@ -73,6 +88,52 @@ function el(tag: string, cls: string, text?: string): HTMLElement {
   return e;
 }
 
+/**
+ * 自绘下拉按钮:点开一个暗色菜单(复用 ctx-menu)。
+ * 为什么不用原生 <select>:WebView2 的原生弹层不跟随 color-scheme,暗色主题下弹出亮块
+ * (实测:设置里 :root color-scheme:dark 无效,弹层仍是白底灰字、无圆角)。
+ */
+function ddButton(label: string, items: () => ContextMenuEntry[], cls = ''): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'ds-dd ' + cls;
+  const t = document.createElement('span');
+  t.className = 'ds-dd-text';
+  t.textContent = label;
+  const ic = document.createElement('i');
+  ic.className = 'codicon codicon-chevron-down';
+  b.append(t, ic);
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const r = b.getBoundingClientRect();
+    showContextMenu(r.left, r.bottom + 2, items());
+  });
+  return b;
+}
+
+/** 改下拉按钮的文字(状态变化后刷新标签) */
+function ddLabel(b: HTMLButtonElement, label: string): void {
+  const t = b.querySelector('.ds-dd-text');
+  if (t) t.textContent = label;
+}
+
+/** 颜色值 → 预览色(画布同源的 12 色表;UI.色16/UI.色 由库解析,预览给出近似) */
+const SWATCH: Record<string, string> = {
+  白: '#ffffff', 黑: '#000000', 红: '#ff5050', 绿: '#50dc50', 蓝: '#5078ff', 黄: '#ffdc3c',
+  灰: '#8c8c8c', 深灰: '#323232', 浅灰: '#dcdcdc', 透明: 'transparent', 主题: '#4682dc', 强调: '#ff8c28',
+};
+
+function colorPreview(v: Val | undefined): string | undefined {
+  if (!v) return undefined;
+  if (v.t === 'colorConst') return SWATCH[v.key];
+  if (v.t === 'hex16') return /^#[0-9a-fA-F]{6}$/.test(v.v) ? v.v : undefined;
+  if (v.t === 'rgba') {
+    const [r, g, b] = v.channels.map((c) => Math.max(0, Math.min(255, Number(c))));
+    return `rgb(${r},${g},${b})`;
+  }
+  return undefined;
+}
+
 interface DragState {
   kind: 'move' | 'resize';
   node: DesignNode;
@@ -94,7 +155,7 @@ interface DragState {
 
 export class DesignerPanel {
   private sub: HTMLElement;
-  private picker: HTMLSelectElement;
+  private picker: HTMLButtonElement;
   private badge: HTMLElement;
   private canvasHost: HTMLElement;
   private split: HTMLElement;
@@ -123,14 +184,20 @@ export class DesignerPanel {
     const bar = el('div', 'ds-toolbar');
     bar.appendChild(el('span', 'ds-title', '界面设计器'));
     this.sub = el('span', 'ds-sub', '');
-    this.picker = document.createElement('select');
-    this.picker.className = 'ds-picker';
-    this.picker.addEventListener('change', () => {
-      this.regionIdx = Number(this.picker.value) || 0;
-      this.selected = null;
-      this.selPath = null;
-      this.reparse();
-    });
+    this.picker = ddButton('', () =>
+      this.regions.map((r, i) => ({
+        label: r.name,
+        checked: i === this.regionIdx,
+        action: () => {
+          this.regionIdx = i;
+          this.selected = null;
+          this.selPath = null;
+          this.reparse();
+        },
+      })),
+    );
+    this.picker.className = 'ds-dd ds-picker';
+    this.picker.title = '切换设计区';
     this.badge = el('span', 'ds-badge', '');
     const refresh = document.createElement('button');
     refresh.className = 'ds-btn';
@@ -168,6 +235,44 @@ export class DesignerPanel {
 
     // 分隔条:拖动改属性面板宽(仅本次会话)
     this.split.addEventListener('pointerdown', (e) => this.splitDown(e));
+
+    // 画布右键菜单:命中控件即选中并弹出层级/复制/删除(全局已禁原生右键菜单,见 main.ts)
+    this.canvasHost.addEventListener('contextmenu', (e) => {
+      if (!this.painted) return;
+      const t = e.target as HTMLElement;
+      const nEl = t.closest('[data-ix]') as HTMLElement | null;
+      if (!nEl) return;
+      e.preventDefault();
+      const n = this.painted.nodes[Number(nEl.dataset.ix)];
+      if (!n) return;
+      this.pick(n);
+      if (!this.parsed?.ok) {
+        this.hint('本区含非子集内容,只读(不能增删改)');
+        return;
+      }
+      this.showNodeMenu(e.clientX, e.clientY, n);
+    });
+  }
+
+  /** 控件右键菜单:层级四连 + 复制/删除(与属性面板的工具箱同源) */
+  private showNodeMenu(x: number, y: number, node: DesignNode): void {
+    const root = this.parsed?.root;
+    const parent = root ? findParent(root, node) : null;
+    const items: ContextMenuEntry[] = [
+      { label: `${node.widget}${node.varName ? ' · ' + node.varName : ''}`, header: true },
+      { label: '上移一层', action: () => this.doLevel('up') },
+      { label: '下移一层', action: () => this.doLevel('down') },
+      { label: '置顶', action: () => this.doLevel('top') },
+      { label: '置底', action: () => this.doLevel('bottom') },
+      CONTEXT_SEP,
+      { label: '复制', action: () => this.duplicateSelected() },
+      { label: '删除', danger: true, action: () => this.deleteSelected() },
+    ];
+    if (!parent) {
+      // 根:层级/删除都不适用,给个明白话(徽标),菜单仍展示但点了会被拦
+      this.hint('根容器:层级/删除不适用,可在属性面板改 宽/高');
+    }
+    showContextMenu(x, y, items);
   }
 
   // ---------------------------------------------------------------- 打开/关闭
@@ -268,14 +373,7 @@ export class DesignerPanel {
   private renderHead(): void {
     this.sub.textContent = (this.filePath.split(/[\\/]/).pop() ?? '') + (this.regions.length > 1 ? `(${this.regions.length} 个区)` : '');
     this.picker.style.display = this.regions.length > 1 ? '' : 'none';
-    this.picker.innerHTML = '';
-    this.regions.forEach((r, i) => {
-      const o = document.createElement('option');
-      o.value = String(i);
-      o.textContent = r.name;
-      this.picker.appendChild(o);
-    });
-    this.picker.value = String(this.regionIdx);
+    ddLabel(this.picker, this.regions[this.regionIdx]?.name ?? '设计区');
     const ok = this.parsed?.ok === true;
     this.badge.textContent = ok ? '符合子集 · 可编辑' : '子集外 · 只读';
     this.badge.className = 'ds-badge ' + (ok ? 'ok' : 'warn');
@@ -325,17 +423,19 @@ export class DesignerPanel {
     const n = this.selected;
     const root = this.parsed?.root;
     if (!n) {
-      this.insp.appendChild(el('div', 'ds-insp-hint', '点击画布中的控件查看属性;拖动可移动,角柄可缩放'));
+      this.insp.appendChild(el('div', 'ds-insp-hint', '点击画布中的控件查看/编辑属性;拖动可移动,角柄可缩放'));
       return;
     }
+    const 段 = (t: string): void => {
+      this.insp.appendChild(el('div', 'ds-sec', t));
+    };
     const 行 = (label: string, val: string): void => {
       const r = el('div', 'ds-row');
       r.append(el('span', 'ds-k', label), el('span', 'ds-v', val));
       this.insp.appendChild(r);
     };
-    const 段 = (t: string): void => {
-      this.insp.appendChild(el('div', 'ds-sec', t));
-    };
+    const editable = this.parsed?.ok === true;
+
     段('控件');
     行('类型', n.kind === 'container' ? `容器 · ${n.widget}` : `控件 · ${n.widget}`);
     if (n.varName) 行('变量名', n.varName);
@@ -343,15 +443,26 @@ export class DesignerPanel {
     行('源码行', String(n.line));
     if (n.args.length > 0) {
       段('实参');
-      n.args.forEach((a, i) => 行(`#${i + 1}`, valText(a)));
+      n.args.forEach((a, i) => {
+        if (editable && (a.t === 'str' || a.t === 'num')) this.propTextRow(`#${i + 1}`, a);
+        else 行(`#${i + 1}`, valText(a));
+      });
     }
-    if (n.options.length > 0) {
-      段('选项(' + n.options.length + ')');
-      for (const o of n.options) 行(o.key, valText(o.value));
-    }
-    if (n.children.length > 0) 段(`子项(${n.children.length})`);
 
-    if (this.parsed?.ok && root) {
+    if (n.options.length > 0 || editable) {
+      段('选项(' + n.options.length + ')' + (editable ? '' : ' · 只读'));
+    }
+    for (const o of [...n.options]) {
+      if (editable) this.propRow(o.key, o.value);
+      else {
+        const r = el('div', 'ds-row');
+        r.append(el('span', 'ds-k', o.key), el('span', 'ds-v', valText(o.value)));
+        this.insp.appendChild(r);
+      }
+    }
+
+    if (editable && root) {
+      this.toolbox(n);
       const parent = findParent(root, n);
       const mode = moveMode(n, parent);
       const locked = lockedAxes(n, parent);
@@ -376,6 +487,333 @@ export class DesignerPanel {
         mk('置底', '移到数组开头(叠/绝对 中为最下层)', 'bottom');
         this.insp.appendChild(row);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------- 属性行(可编辑)
+
+  /** 通用提交:改树 → 写回;okMsg 出现在徽标上 */
+  private editTree(mutate: (root: DesignNode, node: DesignNode) => boolean, okMsg: string): void {
+    const root = this.parsed?.root;
+    const n = this.selected;
+    if (!root || !n || !this.parsed?.ok) return;
+    if (!mutate(root, n)) {
+      this.hint('没有产生改动');
+      return;
+    }
+    this.selPath = findPath(root, n);
+    if (this.writeBack()) this.hint(okMsg, 'ok');
+    else {
+      this.hint('写回被拒(编辑器内容已变化),已重读');
+      this.open();
+    }
+  }
+
+  private propRow(key: string, cur: Val): void {
+    const spec = specOf(key);
+    const row = el('div', 'ds-prow');
+    row.appendChild(el('span', 'ds-k', key));
+    const box = el('span', 'ds-pctl');
+    row.appendChild(box);
+    if (spec.hint) row.title = spec.hint;
+
+    if (spec.kind === 'num') {
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.className = 'ds-in ds-num';
+      if (spec.min !== undefined) inp.min = String(spec.min);
+      if (spec.max !== undefined) inp.max = String(spec.max);
+      inp.value = cur.t === 'num' ? cur.raw : '';
+      inp.placeholder = cur.t === 'num' ? '' : valText(cur);
+      inp.addEventListener('change', () => {
+        const v = inp.value.trim();
+        if (v === '') {
+          this.editTree((_r, n2) => removeOpt(n2, key), `${key} 已清除`);
+          return;
+        }
+        if (!Number.isFinite(Number(v))) {
+          this.hint('请输入数字');
+          return;
+        }
+        const num = Number(v);
+        this.editTree((_r, n2) => {
+          setVal(n2, key, numVal(num));
+          return true;
+        }, `${key} 已改`);
+      });
+      box.appendChild(inp);
+    } else if (spec.kind === 'color') {
+      // 颜色 = 12 色板(UI.色彩["键"]) 或自定义 hex(UI.色16("#…"));两种都是子集内的常量写法
+      const isSet = cur.t === 'colorConst' || cur.t === 'hex16' || cur.t === 'rgba';
+      const curName = cur.t === 'colorConst' ? cur.key : cur.t === 'hex16' ? cur.v : cur.t === 'rgba' ? `rgb(${cur.channels.slice(0, 3).join(',')})` : '(无)';
+      const btn = ddButton(curName, () => {
+        const items: ContextMenuEntry[] = [
+          {
+            label: '(无)',
+            checked: !isSet,
+            action: () => this.editTree((_r, n2) => removeOpt(n2, key), `${key} 已清除`),
+          },
+          CONTEXT_SEP,
+          { label: '调色板', header: true },
+          ...COLOR_PALETTE.map((c) => ({
+            label: c,
+            checked: cur.t === 'colorConst' && cur.key === c,
+            action: () =>
+              this.editTree((_r, n2) => {
+                setVal(n2, key, { t: 'colorConst', key: c });
+                return true;
+              }, `${key} 已改`),
+          })),
+          CONTEXT_SEP,
+          { label: '自定义颜色…(hex)', action: () => void this.pickHex(key, cur) },
+        ];
+        return items;
+      });
+      const sw = colorPreview(cur);
+      if (sw) {
+        const dot = el('span', 'ds-swatch');
+        dot.style.background = sw;
+        btn.prepend(dot);
+      }
+      box.appendChild(btn);
+    } else if (spec.kind === 'enum') {
+      // 归一:字面量与库常量等价(库中 对齐中 = "中"),统一按常量形态显示
+      const curText = cur.t === 'libConst' ? cur.name : cur.t === 'str' ? JSON.stringify(cur.v) : '';
+      const alias: Record<string, string> = {
+        '"始"': 'UI.对齐始', '"中"': 'UI.对齐中', '"末"': 'UI.对齐末', '"间"': 'UI.对齐间', '"均"': 'UI.对齐均', '"均等"': 'UI.对齐均等',
+        '"叉始"': 'UI.叉始', '"叉中"': 'UI.叉中', '"叉末"': 'UI.叉末', '"叉撑"': 'UI.叉撑',
+      };
+      const curNorm = alias[curText] ?? curText;
+      const show = (v: string): string => (v.startsWith('UI.') ? v.slice(3) : v);
+      const btn = ddButton(curNorm === '' ? '(默认)' : show(curNorm), () => {
+        const items: ContextMenuEntry[] = [
+          {
+            label: '(默认/清除)',
+            checked: curNorm === '',
+            action: () => this.editTree((_r, n2) => removeOpt(n2, key), `${key} 已清除`),
+          },
+          CONTEXT_SEP,
+          ...(spec.enums ?? []).map((en) => ({
+            label: show(en),
+            checked: curNorm === en,
+            action: () =>
+              this.editTree((_r, n2) => {
+                if (en.startsWith('UI.')) setVal(n2, key, { t: 'libConst', name: en });
+                else setVal(n2, key, { t: 'str', raw: en, v: JSON.parse(en) as string });
+                return true;
+              }, `${key} 已改`),
+          })),
+        ];
+        return items;
+      });
+      box.appendChild(btn);
+    } else if (spec.kind === 'bool') {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.className = 'ds-chk';
+      cb.checked = cur.t === 'bool' ? cur.v : false;
+      cb.addEventListener('change', () => {
+        this.editTree((_r, n2) => { setVal(n2, key, { t: 'bool', v: cb.checked }); return true; }, `${key} 已改`);
+      });
+      box.appendChild(cb);
+      box.appendChild(el('span', 'ds-hex', cur.t === 'bool' ? (cur.v ? '真' : '假') : valText(cur)));
+    } else if (spec.kind === 'insets') {
+      const edges = cur.t === 'dict' ? cur.entries : [];
+      const plain = cur.t === 'num' ? cur.raw : undefined;
+      const get = (e: string): string => {
+        const v = edges.find((x) => x.key === e)?.value;
+        return v && v.t === 'num' ? v.raw : '';
+      };
+      const inputs: Array<[string, HTMLInputElement]> = [];
+      for (const e of ['左', '上', '右', '下'] as const) {
+        const inp = document.createElement('input');
+        inp.type = 'number';
+        inp.className = 'ds-in ds-edge';
+        inp.placeholder = e;
+        inp.title = e;
+        if (plain !== undefined && edges.length === 0) inp.value = e === '左' ? plain : '';
+        else inp.value = get(e);
+        if (spec.min !== undefined) inp.min = String(spec.min);
+        if (spec.max !== undefined) inp.max = String(spec.max);
+        inputs.push([e, inp]);
+        box.appendChild(inp);
+      }
+      const commit = (): void => {
+        const vals: Partial<Record<'左' | '上' | '右' | '下', number | undefined>> = {};
+        for (const [e, inp] of inputs) {
+          const v = inp.value.trim();
+          vals[e as '左' | '上' | '右' | '下'] = v === '' || !Number.isFinite(Number(v)) ? undefined : Number(v);
+        }
+        this.editTree((_r, n2) => setInsets(n2, key, vals), `${key} 已改`);
+      };
+      for (const [, inp] of inputs) inp.addEventListener('change', commit);
+      box.appendChild(el('span', 'ds-edge-tag', '左/上/右/下'));
+    } else {
+      // 只读键:给值 + 提示
+      box.appendChild(el('span', 'ds-v', valText(cur)));
+      if (spec.hint) box.appendChild(el('span', 'ds-ro', '只读'));
+    }
+    this.insp.appendChild(row);
+  }
+
+  /** 实参里的字符串/数字:就地编辑(容器名引用、状态引用等不给改) */
+  private propTextRow(label: string, cur: Val): void {
+    const node = this.selected;
+    if (!node) return;
+    const idx = Number(label.slice(1)) - 1;
+    const row = el('div', 'ds-prow');
+    row.appendChild(el('span', 'ds-k', label));
+    const box = el('span', 'ds-pctl');
+    const inp = document.createElement('input');
+    inp.className = 'ds-in ds-text';
+    inp.type = 'text';
+    inp.value = cur.t === 'str' ? cur.v : cur.t === 'num' ? cur.raw : '';
+    inp.addEventListener('change', () => {
+      const v = inp.value;
+      this.editTree((_r, n2) => {
+        const a = n2.args[idx];
+        if (!a) return false;
+        if (a.t === 'str') {
+          n2.args[idx] = { t: 'str', raw: JSON.stringify(v), v };
+          return true;
+        }
+        if (a.t === 'num') {
+          if (!Number.isFinite(Number(v))) return false;
+          n2.args[idx] = numVal(Number(v));
+          return true;
+        }
+        return false;
+      }, `${label} 已改`);
+    });
+    box.appendChild(inp);
+    row.appendChild(box);
+    this.insp.appendChild(row);
+  }
+
+  /** 自定义颜色输入(走 IDE 自己的弹窗,不用 window.prompt —— WebView2 内不可靠) */
+  private async pickHex(key: string, cur: Val): Promise<void> {
+    const initial = cur.t === 'hex16' ? cur.v : '#3B82F6';
+    const res = await showCustomModal(
+      '自定义颜色',
+      (body, close) => {
+        const inp = document.createElement('input');
+        inp.className = 'ds-in ds-text';
+        inp.value = initial;
+        inp.placeholder = '#RRGGBB';
+        inp.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') close(inp.value.trim());
+        });
+        const foot = el('div', 'm-foot');
+        const cancel = el('button', 'mbtn', '取消');
+        cancel.addEventListener('click', () => close(undefined));
+        const ok = el('button', 'mbtn primary', '确定');
+        ok.addEventListener('click', () => close(inp.value.trim()));
+        foot.append(cancel, ok);
+        body.append(inp, foot);
+        window.setTimeout(() => inp.focus(), 0);
+      },
+      '支持 #RGB / #RRGGBB / #RRGGBBAA;写回为 UI.色16("…")',
+    );
+    if (typeof res !== 'string' || res === '') return;
+    if (!/^#[0-9a-fA-F]{3,8}$/.test(res)) {
+      this.hint('颜色格式应为 #RRGGBB');
+      return;
+    }
+    this.editTree((_r, n2) => {
+      setVal(n2, key, { t: 'hex16', v: res });
+      return true;
+    }, `${key} 已改`);
+  }
+
+  // ---------------------------------------------------------------- 工具箱
+
+  private toolbox(node: DesignNode): void {
+    this.insp.appendChild(el('div', 'ds-sec', '工具箱'));
+    const row = el('div', 'ds-actions');
+    const sel = ddButton('选择控件…', () =>
+      TOOLBOX.flatMap((g, gi) => [
+        ...(gi > 0 ? [CONTEXT_SEP as ContextMenuEntry] : []),
+        { label: g.group, header: true } as ContextMenuEntry,
+        ...g.widgets.map((w) => ({ label: w, action: () => this.addWidget(w) }) as ContextMenuEntry),
+      ]),
+    );
+    sel.title = '把新控件加进选中的容器(或选中控件的父容器)';
+    row.appendChild(sel);
+    const bCopy = el('button', 'ds-btn ds-act', '复制');
+    bCopy.title = '深拷贝选中控件(容器会拿到新变量名),插在其后';
+    bCopy.addEventListener('click', () => this.duplicateSelected());
+    const bDel = el('button', 'ds-btn ds-act', '删除');
+    bDel.title = '从父容器中删除选中控件(可 Ctrl+Z 撤销)';
+    bDel.addEventListener('click', () => this.deleteSelected());
+    row.append(bCopy, bDel);
+    this.insp.appendChild(row);
+    const hint = el(
+      'div',
+      'ds-k',
+      node.kind === 'container' ? '添加目标:选中的容器(追加为其子项)' : '添加目标:选中控件的父容器(插在其后)',
+    );
+    this.insp.appendChild(hint);
+  }
+
+  private addWidget(widget: string): void {
+    const root = this.parsed?.root;
+    const n = this.selected;
+    if (!root || !n || !this.parsed?.ok) {
+      this.hint('先选中一个控件或容器');
+      return;
+    }
+    const fresh = defaultWidget(widget, this.parsed.stateParam ?? 's');
+    const pos: 'child' | 'after' = n.kind === 'container' ? 'child' : 'after';
+    if (!insertNode(root, n, fresh, pos)) {
+      this.hint('添加失败:该位置不可插入');
+      return;
+    }
+    this.selected = fresh;
+    this.selPath = findPath(root, fresh);
+    if (this.writeBack()) this.hint(`已添加 ${widget}`, 'ok');
+    else {
+      this.hint('写回被拒(编辑器内容已变化),已重读');
+      this.open();
+    }
+  }
+
+  private duplicateSelected(): void {
+    const root = this.parsed?.root;
+    const n = this.selected;
+    if (!root || !n || !this.parsed?.ok) return;
+    const copy = cloneSubtree(n);
+    if (!insertNode(root, n, copy, 'after')) {
+      this.hint('根容器不能复制');
+      return;
+    }
+    this.selected = copy;
+    this.selPath = findPath(root, copy);
+    if (this.writeBack()) this.hint('已复制', 'ok');
+    else {
+      this.hint('写回被拒(编辑器内容已变化),已重读');
+      this.open();
+    }
+  }
+
+  private deleteSelected(): void {
+    const root = this.parsed?.root;
+    const n = this.selected;
+    if (!root || !n || !this.parsed?.ok) return;
+    const parent = findParent(root, n);
+    if (!parent) {
+      this.hint('根容器不能删除');
+      return;
+    }
+    if (!removeNode(root, n)) {
+      this.hint('删除失败');
+      return;
+    }
+    this.selected = parent;
+    this.selPath = findPath(root, parent);
+    if (this.writeBack()) this.hint('已删除(可 Ctrl+Z 撤销)', 'ok');
+    else {
+      this.hint('写回被拒(编辑器内容已变化),已重读');
+      this.open();
     }
   }
 

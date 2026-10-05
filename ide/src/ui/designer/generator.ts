@@ -18,6 +18,9 @@ export function valText(v: Val): string {
     case 'bool': return v.v ? '真' : '假';
     case 'stateGet': return `${LIB_ALIAS}.态取(${v.state}, "${esc(v.key)}")`;
     case 'colorConst': return `${LIB_ALIAS}.色彩["${esc(v.key)}"]`;
+    case 'hex16': return `${LIB_ALIAS}.色16("${esc(v.v)}")`;
+    case 'rgba': return `${LIB_ALIAS}.色(${v.channels.join(', ')})`;
+    case 'libConst': return v.name;
     case 'fnRef': return v.name;
     case 'idRef': return v.name;
     case 'dict': return dictText(v.entries);
@@ -43,14 +46,28 @@ export function leafText(node: DesignNode): string {
   return `${LIB_ALIAS}.${node.widget}(${parts.join(', ')})`;
 }
 
-/** 给缺名的容器按树序分配确定性默认名(设计器新建节点走这条;解析产物保留原名) */
+/** 给缺名的容器按树序分配确定性默认名(设计器新建节点走这条;解析产物保留原名)。
+ *  分配时避让树中已有名(复制子树会产生无名容器,直接编号会撞上既有的 节点N)。 */
 export function ensureVarNames(root: DesignNode): void {
+  const taken = new Set<string>();
+  const collect = (node: DesignNode): void => {
+    if (node.kind === 'container' && node.varName) taken.add(node.varName);
+    for (const ch of node.children) collect(ch);
+  };
+  collect(root);
+
   let n = 0;
   const walk = (node: DesignNode, isRoot: boolean): void => {
     if (node.kind === 'container') {
       if (!node.varName) {
-        n++;
-        node.varName = isRoot ? GEN.rootVar : `${GEN.nodeVarPrefix}${n}`;
+        if (isRoot) node.varName = GEN.rootVar;
+        else {
+          do {
+            n++;
+          } while (taken.has(`${GEN.nodeVarPrefix}${n}`));
+          node.varName = `${GEN.nodeVarPrefix}${n}`;
+        }
+        taken.add(node.varName);
       }
     }
     for (const ch of node.children) walk(ch, false);
