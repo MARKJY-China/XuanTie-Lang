@@ -1,6 +1,6 @@
 // 玄铁铸造厂 —— Tauri 2 桌面壳入口
 // v0.1 作用域:文件树 / Monaco+LSP / 一键运行 / 内嵌终端 / 铁铺 / 新建工程
-// 禁区(ide/AGENTS.md):调试器 UI、插件系统、Git 界面、可视化控件设计器
+// 空指针/禁用项见 ide/AGENTS.md 永久禁令:调试器 UI、插件系统、Git 界面(UI 设计器已解禁)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ailog;
