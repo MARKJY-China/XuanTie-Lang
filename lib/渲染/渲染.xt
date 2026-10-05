@@ -22,10 +22,12 @@
 //     后续层仍在 issue #22 设计中
 //
 // 平台说明(issue #60「渲染库 Linux 不支持 Wayland 原生」):
-//   - Linux 下渲染库依赖的 raylib/GLFW 当前构建仅含 X11 后端——Wayland 会话
-//     (GNOME/KDE 默认)下需经 XWayland 兼容层运行,窗口非 Wayland 原生
-//   - Wayland 原生支持需重编 raylib 时启用 GLFW Wayland 后端(双后端)
-//   - 建议:Linux 下渲染库程序先运行于 X11/XWayland 会话
+//   - Linux 附带 libraylib.linux-amd64.a:GLFW 双后端(Wayland+X11)构建,
+//     Wayland 会话(GNOME/KDE 默认)下原生运行(优先 Wayland,自动回退 X11),
+//     窗口为 Wayland 原生窗口,不经 XWayland 兼容层
+//   - 双后端库构建配方见同目录 构建-linux-raylib.sh(可复现构建,含验证方法)
+//   - 默认单 X11 后端构建(系统包/旧版包)仍走 XWayland——Linux 下若窗口标题栏
+//     出现 X.Org 图标即为此情形,可换用本包附带的 linux-amd64 库
 
 // ============================================================
 // 外部函数声明 — 窗口管理
