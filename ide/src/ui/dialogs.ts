@@ -11,17 +11,19 @@ function modalRoot(): HTMLElement {
   return document.getElementById('modal-root') as HTMLElement;
 }
 
-// 通用模态:title 主标题;subtitle 可选副标题(小字弱化,换行显示,不用破折号拼接)
+// 通用模态:title 主标题;subtitle 可选副标题(小字弱化,换行显示,不用破折号拼接);
+// wide=true 宽版(设置/提供商管理等多字段表单,见 styles.css .modal.wide)
 export function showCustomModal(
   title: string,
   bodyBuilder: (body: HTMLElement, close: (result?: unknown) => void) => void,
   subtitle?: string,
+  wide?: boolean,
 ): Promise<unknown> {
   return new Promise((resolve) => {
     const root = modalRoot();
     root.classList.add('open');
     root.innerHTML = '<div class="overlay"></div>';
-    const card = el('div', 'modal');
+    const card = el('div', 'modal' + (wide ? ' wide' : ''));
     card.appendChild(el('div', 'm-head', title));
     if (subtitle) card.appendChild(el('div', 'm-subtitle', subtitle));
     const body = el('div', 'm-body');

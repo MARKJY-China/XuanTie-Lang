@@ -96,6 +96,15 @@ interface OpenDoc {
     return doc ? doc.model.getValue() !== doc.savedText : false;
   }
 
+  /** 所有未保存路径(关窗拦截与 Rust 侧未保存标志同步用) */
+  dirtyPaths(): string[] {
+    const out: string[] = [];
+    for (const [p, doc] of this.docs) {
+      if (doc.model.getValue() !== doc.savedText) out.push(p);
+    }
+    return out;
+  }
+
   /** AI 写文件后的编辑器刷新:仅当缓冲区未脏时从磁盘重载;已脏保留用户未保存的修改。 */
   async reloadIfClean(path: string): Promise<'reloaded' | 'dirty' | 'unopened'> {
     const doc = this.docs.get(path);

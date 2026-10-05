@@ -13,18 +13,16 @@ function alt(words: string[]): RegExp {
   return new RegExp(words.map((w) => w + '(?![' + TAIL + '])').join('|'));
 }
 
-const KEYWORDS = [
-  '设', '常', '函', '型', '造', '口', '承', '覆', '公', '私', '护', '外', '弱', '此',
-  '若', '抑', '否', '当', '循', '遍历', '于', '断', '续', '返', '匹配', '尝试', '捕捉',
-  '终', '异步', '等待', '并行', '引', '予',
-];
+// 关键字分两类(对齐文档站 scope:声明类=storage.type 蓝、控制类=keyword.control 紫)
+const DECL_KEYWORDS = ['设', '常', '函', '型', '造', '口', '承', '覆', '公', '私', '护', '外', '弱', '引', '予'];
+const CONTROL_KEYWORDS = ['若', '抑', '否', '当', '循', '遍历', '于', '断', '续', '返', '匹配', '尝试', '捕捉', '终', '异步', '等待', '并行', '此'];
 const TYPE_WORDS = ['整', '小数', '字', '字符串', '字典', '字节', '数组', '布尔', '结果', '任务'];
 const BUILTIN_WORDS = ['示', '输', '求', '连', '听', '执', '化', '解', '道', '选', '收', '发'];
 const NS_WORDS = ['时', '文件', '数学'];
 const CONST_WORDS = ['真', '假', '空'];
 const OP_WORDS = ['且', '或', '非', '是', '位与', '位或', '异或', '左移', '右移', '取反'];
 
-const language: monaco.languages.IMonarchLanguage = {
+export const language: monaco.languages.IMonarchLanguage = {
   defaultToken: '',
   tokenPostfix: '.xt',
   tokenizer: {
@@ -34,7 +32,8 @@ const language: monaco.languages.IMonarchLanguage = {
       [/'''/, { token: 'string.quote', next: '@tsingle' }],
       [/"/, { token: 'string.quote', next: '@dquote' }],
       [/'/, { token: 'string.quote', next: '@squote' }],
-      [alt(KEYWORDS), 'keyword'],
+      [alt(DECL_KEYWORDS), 'storage.type'],
+      [alt(CONTROL_KEYWORDS), 'keyword'],
       [alt(TYPE_WORDS), 'type'],
       [alt(BUILTIN_WORDS), 'builtin'],
       [alt(NS_WORDS), 'namespace'],
@@ -45,8 +44,14 @@ const language: monaco.languages.IMonarchLanguage = {
       [/[a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*\??/, 'identifier'],
       [/[{}[\]()]/, '@brackets'],
       [/->/, 'operator'],
+      // 点后成员(联.成功 / 流.写):独立 token 上色,与文档站 entity 色一致
+      [/\./, { token: 'delimiter', next: '@afterDot' }],
       [/[+\-*/%<>=!&|:;,.?]/, 'operator'],
       [/\s+/, 'white'],
+    ],
+    afterDot: [
+      [/[a-zA-Z_\u0080-\uFFFF][a-zA-Z0-9_\u0080-\uFFFF]*\??/, { token: 'member', next: '@pop' }],
+      [/[\s\S]/, { token: '', next: '@pop' }],
     ],
     dquote: [
       [/[^\\#"\n]+/, 'string'],
@@ -114,26 +119,33 @@ const config: monaco.languages.LanguageConfiguration = {
   wordPattern: /[a-zA-Z0-9_\u0080-\uFFFF]+/,
 };
 
+// 配色对齐文档站(取 site/.vitepress/config.mts 的 xuantieDark 补丁 + vitesse 原生色,
+// 已从构建产物 guide/*.html 的 --shiki-dark 内联样式实测核对):
+//   声明关键字/类型/常量 #569CD6 · 控制关键字 #C586C0 · 内建(示/连/时/文件/数学) #B8A965
+//   标识符 #BD976A · 点后成员 #80A665 · 字符串 #98C379 · 数字 #4C9A91 · 注释 #758575
+//   插值标点 #666666 · 运算符/正文 #D4D4D4
 const theme: monaco.editor.IStandaloneThemeData = {
   base: 'vs-dark',
   inherit: true,
   rules: [
-    { token: 'comment', foreground: '6a9955' },
+    { token: 'comment', foreground: '758575' },
+    { token: 'storage.type', foreground: '569cd6' },
     { token: 'keyword', foreground: 'c586c0' },
-    { token: 'type', foreground: '4ec9b0' },
-    { token: 'builtin', foreground: 'dcdcaa' },
-    { token: 'namespace', foreground: '4fc1ff' },
+    { token: 'type', foreground: '569cd6' },
+    { token: 'builtin', foreground: 'b8a965' },
+    { token: 'namespace', foreground: 'b8a965' },
     { token: 'constant', foreground: '569cd6' },
-    { token: 'operator.word', foreground: 'c8c8c8' },
+    { token: 'operator.word', foreground: 'd4d4d4' },
     { token: 'operator', foreground: 'd4d4d4' },
-    { token: 'string', foreground: 'ce9178' },
-    { token: 'string.quote', foreground: 'ce9178' },
+    { token: 'member', foreground: '80a665' },
+    { token: 'string', foreground: '98c379' },
+    { token: 'string.quote', foreground: '98c379' },
     { token: 'string.escape', foreground: 'd7ba7d' },
     { token: 'string.invalid', foreground: 'f14c4c' },
-    { token: 'delimiter.interp', foreground: 'e8b76a' },
-    { token: 'number', foreground: 'b5cea8' },
-    { token: 'number.float', foreground: 'b5cea8' },
-    { token: 'identifier', foreground: 'd4d4d4' },
+    { token: 'delimiter.interp', foreground: '666666' },
+    { token: 'number', foreground: '4c9a91' },
+    { token: 'number.float', foreground: '4c9a91' },
+    { token: 'identifier', foreground: 'bd976a' },
   ],
   colors: {
     'editor.background': '#1e1e1e',
@@ -157,17 +169,25 @@ export function registerXtLanguage(): void {
     base: 'vs',
     inherit: true,
     rules: [
-      { token: 'comment', foreground: '5a7d47' },
-      { token: 'keyword', foreground: '8a3ab0' },
-      { token: 'type', foreground: '0f7b6c' },
+      // 与暗色同构的 scope 划分,取文档站 xuantieLight 配色(关键字 #AF00DB/类型 #0000FF/
+      // 字符串 #22863A/变量 #B07D48/运算符 #393A34/插值标点 #999999)
+      { token: 'comment', foreground: '6e7781' },
+      { token: 'storage.type', foreground: '0000ff' },
+      { token: 'keyword', foreground: 'af00db' },
+      { token: 'type', foreground: '0000ff' },
       { token: 'builtin', foreground: '795e26' },
-      { token: 'namespace', foreground: '0b6fa4' },
-      { token: 'constant', foreground: '2653a6' },
-      { token: 'string', foreground: 'a31515' },
+      { token: 'namespace', foreground: '795e26' },
+      { token: 'constant', foreground: '0000ff' },
+      { token: 'member', foreground: '267f99' },
+      { token: 'string', foreground: '22863a' },
+      { token: 'string.quote', foreground: '22863a' },
       { token: 'string.escape', foreground: '8a6d1e' },
-      { token: 'number', foreground: '1a7a3c' },
-      { token: 'delimiter.interp', foreground: 'c96a10' },
-      { token: 'identifier', foreground: '1f1f1f' },
+      { token: 'number', foreground: '098658' },
+      { token: 'number.float', foreground: '098658' },
+      { token: 'delimiter.interp', foreground: '999999' },
+      { token: 'identifier', foreground: 'b07d48' },
+      { token: 'operator.word', foreground: '393a34' },
+      { token: 'operator', foreground: '393a34' },
     ],
     colors: {
       'editor.background': '#ffffff',

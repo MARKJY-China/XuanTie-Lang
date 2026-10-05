@@ -4,6 +4,7 @@
 import { parseDesignFunction } from './parser';
 import { generateDesignFunction } from './generator';
 import { findRegions, replaceRegion, appendRegion, regionText } from './region';
+import { layoutTree, type Measure } from './layout';
 
 declare const process: { exitCode?: number };
 
@@ -225,5 +226,124 @@ t('appendRegion:空行分隔、行尾随文件风格、可被定位', () => {
   ok(f2.includes('// ===== 铸造厂·设计区 开始:主界面 =====\r\n'), '追加内容为 CRLF');
 });
 
-console.log('\n设计器切片1自检: 通过 ' + pass + ' / 失败 ' + fail);
+// ---- 子字典(锚/偏/内边距/三态覆写) ----
+t('子字典:解析/规范序/往返幂等', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.绝对([',
+    '        UI.按钮("确定", {"锚": {"右": 0.5, "左": 0.5}, "偏": {"左": 8}, "内边距": {"上": 4, "下": 4}, "悬浮": {"底色": UI.色彩["主题"]}})',
+    '    ], {"宽": 400, "高": 300})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const r = parseDesignFunction(src);
+  eq(r.ok, true, 'ok 应为 true;issues=' + JSON.stringify(r.issues));
+  const g1 = generateDesignFunction(r.funcName!, r.stateParam!, r.root!);
+  ok(g1.includes('"锚": {"左": 0.5, "右": 0.5}'), '锚键按规范序(左在右前);实际:' + g1);
+  ok(g1.includes('"偏": {"左": 8}'), '偏子字典');
+  ok(g1.includes('"内边距": {"上": 4, "下": 4}'), '内边距按 上/下 规范序');
+  ok(g1.includes('"悬浮": {"底色": UI.色彩["主题"]}'), '三态覆写子字典');
+  const r2 = parseDesignFunction(g1);
+  eq(r2.ok, true, '再解析应通过;issues=' + JSON.stringify(r2.issues));
+  eq(generateDesignFunction(r2.funcName!, r2.stateParam!, r2.root!), g1, '往返幂等');
+});
+
+t('非子集只读: 子字典值含非字面量', () => {
+  const src = '函 f(s) {\n    设 a = UI.行([], {"锚": {"左": UI.态取(s, "k")}})\n    返 a\n}';
+  const r = parseDesignFunction(src);
+  eq(r.ok, false, 'ok 应为 false');
+  ok(r.issues.map(i => i.message).join(' | ').includes('子字典'), '原因应指向子字典');
+});
+
+// ---- 布局引擎(只读画布的核心;measure 用确定性的桩) ----
+const MEASURE: Measure = (text, fontSize) => ({ w: text.length * fontSize * 0.6, h: fontSize * 1.25 });
+
+t('布局:根尺寸取 宽/高;绝对容器按 x/y 直摆', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.绝对([',
+    '        UI.矩形({"x": 40, "y": 24, "宽": 200, "高": 80})',
+    '    ], {"宽": 400, "高": 300})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const r = parseDesignFunction(src);
+  const laid = layoutTree(r.root!, MEASURE);
+  eq(laid.frameW, 400, '设计宽取根 宽');
+  eq(laid.frameH, 300, '设计高取根 高');
+  const rect = laid.boxes.find(b => b.node.widget === '矩形')!;
+  eq([rect.x, rect.y, rect.w, rect.h], [40, 24, 200, 80], '矩形位置尺寸');
+});
+
+t('布局:行容器 间距 + 弹性 分配余量', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.行([',
+    '        UI.矩形({"宽": 100, "高": 40}),',
+    '        UI.弹性(1, {}),',
+    '        UI.矩形({"宽": 60, "高": 40})',
+    '    ], {"宽": 400, "高": 100, "间距": 10})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const r = parseDesignFunction(src);
+  const laid = layoutTree(r.root!, MEASURE);
+  const rects = laid.boxes.filter(b => b.node.widget === '矩形');
+  // 基准 100+0+60 + 间距 10×2 = 180;余量 220 全给弹性 → 弹性格位 220
+  eq(rects[0].x, 0, '首块起点');
+  const flexBox = laid.boxes.find(b => b.node.widget === '弹性')!;
+  eq([flexBox.x, flexBox.w], [110, 220], '弹性格位 = 起点 110、宽 220');
+  eq(rects[1].x, 340, '尾块 = 110+220+间距 10');
+  eq(rects[1].w, 60, '尾块宽');
+});
+
+t('布局:叠容器默认吃满内容槽;锚双锚拉伸', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.叠([',
+    '        UI.矩形({}),',
+    '        UI.矩形({"锚": {"左": 0.0, "右": 0.5}, "高": 20})',
+    '    ], {"宽": 400, "高": 200})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const r = parseDesignFunction(src);
+  const rects = layoutTree(r.root!, MEASURE).boxes.filter(b => b.node.widget === '矩形');
+  eq([rects[0].x, rects[0].y, rects[0].w, rects[0].h], [0, 0, 400, 200], '无尺寸子项吃满内容槽');
+  eq([rects[1].x, rects[1].w], [0, 200], '双锚拉伸 = 槽宽×0.5');
+});
+
+t('布局:平移叠加 / 可视=假淡显 / 滚动容器裁剪区', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.绝对([',
+    '        UI.矩形({"x": 10, "y": 10, "宽": 50, "高": 50, "平移x": 5, "平移y": -3}),',
+    '        UI.矩形({"x": 0, "y": 0, "宽": 10, "高": 10, "可视": 假})',
+    '    ], {"宽": 400, "高": 300})',
+    '    设 滚 = UI.滚动容器([',
+    '        UI.矩形({"宽": 50, "高": 400})',
+    '    ], {"宽": 100, "高": 60})',
+    '    设 根2 = UI.行([根, 滚], {})',
+    '    返 根2',
+    '}',
+    '',
+  ].join('\n');
+  const r = parseDesignFunction(src);
+  eq(r.ok, true, '样例解析应通过;issues=' + JSON.stringify(r.issues));
+  const laid = layoutTree(r.root!, MEASURE);
+  const 现场 = ' 盒子=' + laid.boxes.map(b => `${b.node.widget}(${b.x},${b.y},${b.w},${b.h})`).join(' ');
+  const rects = laid.boxes.filter(b => b.node.widget === '矩形');
+  ok(rects.length >= 3, '应有 3 个矩形盒(含滚动容器内)' + 现场);
+  eq([rects[0].x, rects[0].y], [15, 7], '平移x/y 叠加' + 现场);
+  eq(rects[1].dim, true, '可视=假 → 淡显标记' + 现场);
+  const scrolled = rects[2];
+  ok(!!scrolled.clip, '滚动容器内子项带裁剪区' + 现场);
+  eq([scrolled.clip!.w, scrolled.clip!.h], [100, 60], '裁剪区 = 视口尺寸' + 现场);
+});
+
+console.log('\n设计器自检: 通过 ' + pass + ' / 失败 ' + fail);
 if (fail > 0) process.exitCode = 1;

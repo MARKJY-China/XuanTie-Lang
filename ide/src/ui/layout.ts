@@ -13,6 +13,8 @@ export interface LayoutHandles {
   treeHost: HTMLElement;
   sidebarSplit: HTMLElement;
   tabbar: HTMLElement;
+  btnDesignerToggle: HTMLButtonElement;
+  designerHost: HTMLElement;
   monacoHost: HTMLElement;
   welcome: HTMLElement;
   welcomeRec: HTMLElement;
@@ -115,9 +117,13 @@ const TEMPLATE = `
   </div>
   <div id="sidebar-split"></div>
   <div id="editor-col">
-    <div id="tabbar"></div>
+    <div id="tabbar-row">
+      <div id="tabbar"></div>
+      <button class="ibtn tbtoggle" id="btn-designer-toggle" title="UI 设计器(代码 ⇄ 界面视图)"><i class="codicon codicon-layout"></i></button>
+    </div>
     <div id="editor-host">
       <div id="monaco-host"></div>
+      <div id="designer-host" class="hidden"></div>
       <div id="welcome">
         <div class="wl-logo">玄铁铸造厂</div>
         <div class="wl-sub">玄铁语言官方 IDE · v0.2 · 打开或新建一个工程,开始铸造</div>
@@ -225,6 +231,8 @@ export function buildLayout(root: HTMLElement): LayoutHandles {
     treeHost: must(root, 'file-tree'),
     sidebarSplit: must(root, 'sidebar-split'),
     tabbar: must(root, 'tabbar'),
+    btnDesignerToggle: must(root, 'btn-designer-toggle') as HTMLButtonElement,
+    designerHost: must(root, 'designer-host'),
     monacoHost: must(root, 'monaco-host'),
     welcome: must(root, 'welcome'),
     welcomeRec: must(root, 'wl-rec'),

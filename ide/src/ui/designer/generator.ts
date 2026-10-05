@@ -20,14 +20,20 @@ export function valText(v: Val): string {
     case 'colorConst': return `${LIB_ALIAS}.色彩["${esc(v.key)}"]`;
     case 'fnRef': return v.name;
     case 'idRef': return v.name;
+    case 'dict': return dictText(v.entries);
   }
 }
 
-/** 选项字典:规范序 + 双引号键;空字典输出 {} */
+/** 字典文本(选项字典与子字典共用):键按规范序、键一律双引号、空字典 {} */
+export function dictText(entries: Array<{ key: string; value: Val }>): string {
+  if (entries.length === 0) return '{}';
+  const sorted = [...entries].sort((a, b) => keyRank(a.key) - keyRank(b.key));
+  return '{' + sorted.map(e => `"${esc(e.key)}": ${valText(e.value)}`).join(', ') + '}';
+}
+
+/** 选项字典(与 dictText 同规则,语义名分开以便阅读) */
 export function optionsText(opts: Array<{ key: string; value: Val }>): string {
-  if (opts.length === 0) return '{}';
-  const sorted = [...opts].sort((a, b) => keyRank(a.key) - keyRank(b.key));
-  return '{' + sorted.map(o => `"${esc(o.key)}": ${valText(o.value)}`).join(', ') + '}';
+  return dictText(opts);
 }
 
 /** 叶子控件的单行调用文本:位置实参按序,选项字典恒在末位 */

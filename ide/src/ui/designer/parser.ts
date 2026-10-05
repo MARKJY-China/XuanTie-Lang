@@ -12,7 +12,8 @@ export type Val =
   | { t: 'stateGet'; state: string; key: string } // UI.态取(s, "键")
   | { t: 'colorConst'; key: string }              // UI.色彩["键"]
   | { t: 'fnRef'; name: string }                  // 具名函引用(可跨模块:B.处理点击)
-  | { t: 'idRef'; name: string };                 // 标识符引用(子容器名/状态实参)
+  | { t: 'idRef'; name: string }                  // 标识符引用(子容器名/状态实参)
+  | { t: 'dict'; entries: Array<{ key: string; value: Val }> }; // 子字典(锚/偏/内边距/外边距/三态覆写;值仍限字面量/子字典)
 
 export interface DesignNode {
   widget: string;
@@ -118,7 +119,7 @@ function tokenize(src: string, issues: ParseIssue[]): Token[] {
       toks.push({ t: 'id', v: raw, raw, line });
       continue;
     }
-    if ('(){}[],:=.'.includes(c)) {
+    if ('(){}[],:=-.'.includes(c)) {
       toks.push({ t: 'p', v: c, raw: c, line });
       i++;
       continue;
@@ -159,11 +160,46 @@ function expectId(c: Cursor, what: string): string {
   return '';
 }
 
-/** 值白名单:字面量 / UI.态取(s,"键") / UI.色彩["键"] / 具名引用(可跨模块) / 负数字面量 */
+/** 子字典值:{ (键: 字面量|子字典)* }——锚/偏/内边距/外边距/三态覆写用 */
+function parseDictValue(c: Cursor): Val | undefined {
+  if (!expectP(c, '{')) return undefined;
+  const entries: Array<{ key: string; value: Val }> = [];
+  if (peek(c).t === 'p' && peek(c).v === '}') { next(c); return { t: 'dict', entries }; }
+  for (;;) {
+    const kt = peek(c);
+    let key: string | undefined;
+    if (kt.t === 'str') { key = kt.v; next(c); }
+    else if (kt.t === 'id') { key = kt.v; next(c); }
+    else { bad(c, '子字典键应为字符串或裸标识符'); break; }
+    if (!expectP(c, ':')) break;
+    const val = parseDictLeaf(c);
+    if (!val) break;
+    entries.push({ key, value: val });
+    const sep = peek(c);
+    if (sep.t === 'p' && sep.v === ',') { next(c); continue; }
+    break;
+  }
+  expectP(c, '}');
+  return { t: 'dict', entries };
+}
+
+/** 子字典的叶子值:字面量 / UI.色彩["键"] / 更深一层子字典(三态覆写等真实写法) */
+function parseDictLeaf(c: Cursor): Val | undefined {
+  const v = parseValue(c, 'option');
+  if (!v) return undefined;
+  if (v.t === 'stateGet' || v.t === 'fnRef' || v.t === 'idRef') {
+    bad(c, '子字典的值只允许 字面量 / UI.色彩 / 子字典');
+    return undefined;
+  }
+  return v;
+}
+
+/** 值白名单:字面量 / 子字典 / UI.态取(s,"键") / UI.色彩["键"] / 具名引用(可跨模块) / 负数字面量 */
 function parseValue(c: Cursor, slot: 'option' | 'value' | 'src' | 'state' | 'key' | 'num'): Val | undefined {
   const t = peek(c);
   if (t.t === 'str') { next(c); return { t: 'str', raw: t.raw, v: t.v }; }
   if (t.t === 'num') { next(c); return { t: 'num', raw: t.raw }; }
+  if (t.t === 'p' && t.v === '{') return parseDictValue(c);
   if (t.t === 'p' && t.v === '-') {
     next(c);
     const num = peek(c);

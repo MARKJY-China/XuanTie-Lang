@@ -1,6 +1,8 @@
 /* 玄铁铸造厂 — 全局样式(暗色,零框架,图标一律 codicon/ico,禁 Emoji) */
 :root {
   --bg: #1e1e1e;
+  /* WebView2 原生控件(下拉列表/滚动条/日期选择等)按此渲染:不设则下拉菜单是系统亮色 */
+  color-scheme: dark;
   --bg-panel: #252526;
   --bg-deep: #181818;
   --bg-hover: #2a2d2e;
@@ -676,12 +678,17 @@ body {
 .md td { white-space: normal; }
 
 /* ============ 标签页 ============ */
+#tabbar-row { display: flex; flex: 0 0 34px; height: 34px; background: var(--bg-deep); }
 #tabbar {
-  height: 34px; flex: 0 0 34px;
+  height: 34px; flex: 1 1 auto; min-width: 0;
   display: flex; align-items: stretch;
   background: var(--bg-deep);
   overflow-x: auto; overflow-y: hidden;
 }
+/* Tab 栏最右端:UI 设计器开关(开启后编辑器区整体切换为设计器视图) */
+.tbtoggle { flex: 0 0 auto; width: 34px; border-left: 1px solid var(--border); color: var(--fg-dim); }
+.tbtoggle:hover { color: var(--fg); }
+.tbtoggle.active { color: var(--accent); background: var(--bg-active); }
 #tabbar::-webkit-scrollbar { height: 3px; }
 .tab {
   display: flex; align-items: center; gap: 6px;
@@ -852,6 +859,10 @@ body {
   background: var(--bg-panel); border: 1px solid var(--border); border-radius: 10px;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
 }
+/* 宽版:设置 / AI 提供商管理 等多字段表单(字段并排不挤) */
+.modal.wide { min-width: 620px; max-width: 860px; }
+.modal.wide .m-body { gap: 16px; }
+.modal.wide .mrow .rowline .mbtn { flex: none; }
 .modal .m-head {
   padding: 14px 18px 2px; font-size: 15px; font-weight: 600;
 }
@@ -1160,6 +1171,68 @@ body.light #sidebar, body.light #tabbar, body.light #bottom-panel { background: 
 .ai-fb-input:focus { border-color: var(--accent-dim); }
 .ai-fb-foot { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .ai-fb-msg { margin-right: auto; font-size: 12px; color: #e5534b; white-space: pre-wrap; }
+
+/* ---------- UI 设计器(编辑器内嵌模式;Tab 栏右侧开关切换) ---------- */
+#monaco-host.hidden { display: none; }
+#designer-host {
+  position: absolute; inset: 0; z-index: 9;
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg);
+}
+#designer-host.hidden { display: none; }
+.ds-toolbar { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); background: var(--bg-panel); }
+.ds-title { font-weight: 600; font-size: 13px; }
+.ds-sub { color: var(--fg-dim); font-size: 12px; }
+.ds-picker {
+  background: var(--bg-input, rgba(0, 0, 0, 0.2)); color: inherit;
+  border: 1px solid var(--border); border-radius: 6px; padding: 2px 6px; font: inherit; font-size: 12px;
+}
+.ds-badge { margin-left: auto; font-size: 12px; color: var(--fg-dim); }
+.ds-badge.ok { color: var(--ok); }
+.ds-badge.warn { color: var(--warn); }
+.ds-btn { background: none; border: none; color: var(--fg-dim); cursor: pointer; padding: 2px 5px; border-radius: 4px; }
+.ds-btn:hover { color: var(--fg); background: var(--bg-hover); }
+.ds-body { flex: 1; display: flex; min-height: 0; }
+.ds-canvas {
+  flex: 1; overflow: auto; padding: 18px;
+  user-select: none; /* 拖拽平移时不选中画布文本 */
+  background:
+    repeating-conic-gradient(rgba(255, 255, 255, 0.02) 0% 25%, transparent 0% 50%) 0 0 / 24px 24px,
+    var(--bg-deep);
+}
+/* 按住左/中/右键拖动即平移视区(见 panel.ts);未移动的单击仍作选择 */
+.ds-canvas.ds-panning, .ds-canvas.ds-panning * { cursor: grabbing; }
+/* 画布与属性面板之间的分隔条:左右拖动改面板宽 */
+.ds-split { flex: none; width: 5px; cursor: col-resize; background: var(--bg-panel); border-left: 1px solid var(--border); }
+.ds-split:hover, .ds-split.dragging { background: var(--accent-dim); }
+body.ds-col-resize, body.ds-col-resize * { cursor: col-resize; }
+.ds-frame {
+  position: relative; margin: 0 auto;
+  background: #16181d; /* 应用窗口背景色在区外(应用第三参),画布用中性底色 */
+  border: 1px solid var(--border); box-shadow: 0 6px 26px rgba(0, 0, 0, 0.45);
+}
+.ds-node { position: absolute; box-sizing: border-box; }
+.ds-node:hover { outline: 1px dashed rgba(232, 132, 44, 0.55); }
+.ds-node.ds-sel { outline: 2px solid var(--accent); outline-offset: -1px; }
+.ds-label { display: inline-block; color: var(--fg); white-space: pre; overflow: hidden; }
+.ds-label.ds-center { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; }
+.ds-label.ds-dyn { font-style: italic; color: #c792ea; } /* 状态绑定占位 */
+.ds-label.ds-placeholder { color: var(--fg-dim); padding: 2px 6px; }
+.ds-label.ds-ph { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; color: var(--fg-dim); font-size: 18px; }
+.ds-guide { border: 1px dashed rgba(255, 255, 255, 0.18) !important; }
+.ds-guide-tag { position: absolute; right: 2px; bottom: 0; font-size: 10px; color: rgba(255, 255, 255, 0.35); }
+.ds-empty { color: var(--fg-dim); font-size: 13px; white-space: pre-wrap; padding: 24px; }
+.ds-empty-btns { display: flex; gap: 8px; margin-top: 14px; }
+.ds-note { position: sticky; left: 0; bottom: 0; margin-top: 10px; color: var(--fg-dim); font-size: 11.5px; }
+.ds-insp { width: 300px; flex: none; overflow: auto; padding: 10px 12px; font-size: 12.5px; }
+.ds-insp-hint { color: var(--fg-dim); }
+.ds-sec { margin: 10px 0 4px; color: var(--accent); font-size: 12px; font-weight: 600; }
+.ds-row { display: flex; gap: 8px; padding: 2px 0; align-items: baseline; }
+.ds-k { flex: none; min-width: 76px; color: var(--fg-dim); }
+.ds-v { color: var(--fg); word-break: break-all; white-space: pre-wrap; }
+.ds-issues { padding: 8px 14px 0; max-height: 140px; overflow: auto; border-top: 1px solid var(--border); }
+.ds-issues-head { color: var(--warn); font-size: 12.5px; margin-bottom: 4px; }
+.ds-issue { color: var(--fg-dim); font-size: 12px; padding: 1px 0; }
 
 /* 滚动条统一 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }

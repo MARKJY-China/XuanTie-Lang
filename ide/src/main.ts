@@ -4,6 +4,7 @@ import * as monaco from 'monaco-editor';
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { open as pickDialog } from '@tauri-apps/plugin-dialog';
 import { getCurrentWindow, PhysicalSize } from '@tauri-apps/api/window';
+import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
@@ -25,6 +26,7 @@ import { TabManager } from './ui/tabs';
 import { FileTree } from './ui/filetree';
 import { ProblemsPanel } from './ui/problems';
 import { SelectionTools } from './ui/selection-tools';
+import { DesignerPanel } from './ui/designer/panel';
 import {
   confirmBox,
   CONTEXT_SEP,
@@ -131,15 +133,28 @@ const tabs = new TabManager(
   L.tabbar,
   editor,
   {
-    onDidOpen: (p, text) => lsp.didOpen(p, text),
-    onDidChange: (p, text) => lsp.didChange(p, text),
-    onDidSave: (p) => lsp.didSave(p),
+    onDidOpen: (p, text) => {
+      lsp.didOpen(p, text);
+      syncUnsaved();
+    },
+    onDidChange: (p, text) => {
+      lsp.didChange(p, text);
+      syncUnsaved();
+    },
+    onDidSave: (p) => {
+      lsp.didSave(p);
+      syncUnsaved();
+    },
     onDidClose: (p) => {
       lsp.didClose(p);
       problems.update(p, []);
       renderProblemsBadge();
+      syncUnsaved();
     },
-    onActivate: () => updateEncodingDisplay(),
+    onActivate: () => {
+      updateEncodingDisplay();
+      designerPanel.refreshIfOpen();
+    },
   },
   (p) => confirmBox('关闭未保存', `${basename(p)} 有未保存的更改,放弃并关闭?`),
 );
@@ -261,6 +276,98 @@ async function refreshAiPrimer(): Promise<void> {
 // ---- 玄铁环境自检(打开工程后台自动跑;AI 轮次开始若未完则等待,结果注入环境快照) ----
 let preflightState: PreflightState | null = null;
 const pfConsole = new PreflightConsole();
+
+// UI 设计器(Tab 栏右侧开关 ⇄ 编辑器内嵌视图):解析当前文件设计区 → 画布预览 + 检视
+const designerPanel = new DesignerPanel(L.designerHost, {
+  getActive: () => {
+    const p = tabs.getActivePath();
+    const text = editor.getModel()?.getValue();
+    return p && text !== undefined ? { path: p, text } : null;
+  },
+  appendToFile: (text) => {
+    const model = editor.getModel();
+    if (!model) return false;
+    const last = model.getLineCount();
+    const col = model.getLineMaxColumn(last);
+    editor.executeEdits('ui-designer', [{ range: new monaco.Range(last, col, last, col), text }]);
+    return true;
+  },
+  copy: (text) => copyText(text),
+});
+
+/** 设计器模式开关:整个编辑器区在 代码编辑器 ⇄ 界面设计器 间切换(小屏也够用) */
+let designerOn = false;
+function setDesignerMode(on: boolean): void {
+  designerOn = on;
+  L.designerHost.classList.toggle('hidden', !on);
+  L.monacoHost.classList.toggle('hidden', on);
+  L.btnDesignerToggle.classList.toggle('active', on);
+  if (on) designerPanel.open();
+  else designerPanel.close();
+}
+L.btnDesignerToggle.addEventListener('click', () => setDesignerMode(!designerOn));
+
+/** 未保存计数同步给 Rust(关机拦截 WM_QUERYENDSESSION 需同步读取,读不到 JS 状态) */
+function syncUnsaved(): void {
+  void invoke('set_unsaved', { n: tabs.dirtyPaths().length }).catch(() => undefined);
+}
+
+/** 关窗三选:保存并关闭 / 直接关闭 / 取消 */
+function unsavedDialog(count: number, names: string): Promise<'save' | 'close' | 'cancel'> {
+  return showCustomModal(
+    '退出铸造厂',
+    (body, close) => {
+      const msg = document.createElement('div');
+      msg.textContent = `${count} 个文件有未保存的更改:${names}`;
+      const foot = document.createElement('div');
+      foot.className = 'm-foot';
+      const bCancel = document.createElement('button');
+      bCancel.className = 'mbtn';
+      bCancel.textContent = '取消';
+      bCancel.addEventListener('click', () => close('cancel'));
+      const bClose = document.createElement('button');
+      bClose.className = 'mbtn';
+      bClose.textContent = '直接关闭';
+      bClose.addEventListener('click', () => close('close'));
+      const bSave = document.createElement('button');
+      bSave.className = 'mbtn primary';
+      bSave.textContent = '保存并关闭';
+      bSave.addEventListener('click', () => close('save'));
+      foot.append(bCancel, bClose, bSave);
+      body.append(msg, foot);
+    },
+    '未保存的内容不会自动保留;选择后立即执行',
+  ).then((v) => (v === 'save' || v === 'close' ? v : 'cancel'));
+}
+
+// 关窗拦截:有未保存文件先问,三选后才真正退出(destroy 跳过本回调,避免自锁)
+void getCurrentWindow().onCloseRequested(async (event) => {
+  const 脏 = tabs.dirtyPaths();
+  if (脏.length === 0) return;
+  event.preventDefault();
+  const r = await unsavedDialog(脏.length, 脏.map((p) => basename(p)).join('、'));
+  if (r === 'cancel') return;
+  if (r === 'save') {
+    try {
+      await tabs.saveAll();
+    } catch (err) {
+      showToast(`保存失败,已取消退出:${String(err)}`, 'err');
+      return;
+    }
+  }
+  try {
+    await getCurrentWindow().destroy(); // 跳过本回调直接销毁(避免再次触发保存询问)
+  } catch (err) {
+    showToast(`关闭窗口失败:${String(err)}`, 'err');
+  }
+});
+
+// 关机拦截(系统发起):Rust 侧 WM_QUERYENDSESSION 见未保存数 >0 时阻止关机并发来事件;
+// 这里前置窗口并提示,用户保存后再自行关机(系统会给"此应用阻止关机"的返回入口)。
+void listen<number>('shutdown-blocked', (ev) => {
+  void getCurrentWindow().setFocus().catch(() => undefined);
+  showToast(`系统正在关机:${ev.payload} 个文件有未保存的更改,已阻止本次关机;请保存后再关机`, 'err');
+});
 
 /** 状态栏徽标(LSP 项右侧):running=橙/fail=红/ok=绿(5 分钟后自动隐藏)。 */
 let pfHideTimer: number | undefined;
@@ -815,7 +922,7 @@ function aiProvidersModal(): Promise<unknown> {
     btnClose.addEventListener('click', () => close());
     foot.appendChild(btnClose);
     body.appendChild(foot);
-  }, '官方通道无需配置;自定义提供商与 Agent 白名单在此管理');
+  }, '官方通道无需配置;自定义提供商与 Agent 白名单在此管理', true);
 }
 
 lsp.onStatus(updateLspStatus);
@@ -1144,7 +1251,13 @@ function showTreeMenu(e: MouseEvent, node: FileNode | null): void {
   }
   items.push(CONTEXT_SEP);
   items.push({ label: '重命名', action: () => void renameNode(node) });
-  items.push({ label: '删除', danger: true, action: () => void deleteNode(node) });
+  // 多选(ctrl/shift/框选)后批量删除;单选即该项
+  const 删除目标 = sel.length > 1 ? sel.map((s) => s.path) : [node.path];
+  items.push({
+    label: sel.length > 1 ? `删除 ${sel.length} 项` : '删除',
+    danger: true,
+    action: () => void deleteNodes(删除目标),
+  });
   showContextMenu(e.clientX, e.clientY, items);
 }
 
@@ -1199,16 +1312,29 @@ async function renameNode(node: FileNode): Promise<void> {
   }
 }
 
-async function deleteNode(node: FileNode): Promise<void> {
-  const ok = await confirmBox('删除', `确定删除「${node.name}」?(移入回收站)`);
+/** 删除(批量):选中集合先收缩到"顶层"(父目录也在集合里则跳过其子项),一次确认、一次刷新 */
+async function deleteNodes(paths: string[]): Promise<void> {
+  if (paths.length === 0) return;
+  const 顶层 = paths.filter((p) => !paths.some((q) => q !== p && (p.startsWith(q + '\\') || p.startsWith(q + '/'))));
+  const ok = await confirmBox(
+    '删除',
+    顶层.length === 1 ? `确定删除「${basename(顶层[0])}」?(移入回收站)` : `确定删除选中的 ${顶层.length} 项?(移入回收站)`,
+  );
   if (!ok) return;
-  try {
-    if (tabs.isOpen(node.path) && !(await tabs.close(node.path))) return;
-    await backend.fsDelete(node.path);
-    await reloadTree();
-  } catch (err) {
-    showToast(`删除失败: ${String(err)}`, 'err');
+  let 已删 = 0;
+  let 失败 = 0;
+  for (const p of 顶层) {
+    try {
+      if (tabs.isOpen(p) && !(await tabs.close(p))) continue; // 编辑器取消关闭(未保存)→ 跳过该路径而非删除
+      await backend.fsDelete(p);
+      已删++;
+    } catch {
+      失败++;
+    }
   }
+  await reloadTree();
+  if (失败 > 0) showToast(`已删除 ${已删} 项,${失败} 项失败`, 'err');
+  else showToast(`已删除 ${已删} 项`, 'ok');
 }
 
 // ---- 新建工程 ----
@@ -1488,6 +1614,7 @@ function settingsModal(): Promise<void> {
       body.appendChild(foot);
     },
     '工具链路径留空则按 PATH 自动探测',
+    true,
   ).then(async (result) => {
     const r = result as
       | {
@@ -2521,6 +2648,8 @@ function bindUi(): void {
           { act: 'view-bottom', label: '切换终端面板', shortcut: 'Ctrl+`' },
           { act: 'view-sidebar', label: '切换文件树侧栏' },
           { act: 'view-ai', label: '切换智器对话' },
+          { act: 'sep', label: '' },
+          { act: 'ui-designer', label: 'UI 设计器(代码 ⇄ 界面)' },
         ],
       },
       {
@@ -2589,6 +2718,8 @@ function bindUi(): void {
         setSidebarVisible(!sidebarVisible);
       } else if (act === 'view-ai') {
         setAiDock(!aiDockOpen);
+      } else if (act === 'ui-designer') {
+        setDesignerMode(!designerOn);
       } else if (act === 'build-file') {
         void buildCurrent();
       } else if (act === 'build-project') {
