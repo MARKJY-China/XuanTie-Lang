@@ -109,9 +109,18 @@ func main() {
 			printHelp()
 			return
 		default:
-			if filename == "" {
-				filename = arg
+			// 明确的编程错误宁可报错退出也不静默跳过:未知旗标(如 -sc——那是 XTC 的参数,
+			// GSC 从未支持)与多余位置参数一律显式报错,不给"静默忽略"留温床(issue #75 即由
+			// 旧行为"静默吞掉 -sc 并派生源文件名输出"引起,排查者误以为是 XTC 破坏性移除)
+			if strings.HasPrefix(arg, "-") {
+				fmt.Printf("未知参数: %s(GSC 支持的参数请用 -h 查看;-sc/--输出 是自举编译器 XTC 的参数,GSC 不支持)\n", arg)
+				os.Exit(1)
 			}
+			if filename != "" {
+				fmt.Printf("错误: 多余的位置参数 '%s'(已指定源文件 '%s',一次只编译一个源文件)\n", arg, filename)
+				os.Exit(1)
+			}
+			filename = arg
 		}
 	}
 
