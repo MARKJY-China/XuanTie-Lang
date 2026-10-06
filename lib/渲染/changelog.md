@@ -1,5 +1,11 @@
 # 渲染库 Changelog
 
+## v1.3.2
+
+**新增**
+
+- **Linux 双后端 raylib 静态库**:`libraylib.linux-amd64.a`(GLFW Wayland+X11 双后端,raylib 6.0)——Wayland 会话(GNOME/KDE 默认)下窗口为 Wayland 原生,不再经 XWayland 兼容层(issue #60 修复方向 1 落地)。GLFW 运行时优先 Wayland、自动回退 X11,X11 会话与 Windows/darwin 不受影响。构建配方见同目录 `构建-linux-raylib.sh`(可复现构建,含 Wayland 后端验证方法)。
+
 ## v1.3.1
 
 **新增**
