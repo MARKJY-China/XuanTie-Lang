@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>   // llround(issue #69 数值分派)
 #if !defined(_WIN32)
 #include <glob.h>   // POSIX:运行时 glob 探测系统字体路径(如 AssetsV2 动态 asset 目录)
 #endif
@@ -95,6 +96,13 @@ static double xt_get_float(uintptr_t v) {
     }
     return 0.0;
 }
+
+// issue #69 数值分派:整数 tag 与 XTFloat 对象通吃,替代绘制入口的裸 XT_TO_INT。
+// 旧行为:浮点对象指针被 >>1 解出天文数字(浮点半径→圆铺满 framebuffer→窗口纯白)。
+// xt_ni:整型形参(坐标/尺寸/颜色/字号)按最近取整;xt_nf:浮点形参(半径/旋转/矩形域)保精度。
+// 非数值实参一律归 0——永不产出垃圾几何。
+static inline int64_t xt_ni(uintptr_t v) { return (int64_t)llround(xt_get_float(v)); }
+static inline float   xt_nf(uintptr_t v) { return (float)xt_get_float(v); }
 
 // 创建浮点数 XTValue，ref_count=1 纳入正常 ARC 管理
 static uintptr_t xt_make_float(double v) {
@@ -210,7 +218,7 @@ void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
         }
     }
 #endif
-    InitWindow((int)XT_TO_INT(w), (int)XT_TO_INT(h), xt_get_cstr(title));
+    InitWindow((int)xt_ni(w), (int)xt_ni(h), xt_get_cstr(title));
     xt_window_close_requested = 0; /* 新窗口重置"请求关闭"标志(issue #47) */
 }
 
@@ -227,7 +235,7 @@ uintptr_t XT_IsWindowReady(void) {
 }
 
 void XT_SetTargetFPS(uintptr_t fps) {
-    SetTargetFPS((int)XT_TO_INT(fps));
+    SetTargetFPS((int)xt_ni(fps));
 }
 
 uintptr_t XT_GetFPS(void) {
@@ -315,7 +323,7 @@ void XT_SetWindowUndecorated(uintptr_t on) {
 
 void XT_SetWindowFullscreen(uintptr_t on) {
     // 显式语义:目标状态与当前一致时不动作(ToggleFullscreen 只有翻转语义)
-    int want = (int)XT_TO_INT(on);
+    int want = (int)xt_ni(on);
     if ((IsWindowFullscreen() ? 1 : 0) != want) ToggleFullscreen();
 }
 
@@ -324,7 +332,7 @@ uintptr_t XT_IsWindowFullscreen(void) {
 }
 
 void XT_SetWindowSize(uintptr_t w, uintptr_t h) {
-    SetWindowSize((int)XT_TO_INT(w), (int)XT_TO_INT(h));
+    SetWindowSize((int)xt_ni(w), (int)xt_ni(h));
 }
 
 // ESC 关闭开关:开=按 ESC 请求关窗(raylib 默认),关=ESC 不再退程序
@@ -350,7 +358,7 @@ void XT_PollInputEvents(void) {
    桥侧记忆当前值,同值重复调用直接返回,避免每帧 glfw 无谓重建/切换 */
 void XT_SetMouseCursor(uintptr_t c) {
     static int last = -1;
-    int v = (int)XT_TO_INT(c);
+    int v = (int)xt_ni(c);
     if (v == last) return;
     last = v;
     SetMouseCursor(v);
@@ -464,10 +472,10 @@ void XT_WindowDrag(void) {
 
 void XT_ClearBackground(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {
-        (unsigned char)XT_TO_INT(r),
-        (unsigned char)XT_TO_INT(g),
-        (unsigned char)XT_TO_INT(b),
-        (unsigned char)XT_TO_INT(a)
+        (unsigned char)xt_ni(r),
+        (unsigned char)xt_ni(g),
+        (unsigned char)xt_ni(b),
+        (unsigned char)xt_ni(a)
     };
     ClearBackground(c);
 }
@@ -477,53 +485,53 @@ void XT_ClearBackground(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
 // ============================================================
 
 void XT_DrawPixel(uintptr_t x, uintptr_t y, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawPixel((int)XT_TO_INT(x), (int)XT_TO_INT(y), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawPixel((int)xt_ni(x), (int)xt_ni(y), c);
 }
 
 void XT_DrawLine(uintptr_t x1, uintptr_t y1, uintptr_t x2, uintptr_t y2,
                  uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawLine((int)XT_TO_INT(x1), (int)XT_TO_INT(y1),
-             (int)XT_TO_INT(x2), (int)XT_TO_INT(y2), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawLine((int)xt_ni(x1), (int)xt_ni(y1),
+             (int)xt_ni(x2), (int)xt_ni(y2), c);
 }
 
 void XT_DrawRectangle(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                       uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawRectangle((int)XT_TO_INT(x), (int)XT_TO_INT(y),
-                  (int)XT_TO_INT(w), (int)XT_TO_INT(h), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawRectangle((int)xt_ni(x), (int)xt_ni(y),
+                  (int)xt_ni(w), (int)xt_ni(h), c);
 }
 
 void XT_DrawRectangleRec(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                          uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    Rectangle rec = {(float)XT_TO_INT(x), (float)XT_TO_INT(y),
-                     (float)XT_TO_INT(w), (float)XT_TO_INT(h)};
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    Rectangle rec = {xt_nf(x), xt_nf(y),
+                     xt_nf(w), xt_nf(h)};
     DrawRectangleRec(rec, c);
 }
 
 void XT_DrawRectangleLines(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                            uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawRectangleLines((int)XT_TO_INT(x), (int)XT_TO_INT(y),
-                       (int)XT_TO_INT(w), (int)XT_TO_INT(h), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawRectangleLines((int)xt_ni(x), (int)xt_ni(y),
+                       (int)xt_ni(w), (int)xt_ni(h), c);
 }
 
 // 圆角矩形:roundPct 为圆角百分比(0-100,对应 raylib roundness 0.0-1.0),segments 固定 12
 void XT_DrawRectangleRounded(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                              uintptr_t roundPct,
                              uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    Rectangle rec = {(float)XT_TO_INT(x), (float)XT_TO_INT(y),
-                     (float)XT_TO_INT(w), (float)XT_TO_INT(h)};
-    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    Rectangle rec = {xt_nf(x), xt_nf(y),
+                     xt_nf(w), xt_nf(h)};
+    float roundness = xt_nf(roundPct) / 100.0f;
     if (roundness < 0.0f) roundness = 0.0f;
     if (roundness > 1.0f) roundness = 1.0f;
     DrawRectangleRounded(rec, roundness, 12, c);
@@ -533,46 +541,46 @@ void XT_DrawRectangleRounded(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
 void XT_DrawRectangleRoundedLines(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                                   uintptr_t roundPct, uintptr_t lineThick,
                                   uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    Rectangle rec = {(float)XT_TO_INT(x), (float)XT_TO_INT(y),
-                     (float)XT_TO_INT(w), (float)XT_TO_INT(h)};
-    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    Rectangle rec = {xt_nf(x), xt_nf(y),
+                     xt_nf(w), xt_nf(h)};
+    float roundness = xt_nf(roundPct) / 100.0f;
     if (roundness < 0.0f) roundness = 0.0f;
     if (roundness > 1.0f) roundness = 1.0f;
-    float thick = (float)XT_TO_INT(lineThick);
+    float thick = xt_nf(lineThick);
     if (thick < 1.0f) thick = 1.0f;
     DrawRectangleRoundedLinesEx(rec, roundness, 12, thick, c);
 }
 
 // ---- 千分定点坐标(×1000 → float):亚像素平滑绘制,微交互/动画专用 ----
 // 整数坐标在 2~3px 行程的动画里只剩两三档台阶;小数坐标交给 GPU(MSAA/双线性)逐帧平滑插值。
-static float xt_kf(uintptr_t v) { return (float)XT_TO_INT(v) / 1000.0f; }
+static float xt_kf(uintptr_t v) { return xt_nf(v) / 1000.0f; }
 
 void XT_DrawRectFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
     Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
     DrawRectangleRec(rec, c);
 }
 
 void XT_DrawRectLinesFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h, uintptr_t lineThick,
                         uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
     Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
-    float thick = (float)XT_TO_INT(lineThick);
+    float thick = xt_nf(lineThick);
     if (thick < 1.0f) thick = 1.0f;
     DrawRectangleLinesEx(rec, thick, c);
 }
 
 void XT_DrawRoundedRectFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h, uintptr_t roundPct,
                           uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
     Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
-    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    float roundness = xt_nf(roundPct) / 100.0f;
     if (roundness < 0.0f) roundness = 0.0f;
     if (roundness > 1.0f) roundness = 1.0f;
     DrawRectangleRounded(rec, roundness, 12, c);
@@ -581,13 +589,13 @@ void XT_DrawRoundedRectFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h, ui
 void XT_DrawRoundedRectLinesFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h,
                                uintptr_t roundPct, uintptr_t lineThick,
                                uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
     Rectangle rec = {xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)};
-    float roundness = (float)XT_TO_INT(roundPct) / 100.0f;
+    float roundness = xt_nf(roundPct) / 100.0f;
     if (roundness < 0.0f) roundness = 0.0f;
     if (roundness > 1.0f) roundness = 1.0f;
-    float thick = (float)XT_TO_INT(lineThick);
+    float thick = xt_nf(lineThick);
     if (thick < 1.0f) thick = 1.0f;
     DrawRectangleRoundedLinesEx(rec, roundness, 12, thick, c);
 }
@@ -596,42 +604,42 @@ void XT_DrawRoundedRectLinesFP(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t 
 
 void XT_DrawCircle(uintptr_t cx, uintptr_t cy, uintptr_t radius,
                    uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawCircle((int)XT_TO_INT(cx), (int)XT_TO_INT(cy), (float)XT_TO_INT(radius), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawCircle((int)xt_ni(cx), (int)xt_ni(cy), xt_nf(radius), c);
 }
 
 void XT_DrawCircleLines(uintptr_t cx, uintptr_t cy, uintptr_t radius,
                         uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawCircleLines((int)XT_TO_INT(cx), (int)XT_TO_INT(cy), (float)XT_TO_INT(radius), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawCircleLines((int)xt_ni(cx), (int)xt_ni(cy), xt_nf(radius), c);
 }
 
 void XT_DrawEllipse(uintptr_t cx, uintptr_t cy, uintptr_t rh, uintptr_t rv,
                     uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawEllipse((int)XT_TO_INT(cx), (int)XT_TO_INT(cy),
-                (float)XT_TO_INT(rh), (float)XT_TO_INT(rv), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawEllipse((int)xt_ni(cx), (int)xt_ni(cy),
+                xt_nf(rh), xt_nf(rv), c);
 }
 
 void XT_DrawTriangle(uintptr_t x1, uintptr_t y1, uintptr_t x2, uintptr_t y2, uintptr_t x3, uintptr_t y3,
                      uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    Vector2 v1 = {(float)XT_TO_INT(x1), (float)XT_TO_INT(y1)};
-    Vector2 v2 = {(float)XT_TO_INT(x2), (float)XT_TO_INT(y2)};
-    Vector2 v3 = {(float)XT_TO_INT(x3), (float)XT_TO_INT(y3)};
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    Vector2 v1 = {xt_nf(x1), xt_nf(y1)};
+    Vector2 v2 = {xt_nf(x2), xt_nf(y2)};
+    Vector2 v3 = {xt_nf(x3), xt_nf(y3)};
     DrawTriangle(v1, v2, v3, c);
 }
 
 void XT_DrawPoly(uintptr_t cx, uintptr_t cy, uintptr_t sides, uintptr_t radius, uintptr_t rotation,
                  uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    Vector2 center = {(float)XT_TO_INT(cx), (float)XT_TO_INT(cy)};
-    DrawPoly(center, (int)XT_TO_INT(sides), (float)XT_TO_INT(radius), (float)XT_TO_INT(rotation), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    Vector2 center = {xt_nf(cx), xt_nf(cy)};
+    DrawPoly(center, (int)xt_ni(sides), xt_nf(radius), xt_nf(rotation), c);
 }
 
 // ============================================================
@@ -640,18 +648,18 @@ void XT_DrawPoly(uintptr_t cx, uintptr_t cy, uintptr_t sides, uintptr_t radius, 
 
 void XT_DrawText(uintptr_t text, uintptr_t x, uintptr_t y, uintptr_t fontSize,
                  uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
-    Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-               (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-    DrawText(xt_get_cstr(text), (int)XT_TO_INT(x), (int)XT_TO_INT(y),
-             (int)XT_TO_INT(fontSize), c);
+    Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+               (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+    DrawText(xt_get_cstr(text), (int)xt_ni(x), (int)xt_ni(y),
+             (int)xt_ni(fontSize), c);
 }
 
 uintptr_t XT_MeasureText(uintptr_t text, uintptr_t fontSize) {
-    return XT_FROM_INT(MeasureText(xt_get_cstr(text), (int)XT_TO_INT(fontSize)));
+    return XT_FROM_INT(MeasureText(xt_get_cstr(text), (int)xt_ni(fontSize)));
 }
 
 void XT_DrawFPS(uintptr_t x, uintptr_t y) {
-    DrawFPS((int)XT_TO_INT(x), (int)XT_TO_INT(y));
+    DrawFPS((int)xt_ni(x), (int)xt_ni(y));
 }
 
 // ============================================================
@@ -740,9 +748,9 @@ void XT_UnloadTexture(uintptr_t texPtr) {
 void XT_DrawTexture(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
     Texture2D* p = xt_get_tex(texPtr);
     if (p) {
-        Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
-                      (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
-        DrawTexture(*p, (int)XT_TO_INT(x), (int)XT_TO_INT(y), tint);
+        Color tint = {(unsigned char)xt_ni(tint_r), (unsigned char)xt_ni(tint_g),
+                      (unsigned char)xt_ni(tint_b), (unsigned char)xt_ni(tint_a)};
+        DrawTexture(*p, (int)xt_ni(x), (int)xt_ni(y), tint);
     }
 }
 
@@ -750,13 +758,13 @@ void XT_DrawTextureEx(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t rota
                       uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
     Texture2D* p = xt_get_tex(texPtr);
     if (p) {
-        Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
-                      (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
+        Color tint = {(unsigned char)xt_ni(tint_r), (unsigned char)xt_ni(tint_g),
+                      (unsigned char)xt_ni(tint_b), (unsigned char)xt_ni(tint_a)};
         Rectangle src = {0, 0, (float)p->width, (float)p->height};
-        Vector2 pos = {(float)XT_TO_INT(x), (float)XT_TO_INT(y)};
+        Vector2 pos = {xt_nf(x), xt_nf(y)};
         Vector2 origin = {0, 0};
-        DrawTexturePro(*p, src, (Rectangle){pos.x, pos.y, (float)p->width * XT_TO_INT(scale), (float)p->height * XT_TO_INT(scale)},
-                       origin, (float)XT_TO_INT(rotation), tint);
+        DrawTexturePro(*p, src, (Rectangle){pos.x, pos.y, (float)p->width * xt_nf(scale), (float)p->height * xt_nf(scale)},
+                       origin, xt_nf(rotation), tint);
     }
 }
 
@@ -776,10 +784,10 @@ void XT_DrawTextureQuad(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t w,
                         uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
     Texture2D* p = xt_get_tex(texPtr);
     if (!p) return;
-    Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
-                  (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
+    Color tint = {(unsigned char)xt_ni(tint_r), (unsigned char)xt_ni(tint_g),
+                  (unsigned char)xt_ni(tint_b), (unsigned char)xt_ni(tint_a)};
     DrawTexturePro(*p, (Rectangle){0, 0, (float)p->width, (float)p->height},
-                   (Rectangle){(float)XT_TO_INT(x), (float)XT_TO_INT(y), (float)XT_TO_INT(w), (float)XT_TO_INT(h)},
+                   (Rectangle){xt_nf(x), xt_nf(y), xt_nf(w), xt_nf(h)},
                    (Vector2){0, 0}, 0.0f, tint);
 }
 
@@ -788,8 +796,8 @@ void XT_DrawTextureQuadFP(uintptr_t texPtr, uintptr_t x, uintptr_t y, uintptr_t 
                           uintptr_t tint_r, uintptr_t tint_g, uintptr_t tint_b, uintptr_t tint_a) {
     Texture2D* p = xt_get_tex(texPtr);
     if (!p) return;
-    Color tint = {(unsigned char)XT_TO_INT(tint_r), (unsigned char)XT_TO_INT(tint_g),
-                  (unsigned char)XT_TO_INT(tint_b), (unsigned char)XT_TO_INT(tint_a)};
+    Color tint = {(unsigned char)xt_ni(tint_r), (unsigned char)xt_ni(tint_g),
+                  (unsigned char)xt_ni(tint_b), (unsigned char)xt_ni(tint_a)};
     DrawTexturePro(*p, (Rectangle){0, 0, (float)p->width, (float)p->height},
                    (Rectangle){xt_kf(x), xt_kf(y), xt_kf(w), xt_kf(h)},
                    (Vector2){0, 0}, 0.0f, tint);
@@ -813,7 +821,7 @@ uintptr_t XT_LoadTextureSVG(uintptr_t filename, uintptr_t w, uintptr_t h) {
         NSVGimage* svg = nsvgParse(buf, "px", 96.0f);
         free(buf);
         if (svg) {
-            int W = (int)XT_TO_INT(w), H = (int)XT_TO_INT(h);
+            int W = (int)xt_ni(w), H = (int)xt_ni(h);
             if (W <= 0) W = (int)svg->width;
             if (H <= 0) H = (int)svg->height;
             if (W > 0 && H > 0 && svg->width > 0 && svg->height > 0) {
@@ -857,15 +865,15 @@ uintptr_t XT_GenGradientTexture(uintptr_t w, uintptr_t h,
                                 uintptr_t r1, uintptr_t g1, uintptr_t b1, uintptr_t a1,
                                 uintptr_t r2, uintptr_t g2, uintptr_t b2, uintptr_t a2,
                                 uintptr_t dir, uintptr_t radius, uintptr_t feather) {
-    int W = (int)XT_TO_INT(w), H = (int)XT_TO_INT(h);
-    int D = (int)XT_TO_INT(dir), R = (int)XT_TO_INT(radius), F = (int)XT_TO_INT(feather);
+    int W = (int)xt_ni(w), H = (int)xt_ni(h);
+    int D = (int)xt_ni(dir), R = (int)xt_ni(radius), F = (int)xt_ni(feather);
     if (W <= 0 || H <= 0) return XT_FROM_INT(0);
     if (R < 0) R = 0;
     if (F < 1) F = 1;
-    unsigned char c1[4] = {(unsigned char)XT_TO_INT(r1), (unsigned char)XT_TO_INT(g1),
-                           (unsigned char)XT_TO_INT(b1), (unsigned char)XT_TO_INT(a1)};
-    unsigned char c2[4] = {(unsigned char)XT_TO_INT(r2), (unsigned char)XT_TO_INT(g2),
-                           (unsigned char)XT_TO_INT(b2), (unsigned char)XT_TO_INT(a2)};
+    unsigned char c1[4] = {(unsigned char)xt_ni(r1), (unsigned char)xt_ni(g1),
+                           (unsigned char)xt_ni(b1), (unsigned char)xt_ni(a1)};
+    unsigned char c2[4] = {(unsigned char)xt_ni(r2), (unsigned char)xt_ni(g2),
+                           (unsigned char)xt_ni(b2), (unsigned char)xt_ni(a2)};
     if (!xt_grad_init) {
         for (int i = 0; i < 8; i++) xt_grad_cache[i].slot = -1;
         xt_grad_init = 1;
@@ -954,11 +962,11 @@ uintptr_t XT_GenGradientTexture(uintptr_t w, uintptr_t h,
 // ============================================================
 
 uintptr_t XT_IsKeyDown(uintptr_t key) {
-    return IsKeyDown((int)XT_TO_INT(key)) ? 1 : 0;
+    return IsKeyDown((int)xt_ni(key)) ? 1 : 0;
 }
 
 uintptr_t XT_IsKeyPressed(uintptr_t key) {
-    return IsKeyPressed((int)XT_TO_INT(key)) ? 1 : 0;
+    return IsKeyPressed((int)xt_ni(key)) ? 1 : 0;
 }
 
 uintptr_t XT_GetKeyPressed(void) {
@@ -972,11 +980,11 @@ uintptr_t XT_GetCharPressed(void) {
 }
 
 uintptr_t XT_IsMouseButtonDown(uintptr_t button) {
-    return IsMouseButtonDown((int)XT_TO_INT(button)) ? 1 : 0;
+    return IsMouseButtonDown((int)xt_ni(button)) ? 1 : 0;
 }
 
 uintptr_t XT_IsMouseButtonPressed(uintptr_t button) {
-    return IsMouseButtonPressed((int)XT_TO_INT(button)) ? 1 : 0;
+    return IsMouseButtonPressed((int)xt_ni(button)) ? 1 : 0;
 }
 
 uintptr_t XT_GetMouseX(void) {
@@ -996,7 +1004,7 @@ uintptr_t XT_GetMouseWheelMove(void) {
 // ============================================================
 
 uintptr_t XT_GetRandomValue(uintptr_t min, uintptr_t max) {
-    return XT_FROM_INT(GetRandomValue((int)XT_TO_INT(min), (int)XT_TO_INT(max)));
+    return XT_FROM_INT(GetRandomValue((int)xt_ni(min), (int)xt_ni(max)));
 }
 
 // ============================================================
@@ -1067,7 +1075,7 @@ void XT_UnloadSound(uintptr_t snd) {
     Sound* p = xt_get_snd(snd);
     if (!p) return;
     UnloadSound(*p);
-    int slot = (int)XT_TO_INT(snd) - 1;
+    int slot = (int)xt_ni(snd) - 1;
     if (slot >= 0 && slot < 32 && xt_synth_pcm[slot]) {
         free(xt_synth_pcm[slot]);
         xt_synth_pcm[slot] = NULL;
@@ -1087,7 +1095,7 @@ uintptr_t XT_SynthSound(uintptr_t freq_hz, uintptr_t ms) {
     int slot = xt_snd_alloc();
     if (slot < 0) return XT_FROM_INT(0);
     double f = xt_get_float(freq_hz);
-    int m = (int)XT_TO_INT(ms);
+    int m = (int)xt_ni(ms);
     if (f <= 0.0) f = 440.0;
     if (m <= 0) m = 120;
     if (m > 10000) m = 10000;
@@ -1296,7 +1304,7 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
         if (!rebuilt) { free(data); free(codepoints); return XT_FROM_INT(0); }
         loadData = rebuilt;
     }
-    Font f = LoadFontFromMemory(".ttf", loadData, loadSize, (int)XT_TO_INT(fontSize), codepoints, cpCount);
+    Font f = LoadFontFromMemory(".ttf", loadData, loadSize, (int)xt_ni(fontSize), codepoints, cpCount);
     if (loadData != data) free(loadData);
     free(data);
     free(codepoints);
@@ -1356,7 +1364,7 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
         if (!rebuilt) { free(dataEx); free(codepoints); return XT_FROM_INT(0); }
         loadDataEx = rebuilt;
     }
-    Font f = LoadFontFromMemory(".ttf", loadDataEx, loadSizeEx, (int)XT_TO_INT(fontSize), codepoints, idx);
+    Font f = LoadFontFromMemory(".ttf", loadDataEx, loadSizeEx, (int)xt_ni(fontSize), codepoints, idx);
     if (loadDataEx != dataEx) free(loadDataEx);
     free(dataEx);
     free(codepoints);
@@ -1406,11 +1414,11 @@ void XT_DrawTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t x, uintptr_t 
 #endif
     Font* p = xt_get_font(fontHandle);
     if (p) {
-        Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-                   (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-        Vector2 pos = {(float)XT_TO_INT(x), (float)XT_TO_INT(y)};
-        DrawTextEx(*p, xt_get_cstr(text), pos, (float)XT_TO_INT(fontSize),
-                   (float)XT_TO_INT(spacing), c);
+        Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+                   (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+        Vector2 pos = {xt_nf(x), xt_nf(y)};
+        DrawTextEx(*p, xt_get_cstr(text), pos, xt_nf(fontSize),
+                   xt_nf(spacing), c);
     }
 }
 
@@ -1427,12 +1435,12 @@ void XT_DrawTextExFP(uintptr_t fontHandle, uintptr_t text, uintptr_t x1000, uint
 #endif
     Font* p = xt_get_font(fontHandle);
     if (p) {
-        Color c = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-                   (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
-        Vector2 pos = {(float)XT_TO_INT(x1000) / 1000.0f, (float)XT_TO_INT(y1000) / 1000.0f};
-        float fsz = (float)XT_TO_INT(fontSize) * ((float)XT_TO_INT(scale1000) / 1000.0f);
+        Color c = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+                   (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
+        Vector2 pos = {xt_nf(x1000) / 1000.0f, xt_nf(y1000) / 1000.0f};
+        float fsz = xt_nf(fontSize) * (xt_nf(scale1000) / 1000.0f);
         DrawTextEx(*p, xt_get_cstr(text), pos, fsz,
-                   (float)XT_TO_INT(spacing), c);
+                   xt_nf(spacing), c);
     }
 }
 
@@ -1445,7 +1453,7 @@ uintptr_t XT_MeasureTextEx(uintptr_t fontHandle, uintptr_t text, uintptr_t fontS
 #endif
     Font* p = xt_get_font(fontHandle);
     if (!p) return XT_FROM_INT(0);
-    Vector2 v = MeasureTextEx(*p, xt_get_cstr(text), (float)XT_TO_INT(fontSize), (float)XT_TO_INT(spacing));
+    Vector2 v = MeasureTextEx(*p, xt_get_cstr(text), xt_nf(fontSize), xt_nf(spacing));
     return XT_FROM_INT((int64_t)(v.x + 0.5));
 }
 
@@ -1633,7 +1641,7 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
     f->atlasImg = GenImageColor(XT_GDI_ATLAS, XT_GDI_ATLAS, (Color){0, 0, 0, 0});
     ImageFormat(&f->atlasImg, PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA);
     /* 首字号预热(失败 = 字体名无效,整体失败) */
-    int baseSize = (int)XT_TO_INT(sizeVal);
+    int baseSize = (int)xt_ni(sizeVal);
     if (xt_gdi_size_slot(f, baseSize) < 0 || f->sizeCount == 0) {
         UnloadImage(f->atlasImg);
         free(f->hash);
@@ -1655,9 +1663,9 @@ static void xt_gdi_draw_impl(uintptr_t handle, uintptr_t text, float fx, float f
     if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return;
     XTGdiFont* f = &xt_gdi_fonts[idx];
     if (!f->used) return;
-    int sp = (int)XT_TO_INT(spacing);   // 字距:相邻字符之间(首字符前不加)
+    int sp = (int)xt_ni(spacing);   // 字距:相邻字符之间(首字符前不加)
     const char* s = xt_get_cstr(text);
-    int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
+    int sizeIdx = xt_gdi_size_slot(f, (int)xt_ni(fontSize));
     /* 第一遍:确保全部码点已栅格化(新字形置 dirty) */
     {
         const char* p = s;
@@ -1679,8 +1687,8 @@ static void xt_gdi_draw_impl(uintptr_t handle, uintptr_t text, float fx, float f
         f->dirty = 0;
     }
     /* 第二遍:绘制(浮点笔位 × 整体缩放,亚像素) */
-    Color tint = {(unsigned char)XT_TO_INT(r), (unsigned char)XT_TO_INT(g),
-                  (unsigned char)XT_TO_INT(b), (unsigned char)XT_TO_INT(a)};
+    Color tint = {(unsigned char)xt_ni(r), (unsigned char)xt_ni(g),
+                  (unsigned char)xt_ni(b), (unsigned char)xt_ni(a)};
     float penX = fx;
     float baseTop = fy;
     float spf = (float)sp * scale;
@@ -1718,7 +1726,7 @@ static void xt_gdi_draw_impl(uintptr_t handle, uintptr_t text, float fx, float f
 void XT_FontGDI_DrawText(uintptr_t handle, uintptr_t text, uintptr_t x, uintptr_t y,
                          uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
                          uintptr_t spacing) {
-    xt_gdi_draw_impl(handle, text, (float)XT_TO_INT(x), (float)XT_TO_INT(y), 1.0f, fontSize, r, g, b, a, spacing);
+    xt_gdi_draw_impl(handle, text, xt_nf(x), xt_nf(y), 1.0f, fontSize, r, g, b, a, spacing);
 }
 
 /* 千分定点坐标版(亚像素;微交互动画用;scale1000: 1000=原倍,字形图集 GPU 缩放不重光栅化) */
@@ -1726,8 +1734,8 @@ void XT_FontGDI_DrawTextFP(uintptr_t handle, uintptr_t text, uintptr_t x1000, ui
                            uintptr_t scale1000,
                            uintptr_t fontSize, uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a,
                            uintptr_t spacing) {
-    xt_gdi_draw_impl(handle, text, (float)XT_TO_INT(x1000) / 1000.0f, (float)XT_TO_INT(y1000) / 1000.0f,
-                     (float)XT_TO_INT(scale1000) / 1000.0f, fontSize, r, g, b, a, spacing);
+    xt_gdi_draw_impl(handle, text, xt_nf(x1000) / 1000.0f, xt_nf(y1000) / 1000.0f,
+                     xt_nf(scale1000) / 1000.0f, fontSize, r, g, b, a, spacing);
 }
 
 /* 测量文本宽度(GDI 精确度量,GetTextExtentPoint32W;字距按"每字符一个后置间距槽"计 = spacing×字符数,
@@ -1738,8 +1746,8 @@ uintptr_t XT_FontGDI_Measure(uintptr_t handle, uintptr_t text, uintptr_t fontSiz
     if (idx < 0 || idx >= XT_GDI_MAX_FONTS) return XT_FROM_INT(0);
     XTGdiFont* f = &xt_gdi_fonts[idx];
     if (!f->used) return XT_FROM_INT(0);
-    int sp = (int)XT_TO_INT(spacing);
-    int sizeIdx = xt_gdi_size_slot(f, (int)XT_TO_INT(fontSize));
+    int sp = (int)xt_ni(spacing);
+    int sizeIdx = xt_gdi_size_slot(f, (int)xt_ni(fontSize));
     SelectObject(f->hdc, f->hfonts[sizeIdx]);
     const char* s = xt_get_cstr(text);
     int wlen = MultiByteToWideChar(65001, 0, s, -1, NULL, 0);
@@ -1912,7 +1920,7 @@ void XT_SaveScreenshot(uintptr_t pathVal) {
 
 /* 裁剪(UI 输入栏等需限制绘制区域的控件用):raylib BeginScissorMode/EndScissorMode 桥接 */
 void XT_BeginScissor(uintptr_t x, uintptr_t y, uintptr_t w, uintptr_t h) {
-    BeginScissorMode((int)XT_TO_INT(x), (int)XT_TO_INT(y), (int)XT_TO_INT(w), (int)XT_TO_INT(h));
+    BeginScissorMode((int)xt_ni(x), (int)xt_ni(y), (int)xt_ni(w), (int)xt_ni(h));
 }
 void XT_EndScissor(void) {
     EndScissorMode();
@@ -1953,8 +1961,8 @@ void XT_SetIMEPos(uintptr_t x, uintptr_t y) {
     XT_COMPFORM cf;
     memset(&cf, 0, sizeof(cf));
     cf.dwStyle = 0x0022;
-    cf.pt.x = (long)XT_TO_INT(x);
-    cf.pt.y = (long)XT_TO_INT(y);
+    cf.pt.x = (long)xt_ni(x);
+    cf.pt.y = (long)xt_ni(y);
     ImmSetCompositionWindow(himc, &cf);
     ImmReleaseContext(hwnd, himc);
 }
@@ -2080,10 +2088,10 @@ RLAPI void rlRotatef(float angle, float x, float y, float z);
 
 static Color xt_color4(uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
     Color c = {
-        (unsigned char)XT_TO_INT(r),
-        (unsigned char)XT_TO_INT(g),
-        (unsigned char)XT_TO_INT(b),
-        (unsigned char)XT_TO_INT(a)
+        (unsigned char)xt_ni(r),
+        (unsigned char)xt_ni(g),
+        (unsigned char)xt_ni(b),
+        (unsigned char)xt_ni(a)
     };
     return c;
 }
@@ -2139,7 +2147,7 @@ void XT_DrawSphereWires3D(uintptr_t x, uintptr_t y, uintptr_t z, uintptr_t radiu
 }
 
 void XT_DrawGrid3D(uintptr_t slices, uintptr_t spacing) {
-    DrawGrid((int)XT_TO_INT(slices), (float)xt_get_float(spacing));
+    DrawGrid((int)xt_ni(slices), (float)xt_get_float(spacing));
 }
 
 void XT_DrawLine3D(uintptr_t x1, uintptr_t y1, uintptr_t z1,
