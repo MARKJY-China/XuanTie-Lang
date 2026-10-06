@@ -232,7 +232,26 @@ func main() {
 		rtC := filepath.Join(runtimeDir, "xt_runtime.c")
 
 		renderBridgeC := filepath.Join(projectDir, "lib", "渲染", "渲染桥.c")
-		localRaylib := filepath.Join(projectDir, "lib", "渲染")
+		renderDir := filepath.Join(projectDir, "lib", "渲染")
+		if !fileExists(renderBridgeC) {
+			// issue #74: 与 runtime 同款向上逐级回退——开发布局(build/xt_gsc,lib/ 在仓库根)
+			// 下渲染桥/库找不到会静默降级,链接期才报缺全部 XT_* 符号(误导性报错)。
+			up := filepath.Dir(projectDir)
+			for i := 0; i < 6 && up != "" && up != "/" && up != "."; i++ {
+				cand := filepath.Join(up, "lib", "渲染")
+				if fileExists(filepath.Join(cand, "渲染桥.c")) {
+					renderDir = cand
+					renderBridgeC = filepath.Join(cand, "渲染桥.c")
+					break
+				}
+				parent := filepath.Dir(up)
+				if parent == up {
+					break
+				}
+				up = parent
+			}
+		}
+		localRaylib := renderDir
 		raylibDir := os.Getenv("RAYLIB_DIR")
 		if fileExists(filepath.Join(localRaylib, "libraylib.a")) {
 			raylibDir = localRaylib
