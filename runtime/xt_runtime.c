@@ -917,8 +917,9 @@ XTValue xt_string_char_count(XTValue str_val) {
     
     XTString* s = (XTString*)str_val;
     const char* p = s->data;
+    const char* end = s->data + s->length;   // issue #80:按长度走,内嵌 NUL 不再截断
     int64_t count = 0;
-    while (*p) {
+    while (p < end) {
         unsigned char c = (unsigned char)*p;
         if (c < 0x80) p += 1;
         else if ((c & 0xE0) == 0xC0) p += 2;
@@ -2165,11 +2166,12 @@ XTString* xt_string_substring(XTString* s, int64_t start, int64_t end) {
     xt_string_guard((XTValue)s, "截取");
     
     const char* p = s->data;
+    const char* limit = s->data + s->length;   // issue #80:按长度走,内嵌 NUL 不再截断
     int64_t current = 0;
     const char* start_p = NULL;
     const char* end_p = NULL;
     
-    while (*p) {
+    while (p < limit) {
         if (current == start) start_p = p;
         if (current == end) { end_p = p; break; }
         
@@ -2189,7 +2191,7 @@ XTString* xt_string_substring(XTString* s, int64_t start, int64_t end) {
     char* buf = (char*)malloc(len + 1);
     memcpy(buf, start_p, len);
     buf[len] = '\0';
-    XTString* res = xt_string_new(buf);
+    XTString* res = xt_string_new_len(buf, len);   // issue #80:按长度构造,内嵌 NUL 不再截断
     free(buf);
     return res;
 }
@@ -4048,17 +4050,21 @@ XTValue xt_string_find(XTValue s_val, XTValue sub_val, XTValue start_val) {
     XTString* sub = _xt_path_of(sub_val);
     if (!s || !sub) return XT_FROM_INT(-1);
     int64_t start_char = xt_to_int(start_val);
-    // 字符位置 → 字节偏移
+    // 字符位置 → 字节偏移(issue #80:按长度走,内嵌 NUL 不再截断)
     int64_t byte_off = 0, cc = 0;
-    while (s->data[byte_off] && cc < start_char) {
+    while ((size_t)byte_off < s->length && cc < start_char) {
         unsigned char c = (unsigned char)s->data[byte_off];
         byte_off += (c < 0x80) ? 1 : ((c & 0xE0) == 0xC0) ? 2 : ((c & 0xF0) == 0xE0) ? 3 : ((c & 0xF8) == 0xF0) ? 4 : 1;
         cc++;
     }
-    const char* hit = strstr(s->data + byte_off, sub->data);
-    if (!hit) return XT_FROM_INT(-1);
-    int64_t byte_pos = (int64_t)(hit - s->data);
-    return XT_FROM_INT(_xt_byte_to_char_pos(s->data, byte_pos));
+    // 长度界 memcmp 扫描(原 strstr 遇 NUL 即停)
+    if (sub->length == 0) return XT_FROM_INT(_xt_byte_to_char_pos(s->data, byte_off <= (int64_t)s->length ? byte_off : (int64_t)s->length));
+    for (size_t i = (size_t)byte_off; i + sub->length <= s->length; i++) {
+        if (memcmp(s->data + i, sub->data, sub->length) == 0) {
+            return XT_FROM_INT(_xt_byte_to_char_pos(s->data, (int64_t)i));
+        }
+    }
+    return XT_FROM_INT(-1);
 }
 
 // 串.倒找(子) → 最后一次出现的字符位置,找不到 -1
@@ -4066,12 +4072,15 @@ XTValue xt_string_rfind(XTValue s_val, XTValue sub_val) {
     XTString* s = _xt_path_of(s_val);
     XTString* sub = _xt_path_of(sub_val);
     if (!s || !sub) return XT_FROM_INT(-1);
-    if (sub->data[0] == '\0') return XT_FROM_INT(xt_string_char_count((XTValue)s));
-    const char* last = NULL;
-    const char* cur = s->data;
-    while ((cur = strstr(cur, sub->data)) != NULL) { last = cur; cur++; }
-    if (!last) return XT_FROM_INT(-1);
-    return XT_FROM_INT(_xt_byte_to_char_pos(s->data, (int64_t)(last - s->data)));
+    if (sub->length == 0) return XT_FROM_INT(xt_string_char_count((XTValue)s));
+    if (sub->length > s->length) return XT_FROM_INT(-1);
+    // 长度界 memcmp 反向扫描(issue #80:原 strstr 遇 NUL 即停)
+    for (int64_t i = (int64_t)(s->length - sub->length); i >= 0; i--) {
+        if (memcmp(s->data + i, sub->data, sub->length) == 0) {
+            return XT_FROM_INT(_xt_byte_to_char_pos(s->data, i));
+        }
+    }
+    return XT_FROM_INT(-1);
 }
 
 // 串.到大写() / 串.到小写() —— ASCII 大小写(中文等宽字符原样保留)

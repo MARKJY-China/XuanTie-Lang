@@ -1,0 +1,20 @@
+compile_ok=True
+exit=0
+PASS 字节数按长度
+PASS 字符数不截断
+PASS 截取不截断
+PASS 截取跨NUL中段
+PASS 寻找跨NUL
+PASS 倒找跨NUL
+PASS 倒找NUL自身
+PASS 寻找NUL后内容
+PASS 字节集长度
+PASS 字节集寻找一致
+PASS 字节集截取一致
+PASS 字节集取字节
+PASS 常规字符数
+PASS 常规截取
+PASS 常规寻找
+PASS 常规倒找
+PASS 空子串寻找
+156 全绿
