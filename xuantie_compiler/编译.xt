@@ -252,6 +252,33 @@
         此.函数表["数学.千分位"] = 真
         此.符号表["数学.到大写金额"] = "@\"xt_math_to_rmb\""
         此.函数表["数学.到大写金额"] = 真
+        // --- 批次四:系统处理 ---
+        此.符号表["系统.运行"] = "@\"xt_sys_run\""
+        此.函数表["系统.运行"] = 真
+        此.符号表["系统.取剪辑板文本"] = "@\"xt_sys_clipboard_get\""
+        此.函数表["系统.取剪辑板文本"] = 真
+        此.符号表["系统.置剪辑板文本"] = "@\"xt_sys_clipboard_set\""
+        此.函数表["系统.置剪辑板文本"] = 真
+        此.符号表["系统.清除剪辑板"] = "@\"xt_sys_clipboard_clear\""
+        此.函数表["系统.清除剪辑板"] = 真
+        此.符号表["系统.取屏幕宽度"] = "@\"xt_sys_screen_w\""
+        此.函数表["系统.取屏幕宽度"] = 真
+        此.符号表["系统.取屏幕高度"] = "@\"xt_sys_screen_h\""
+        此.函数表["系统.取屏幕高度"] = 真
+        此.符号表["系统.取鼠标位置"] = "@\"xt_sys_mouse_pos\""
+        此.函数表["系统.取鼠标位置"] = 真
+        此.符号表["系统.操作系统类别"] = "@\"xt_sys_os\""
+        此.函数表["系统.操作系统类别"] = 真
+        此.符号表["系统.取启动时间"] = "@\"xt_sys_boot_ms\""
+        此.函数表["系统.取启动时间"] = 真
+        此.符号表["系统.鸣叫"] = "@\"xt_sys_beep\""
+        此.函数表["系统.鸣叫"] = 真
+        此.符号表["系统.信息框"] = "@\"xt_sys_msgbox\""
+        此.函数表["系统.信息框"] = 真
+        此.符号表["系统.读配置项"] = "@\"xt_ini_read\""
+        此.函数表["系统.读配置项"] = 真
+        此.符号表["系统.写配置项"] = "@\"xt_ini_write\""
+        此.函数表["系统.写配置项"] = 真
         此.符号表["化"] = "@\"xt_json_serialize\""
         此.函数表["化"] = 真
         此.符号表["解"] = "@\"xt_json_deserialize\""
@@ -1139,6 +1166,20 @@
         此.写出("declare i64 @\"xt_math_to_oct\"(i64)")
         此.写出("declare i64 @\"xt_math_thousands\"(i64, i64)")
         此.写出("declare i64 @\"xt_math_to_rmb\"(i64)")
+        // 批次四:系统处理
+        此.写出("declare i64 @\"xt_sys_run\"(i64)")
+        此.写出("declare i64 @\"xt_sys_clipboard_get\"(i64)")
+        此.写出("declare i64 @\"xt_sys_clipboard_set\"(i64)")
+        此.写出("declare i64 @\"xt_sys_clipboard_clear\"(i64)")
+        此.写出("declare i64 @\"xt_sys_screen_w\"(i64)")
+        此.写出("declare i64 @\"xt_sys_screen_h\"(i64)")
+        此.写出("declare i64 @\"xt_sys_mouse_pos\"(i64)")
+        此.写出("declare i64 @\"xt_sys_os\"(i64)")
+        此.写出("declare i64 @\"xt_sys_boot_ms\"(i64)")
+        此.写出("declare i64 @\"xt_sys_beep\"(i64)")
+        此.写出("declare i64 @\"xt_sys_msgbox\"(i64, i64)")
+        此.写出("declare i64 @\"xt_ini_read\"(i64, i64, i64, i64)")
+        此.写出("declare i64 @\"xt_ini_write\"(i64, i64, i64, i64)")
         此.写出("declare i32 @\"xt_is_type\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append_lit\"(i64, i8*, i64)")

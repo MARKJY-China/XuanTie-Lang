@@ -1,0 +1,25 @@
+compile_ok=True
+exit=0
+PASS 操作系统类别
+PASS 屏幕宽度正
+PASS 屏幕高度正
+PASS 启动时间正
+PASS 鼠标位置结构
+PASS 运行成功
+PASS 置剪辑板
+PASS 取剪辑板
+PASS 置剪辑板中文
+PASS 取剪辑板中文
+PASS 写配置项新键
+PASS 读配置项
+PASS 写配置项改键
+PASS 读改后
+PASS 写配置项同节补键
+PASS 读同节补键
+PASS 原键未被破坏
+PASS 写配置项新节
+PASS 读新节
+PASS 旧节仍在
+PASS 读不存在键返缺省
+PASS 读不存在文件返缺省
+批次四 全绿

@@ -605,4 +605,19 @@ XTValue xt_math_to_oct(XTValue v);
 XTValue xt_math_thousands(XTValue v, XTValue digits_val);
 XTValue xt_math_to_rmb(XTValue v);
 
+// --- 批次四:系统处理 ---
+XTValue xt_sys_run(XTValue cmd_val);
+XTValue xt_sys_clipboard_get(XTValue unused);
+XTValue xt_sys_clipboard_set(XTValue content_val);
+XTValue xt_sys_clipboard_clear(XTValue unused);
+XTValue xt_sys_screen_w(XTValue unused);
+XTValue xt_sys_screen_h(XTValue unused);
+XTValue xt_sys_mouse_pos(XTValue unused);
+XTValue xt_sys_os(XTValue unused);
+XTValue xt_sys_boot_ms(XTValue unused);
+XTValue xt_sys_beep(XTValue unused);
+XTValue xt_sys_msgbox(XTValue content_val, XTValue title_val);
+XTValue xt_ini_read(XTValue path_val, XTValue sec_val, XTValue key_val, XTValue def_val);
+XTValue xt_ini_write(XTValue path_val, XTValue sec_val, XTValue key_val, XTValue val_val);
+
 #endif

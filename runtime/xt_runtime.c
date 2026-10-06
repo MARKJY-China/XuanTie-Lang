@@ -4566,6 +4566,368 @@ XTValue xt_math_to_rmb(XTValue v) {
     return (XTValue)xt_string_new(out);
 }
 
+/* ==================== 批次四:系统处理 ==================== */
+
+#ifdef _WIN32
+// 内部助手:UTF-16 → 新分配 UTF-8 字符串(调用方 free)
+static char* _xt_utf16_to_utf8(const wchar_t* w) {
+    if (!w) return NULL;
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+    if (len <= 0) return NULL;
+    char* u8 = (char*)malloc((size_t)len);
+    if (u8) WideCharToMultiByte(CP_UTF8, 0, w, -1, u8, len, NULL, NULL);
+    return u8;
+}
+#endif
+
+// 系统.运行(命令) → 布尔(启动即返,不等待;失败返假)
+XTValue xt_sys_run(XTValue cmd_val) {
+    XTString* cmd = _xt_path_of(cmd_val);
+    if (!cmd) return XT_FALSE;
+#ifdef _WIN32
+    wchar_t* wcmd = xt_utf8_to_utf16(cmd->data);
+    if (!wcmd) return XT_FALSE;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    memset(&pi, 0, sizeof(pi));
+    BOOL ok = CreateProcessW(NULL, wcmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
+    free(wcmd);
+    if (!ok) return XT_FALSE;
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    return XT_TRUE;
+#else
+    pid_t pid = fork();
+    if (pid < 0) return XT_FALSE;
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd->data, (char*)NULL);
+        _exit(127);
+    }
+    // 立即回收:对短命令防僵尸;长命令由 init 收养(非阻塞)
+    int status;
+    waitpid(pid, &status, WNOHANG);
+    return XT_TRUE;
+#endif
+}
+
+// 系统.取剪辑板文本() → 字(空/无文本返空串)
+XTValue xt_sys_clipboard_get(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    if (!OpenClipboard(NULL)) return (XTValue)xt_string_new("");
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    if (!h) { CloseClipboard(); return (XTValue)xt_string_new(""); }
+    const wchar_t* w = (const wchar_t*)GlobalLock(h);
+    char* u8 = w ? _xt_utf16_to_utf8(w) : NULL;
+    if (w) GlobalUnlock(h);
+    CloseClipboard();
+    if (!u8) return (XTValue)xt_string_new("");
+    XTString* r = xt_string_new(u8);
+    free(u8);
+    return (XTValue)r;
+#else
+    return (XTValue)xt_string_new("");
+#endif
+}
+
+// 系统.置剪辑板文本(内容) → 布尔
+XTValue xt_sys_clipboard_set(XTValue content_val) {
+    XTString* s = _xt_path_of(content_val);
+    if (!s) return XT_FALSE;
+#ifdef _WIN32
+    wchar_t* w = xt_utf8_to_utf16(s->data);
+    if (!w) return XT_FALSE;
+    size_t bytes = (wcslen(w) + 1) * sizeof(wchar_t);
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!mem) { free(w); return XT_FALSE; }
+    void* dst = GlobalLock(mem);
+    memcpy(dst, w, bytes);
+    GlobalUnlock(mem);
+    free(w);
+    if (!OpenClipboard(NULL)) { GlobalFree(mem); return XT_FALSE; }
+    EmptyClipboard();
+    HANDLE rc = SetClipboardData(CF_UNICODETEXT, mem);
+    CloseClipboard();
+    if (!rc) { GlobalFree(mem); return XT_FALSE; }
+    return XT_TRUE;
+#else
+    return XT_FALSE;
+#endif
+}
+
+// 系统.清除剪辑板() → 布尔
+XTValue xt_sys_clipboard_clear(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    if (!OpenClipboard(NULL)) return XT_FALSE;
+    EmptyClipboard();
+    CloseClipboard();
+    return XT_TRUE;
+#else
+    return XT_FALSE;
+#endif
+}
+
+// 系统.取屏幕宽度() / 取屏幕高度() → 整(主显示器像素)
+XTValue xt_sys_screen_w(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    return XT_FROM_INT((int64_t)GetSystemMetrics(SM_CXSCREEN));
+#else
+    return XT_FROM_INT(0);
+#endif
+}
+XTValue xt_sys_screen_h(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    return XT_FROM_INT((int64_t)GetSystemMetrics(SM_CYSCREEN));
+#else
+    return XT_FROM_INT(0);
+#endif
+}
+
+// 系统.取鼠标位置() → 字典 {x, y}(非 Windows 返 {-1,-1})
+XTValue xt_sys_mouse_pos(XTValue unused) {
+    (void)unused;
+    int64_t x = -1, y = -1;
+#ifdef _WIN32
+    POINT pt;
+    if (GetCursorPos(&pt)) { x = pt.x; y = pt.y; }
+#endif
+    XTValue d = (XTValue)xt_dict_new(0);
+    _xt_dict_put_int(d, "x", x);
+    _xt_dict_put_int(d, "y", y);
+    return d;
+}
+
+// 系统.操作系统类别() → 字("windows"/"linux"/"macos")
+XTValue xt_sys_os(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    return (XTValue)xt_string_new("windows");
+#elif defined(__APPLE__)
+    return (XTValue)xt_string_new("macos");
+#else
+    return (XTValue)xt_string_new("linux");
+#endif
+}
+
+// 系统.取启动时间() → 整(操作系统自启动至今毫秒数)
+XTValue xt_sys_boot_ms(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    return XT_FROM_INT((int64_t)GetTickCount64());
+#else
+    struct timespec ts;
+#ifdef CLOCK_BOOTTIME
+    clock_gettime(CLOCK_BOOTTIME, &ts);
+#else
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+#endif
+    return XT_FROM_INT((int64_t)(ts.tv_sec * 1000 + ts.tv_nsec / 1000000));
+#endif
+}
+
+// 系统.鸣叫() → 空(蜂鸣提示音)
+XTValue xt_sys_beep(XTValue unused) {
+    (void)unused;
+#ifdef _WIN32
+    MessageBeep(MB_OK);
+#else
+    fputc('\a', stdout);
+    fflush(stdout);
+#endif
+    return XT_NULL;
+}
+
+// 系统.信息框(内容, 标题) → 空(模态消息框,确定后返回)
+XTValue xt_sys_msgbox(XTValue content_val, XTValue title_val) {
+    XTString* content = _xt_path_of(content_val);
+    XTString* title = _xt_path_of(title_val);
+    if (!content) return XT_NULL;
+#ifdef _WIN32
+    wchar_t* wc = xt_utf8_to_utf16(content->data);
+    wchar_t* wt = title ? xt_utf8_to_utf16(title->data) : NULL;
+    MessageBoxW(NULL, wc ? wc : L"", wt ? wt : L"信息", MB_OK | MB_ICONINFORMATION);
+    free(wc); free(wt);
+#endif
+    return XT_NULL;
+}
+
+/* ---- 配置项(INI,UTF-8 自解析,行为跨平台一致) ---- */
+
+// 内部助手:读入整个文本文件(不存在返 NULL)
+static char* _xt_read_text_file(const char* path) {
+    FILE* f = NULL;
+#ifdef _WIN32
+    wchar_t* wp = xt_utf8_to_utf16(path);
+    if (wp) f = _wfopen(wp, L"rb");
+    free(wp);
+#else
+    f = fopen(path, "rb");
+#endif
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    if (size < 0) { fclose(f); return NULL; }
+    rewind(f);
+    char* buf = (char*)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    buf[n] = '\0';
+    return buf;
+}
+
+// 内部助手:行推进——取 [p,行尾) 一行(尾不含 \r\n),返回下一行起点
+static const char* _xt_ini_next_line(const char* p, const char** line_end) {
+    const char* e = p;
+    while (*e && *e != '\n') e++;
+    const char* le = e;
+    if (le > p && le[-1] == '\r') le--;
+    *line_end = le;
+    return *e == '\n' ? e + 1 : e;
+}
+
+// 内部助手:行内容字面量相等(长度感知)
+static int _xt_line_eq(const char* p, const char* e, const char* lit) {
+    size_t n = strlen(lit);
+    return (size_t)(e - p) == n && memcmp(p, lit, n) == 0;
+}
+
+// 系统.读配置项(文件, 节, 键, 缺省) → 字(未中返缺省)
+XTValue xt_ini_read(XTValue path_val, XTValue sec_val, XTValue key_val, XTValue def_val) {
+    XTString* path = _xt_path_of(path_val);
+    XTString* sec = _xt_path_of(sec_val);
+    XTString* key = _xt_path_of(key_val);
+    XTString* def = _xt_path_of(def_val);
+    if (!path || !sec || !key) {
+        if (def) { xt_retain((XTValue)def); return (XTValue)def; }
+        return (XTValue)xt_string_new("");
+    }
+    char* text = _xt_read_text_file(path->data);
+    if (!text) {
+        if (def) { xt_retain((XTValue)def); return (XTValue)def; }
+        return (XTValue)xt_string_new("");
+    }
+    char sec_head[260];
+    snprintf(sec_head, sizeof(sec_head), "[%s]", sec->data);
+    int in_sec = 0;
+    XTString* found = NULL;
+    const char* p = text;
+    while (*p) {
+        const char* le;
+        const char* next = _xt_ini_next_line(p, &le);
+        if (le > p && p[0] == '[') {
+            in_sec = _xt_line_eq(p, le, sec_head);
+        } else if (in_sec) {
+            // 键=值(键两侧空白容忍,值原样保留)
+            const char* eq = p;
+            while (eq < le && *eq != '=') eq++;
+            if (eq < le) {
+                const char* kend = eq;
+                while (kend > p && (kend[-1] == ' ' || kend[-1] == '\t')) kend--;
+                if (_xt_line_eq(p, kend, key->data)) {
+                    const char* vstart = eq + 1;
+                    while (vstart < le && (*vstart == ' ' || *vstart == '\t')) vstart++;
+                    found = xt_string_new_len(vstart, (size_t)(le - vstart));
+                    break;
+                }
+            }
+        }
+        p = next;
+    }
+    free(text);
+    if (found) return (XTValue)found;
+    if (def) { xt_retain((XTValue)def); return (XTValue)def; }
+    return (XTValue)xt_string_new("");
+}
+
+// 系统.写配置项(文件, 节, 键, 值) → 结果<布尔>(存在则改,不存在则补;节不存在则新建)
+XTValue xt_ini_write(XTValue path_val, XTValue sec_val, XTValue key_val, XTValue val_val) {
+    XTString* path = _xt_path_of(path_val);
+    XTString* sec = _xt_path_of(sec_val);
+    XTString* key = _xt_path_of(key_val);
+    XTString* val = _xt_path_of(val_val);
+    if (!path || !sec || !key || !val) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("参数无效"));
+    char sec_head[260];
+    snprintf(sec_head, sizeof(sec_head), "[%s]", sec->data);
+    char* text = _xt_read_text_file(path->data);
+    if (!text) text = strdup("");
+    // 定位:节区间 [sec_start, sec_end);键行区间 [key_start, key_end)
+    const char* p = text;
+    const char* sec_start = NULL;
+    const char* sec_end = NULL;
+    const char* key_start = NULL;
+    const char* key_end = NULL;
+    int in_sec = 0;
+    while (*p) {
+        const char* le;
+        const char* next = _xt_ini_next_line(p, &le);
+        if (le > p && p[0] == '[') {
+            if (in_sec && !sec_end) sec_end = p;
+            in_sec = _xt_line_eq(p, le, sec_head);
+            if (in_sec) sec_start = next;
+        } else if (in_sec && !key_start) {
+            const char* eq = p;
+            while (eq < le && *eq != '=') eq++;
+            if (eq < le) {
+                const char* kend = eq;
+                while (kend > p && (kend[-1] == ' ' || kend[-1] == '\t')) kend--;
+                if (_xt_line_eq(p, kend, key->data)) { key_start = p; key_end = next; }
+            }
+        }
+        p = next;
+    }
+    if (in_sec && !sec_end) sec_end = p;
+    // 新行文本
+    size_t kv_cap = strlen(key->data) + val->length + 3;
+    char* kv = (char*)malloc(kv_cap);
+    snprintf(kv, kv_cap, "%s=%s\n", key->data, val->data);
+    size_t old_len = strlen(text);
+    char* out = (char*)malloc(old_len + kv_cap + strlen(sec_head) + 8);
+    out[0] = '\0';
+    if (key_start) {
+        // 替换键行
+        memcpy(out, text, (size_t)(key_start - text));
+        out[key_start - text] = '\0';
+        strcat(out, kv);
+        strcat(out, key_end);
+    } else if (sec_start) {
+        // 节内追加(插到节区间末尾)
+        memcpy(out, text, (size_t)(sec_end - text));
+        out[sec_end - text] = '\0';
+        strcat(out, kv);
+        strcat(out, sec_end);
+    } else {
+        // 新建节
+        strcat(out, text);
+        size_t L = strlen(out);
+        if (L > 0 && out[L - 1] != '\n') strcat(out, "\n");
+        strcat(out, sec_head);
+        strcat(out, "\n");
+        strcat(out, kv);
+    }
+    free(kv);
+    FILE* f = NULL;
+#ifdef _WIN32
+    wchar_t* wp = xt_utf8_to_utf16(path->data);
+    if (wp) f = _wfopen(wp, L"wb");
+    free(wp);
+#else
+    f = fopen(path->data, "wb");
+#endif
+    if (!f) { free(text); free(out); return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入配置文件")); }
+    size_t out_len = strlen(out);
+    size_t wn = fwrite(out, 1, out_len, f);
+    int ioerr = (wn != out_len) || (fclose(f) != 0);
+    free(text); free(out);
+    if (ioerr) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("写入配置文件失败"));
+    return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
+}
+
 /**
  * @brief 字符串分割 (字面子串切分,同 Python split:保留空段,分隔符按整体字面匹配)
  */
