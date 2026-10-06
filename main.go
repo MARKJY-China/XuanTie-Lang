@@ -258,7 +258,25 @@ func main() {
 		} else if raylibDir == "" {
 			raylibDir = "C:/raylib/raylib/src"
 		}
-		raylibA := filepath.Join(raylibDir, "libraylib.a")
+		raylibA := ""
+		linux捆绑库 := false
+		// issue #73: 按平台选库(对齐 玄铁.xt 候选逻辑)——darwin/linux 固定吃 Windows COFF 的
+		// libraylib.a 必断(ld: archive member '/' not a mach-o file);linux 有捆绑库优先,
+		// 没有则保 issue #59 的系统 -lraylib 路径。
+		if targetOS == "darwin" {
+			if cand := filepath.Join(localRaylib, "libraylib.darwin-"+targetArch+".a"); fileExists(cand) {
+				raylibA = cand
+			}
+		}
+		if targetOS == "linux" {
+			if cand := filepath.Join(localRaylib, "libraylib.linux-"+targetArch+".a"); fileExists(cand) {
+				raylibA = cand
+				linux捆绑库 = true
+			}
+		}
+		if raylibA == "" {
+			raylibA = filepath.Join(raylibDir, "libraylib.a")
+		}
 		raylibInclude := raylibDir
 		// linux: 发行包 libraylib.a 为 MinGW 版(Windows COFF 重定位,ELF 链接器不认)——不要求静态库存在,渲染链接走系统 -lraylib(issue #59)
 		useRender := hasImport(program, "渲染") && fileExists(renderBridgeC) && (fileExists(raylibA) || targetOS == "linux")
@@ -323,8 +341,13 @@ func main() {
 			case "darwin":
 				gccArgs = append(gccArgs, bridgeObj, raylibA, "-framework", "Cocoa", "-framework", "OpenGL", "-framework", "IOKit", "-framework", "CoreVideo")
 			case "linux":
-				// 发行包 libraylib.a 为 MinGW 版(COFF 重定位,ELF 链接器不认)——linux 链系统 raylib(需已安装 raylib 包,如 pacman -S raylib)
-				gccArgs = append(gccArgs, bridgeObj, "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+				if linux捆绑库 {
+					// 捆绑 libraylib.linux-<arch>.a(GLFW Wayland+X11 双后端,issue #60)——优先于系统库
+					gccArgs = append(gccArgs, bridgeObj, raylibA, "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+				} else {
+					// 无捆绑库:链系统 raylib(需已安装 raylib 包,如 pacman -S raylib;issue #59)
+					gccArgs = append(gccArgs, bridgeObj, "-lraylib", "-lGL", "-lm", "-lpthread", "-ldl", "-lrt", "-lX11")
+				}
 			}
 		}
 		gccCmd := exec.Command(gccExe, gccArgs...)
