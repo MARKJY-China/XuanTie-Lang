@@ -1,0 +1,14 @@
+compile_ok=True
+exit=0
+PASS sin
+PASS cos
+PASS floor
+PASS pow
+PASS sqrt
+PASS 内建平方根
+PASS 内建正弦
+PASS 内建取整
+PASS 原生结果可算术
+PASS 原生结果可拼接
+PASS 原生结果可比较
+157 全绿
