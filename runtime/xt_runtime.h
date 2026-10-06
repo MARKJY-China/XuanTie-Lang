@@ -110,6 +110,7 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_ARENA     13 ///< 区域分配器 (Arena)
 #define XT_TYPE_SOCKET    14 ///< 网络 socket
 #define XT_TYPE_FILE      15 ///< 流式文件句柄
+#define XT_TYPE_HANDLE    16 ///< 通用外部句柄(原生包用;带析构钩子)
 
 // 内存管理常量
 #define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
@@ -240,6 +241,21 @@ typedef struct XTFile {
     int writable;     // 打开模式含写
     int closed;       // 是否已关闭(关闭幂等;回收时自动关闭)
 } XTFile;
+
+/**
+ * @brief 通用外部句柄 (批次五;原生包用——payload 任意,ARC 回收时经析构钩子释放)
+ * 例:SQLite 连接(dtor=sqlite3_close 包装)。dtor 为 NULL 时回收只放对象本体。
+ */
+typedef struct XTHandle {
+    XTObject header;
+    void* payload;            // 外部资源指针(如 sqlite3*)
+    void (*dtor)(void*);      // 析构钩子(回收时调用;NULL 则无)
+} XTHandle;
+
+/**
+ * @brief 创建通用外部句柄(批次五)
+ */
+XTHandle* xt_handle_new(void* payload, void (*dtor)(void*));
 
 /**
  * @brief 装箱整数结构 (较少直接使用，优先使用标记指针)

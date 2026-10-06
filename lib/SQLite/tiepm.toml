@@ -1,0 +1,16 @@
+[包]
+名称 = "SQLite"
+版本 = "1.0.0"
+仓库 = "https://github.com/MARKJY-China/XuanTie-Lang"
+作者 = "问号盒"
+
+[描述]
+简介 = "玄铁 SQLite 数据库库,基于 SQLite3 amalgamation,提供连接/执行/查询/参数绑定/事务,结果容器化,连接句柄 ARC 自动关闭"
+许可 = "MIT"
+
+[依赖]
+# 包内已内置 sqlite3.o 与 SQLite桥.o(经下方 [原生] 对象机制链接),
+# 安装本包后即可在任意目录编译数据库程序,无需额外 C 环境
+
+[原生]
+对象 = ["sqlite3.o", "SQLite桥.o"]

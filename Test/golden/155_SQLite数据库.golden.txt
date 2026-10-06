@@ -1,0 +1,33 @@
+compile_ok=True
+exit=0
+PASS 打开内存库
+PASS 建表
+PASS 带参写入1
+PASS 带参写入2空值
+PASS 带参写入3布尔
+PASS 查询成功
+PASS 查询行数
+PASS 行1整数列
+PASS 行1文本列
+PASS 行1浮点列
+PASS 行1字节列
+PASS 行2空列
+PASS 带参查询行数
+PASS 带参查询内容
+PASS 聚合计数
+PASS 更新影响行数
+PASS 更新生效
+PASS 开始事务
+PASS 提交事务
+PASS 事务提交可见
+PASS 开始事务2
+PASS 回滚事务
+PASS 回滚不可见
+PASS 语法错误容器
+PASS 错误消息非空
+PASS 坏句柄执行
+PASS 关闭
+PASS 关闭幂等
+PASS 关后用失效
+PASS GC句柄可用
+批次五 全绿

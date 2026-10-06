@@ -717,6 +717,16 @@ void* xt_float_new(double val) {
 }
 
 /**
+ * @brief 创建通用外部句柄(批次五;原生包用——ARC 回收时经 dtor 释放 payload)
+ */
+XTHandle* xt_handle_new(void* payload, void (*dtor)(void*)) {
+    XTHandle* h = (XTHandle*)xt_malloc(sizeof(XTHandle), XT_TYPE_HANDLE);
+    h->payload = payload;
+    h->dtor = dtor;
+    return h;
+}
+
+/**
  * @brief 创建布尔值
  * 
  * 玄铁布尔值是单例常量：XT_TRUE(4), XT_FALSE(2)。
@@ -1525,6 +1535,11 @@ static void xt_free_obj(XTObject* obj) {
             f->closed = 1;
             break;
         }
+        case XT_TYPE_HANDLE: {
+            XTHandle* h = (XTHandle*)obj;
+            if (h->dtor && h->payload) { h->dtor(h->payload); h->payload = NULL; }
+            break;
+        }
         case XT_TYPE_BYTES: {
             XTBytes* bytes = (XTBytes*)obj;
             if (bytes->data && !bytes->header.type_id) { // 简单判断是否在 arena
@@ -1822,6 +1837,7 @@ static const char* xt_type_label_zh(XTValue v) {
         case XT_TYPE_CHANNEL:  return "通道";
         case XT_TYPE_SOCKET:   return "网络流";
         case XT_TYPE_FILE:     return "文件句柄";
+        case XT_TYPE_HANDLE:   return "外部句柄";
         default:               return "其它对象";
     }
 }
