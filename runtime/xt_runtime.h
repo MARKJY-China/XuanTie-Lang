@@ -589,4 +589,20 @@ XTValue xt_file_length(XTValue file_val);
 XTValue xt_file_eof(XTValue file_val);
 XTValue xt_file_flush(XTValue file_val);
 
+// --- 批次三:字节集扩展 + 数值格式化 ---
+XTValue xt_bytes_from_string(XTValue str_val);
+size_t xt_bytes_length(XTValue bytes_val);
+XTValue xt_bytes_slice(XTValue bytes_val, XTValue start_val, XTValue end_val);
+XTValue xt_bytes_find(XTValue bytes_val, XTValue sub_val, XTValue start_val);
+XTValue xt_bytes_rfind(XTValue bytes_val, XTValue sub_val);
+XTValue xt_bytes_replace(XTValue bytes_val, XTValue old_val, XTValue new_val);
+XTValue xt_bytes_get(XTValue bytes_val, XTValue idx_val);
+XTValue xt_bytes_set(XTValue bytes_val, XTValue idx_val, XTValue val_val);
+XTValue xt_bytes_to_hex(XTValue bytes_val);
+XTValue xt_bytes_split(XTValue bytes_val, XTValue sep_val);
+XTValue xt_math_to_hex(XTValue v);
+XTValue xt_math_to_oct(XTValue v);
+XTValue xt_math_thousands(XTValue v, XTValue digits_val);
+XTValue xt_math_to_rmb(XTValue v);
+
 #endif

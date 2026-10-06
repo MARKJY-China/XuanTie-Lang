@@ -241,6 +241,17 @@
         // --- 批次二:流式文件读写(句柄方法见成员调用分派) ---
         此.符号表["文件.打开"] = "@\"xt_file_open\""
         此.函数表["文件.打开"] = 真
+        // --- 批次三:字节集与数值格式化 ---
+        此.符号表["到字节集"] = "@\"xt_bytes_from_string\""
+        此.函数表["到字节集"] = 真
+        此.符号表["数学.到十六进制"] = "@\"xt_math_to_hex\""
+        此.函数表["数学.到十六进制"] = 真
+        此.符号表["数学.到八进制"] = "@\"xt_math_to_oct\""
+        此.函数表["数学.到八进制"] = 真
+        此.符号表["数学.千分位"] = "@\"xt_math_thousands\""
+        此.函数表["数学.千分位"] = 真
+        此.符号表["数学.到大写金额"] = "@\"xt_math_to_rmb\""
+        此.函数表["数学.到大写金额"] = 真
         此.符号表["化"] = "@\"xt_json_serialize\""
         此.函数表["化"] = 真
         此.符号表["解"] = "@\"xt_json_deserialize\""
@@ -1113,6 +1124,21 @@
         此.写出("declare i64 @\"xt_file_length\"(i64)")
         此.写出("declare i64 @\"xt_file_eof\"(i64)")
         此.写出("declare i64 @\"xt_file_flush\"(i64)")
+        // 批次三:字节集扩展 + 数值格式化
+        此.写出("declare i64 @\"xt_bytes_from_string\"(i64)")
+        此.写出("declare i64 @\"xt_bytes_length\"(i64)")
+        此.写出("declare i64 @\"xt_bytes_slice\"(i64, i64, i64)")
+        此.写出("declare i64 @\"xt_bytes_find\"(i64, i64, i64)")
+        此.写出("declare i64 @\"xt_bytes_rfind\"(i64, i64)")
+        此.写出("declare i64 @\"xt_bytes_replace\"(i64, i64, i64)")
+        此.写出("declare i64 @\"xt_bytes_get\"(i64, i64)")
+        此.写出("declare i64 @\"xt_bytes_set\"(i64, i64, i64)")
+        此.写出("declare i64 @\"xt_bytes_to_hex\"(i64)")
+        此.写出("declare i64 @\"xt_bytes_split\"(i64, i64)")
+        此.写出("declare i64 @\"xt_math_to_hex\"(i64)")
+        此.写出("declare i64 @\"xt_math_to_oct\"(i64)")
+        此.写出("declare i64 @\"xt_math_thousands\"(i64, i64)")
+        此.写出("declare i64 @\"xt_math_to_rmb\"(i64)")
         此.写出("declare i32 @\"xt_is_type\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_append_lit\"(i64, i8*, i64)")
@@ -2776,6 +2802,17 @@
         返 [寄存器, 类型]
     }
 
+    // 批次三:对象 type_id 读取(字符串/字节集双类型方法分派用,同 追加 的 Array/Bytes 先例)
+    函 读类型ID(对象Xt) {
+        设 objPtr = 此.取新寄存器()
+        此.写出("  " & objPtr & " = inttoptr i64 " & 对象Xt & " to %XTObject*")
+        设 typeIdPtr = 此.取新寄存器()
+        此.写出("  " & typeIdPtr & " = getelementptr %XTObject, %XTObject* " & objPtr & ", i32 0, i32 2")
+        设 typeId = 此.取新寄存器()
+        此.写出("  " & typeId & " = load i32, i32* " & typeIdPtr)
+        返 typeId
+    }
+
     函 编译表达式(节点) {
         若 节点 == 空 { 返 ["0", "i64"] }
         匹配 节点.节点类别 {
@@ -3144,11 +3181,22 @@
                     此.写出(dictLabel & ":")
                     设 isDict = 此.符(此.取新寄存器())
                     此.写出("  " & isDict & " = icmp eq i32 " & typeId & ", 6")
-                    此.写出("  br i1 " & isDict & ", label %" & dictLabel & ".true, label %" & mergeLabel)
+                    设 bytesLabel = 此.标(此.取新标签("len.bytes"))
+                    此.写出("  br i1 " & isDict & ", label %" & dictLabel & ".true, label %" & bytesLabel)
                     此.写出(dictLabel & ".true:")
                     设 dVal = 此.符(此.取新寄存器())
                     此.写出("  " & dVal & " = call i64 @xt_dict_size(i64 " & 此.符(对象寄存器) & ")")
                     此.写_存储_xt(dVal, "raw_i64", resAddr)
+                    此.写出("  br label %" & mergeLabel)
+                    // 批次三:字节集长度(原静默落 merge 返 0)
+                    此.写出(bytesLabel & ":")
+                    设 isBytes = 此.符(此.取新寄存器())
+                    此.写出("  " & isBytes & " = icmp eq i32 " & typeId & ", 10")
+                    此.写出("  br i1 " & isBytes & ", label %" & bytesLabel & ".true, label %" & mergeLabel)
+                    此.写出(bytesLabel & ".true:")
+                    设 bLen = 此.符(此.取新寄存器())
+                    此.写出("  " & bLen & " = call i64 @\"xt_bytes_length\"(i64 " & 此.符(对象寄存器) & ")")
+                    此.写_存储_xt(bLen, "raw_i64", resAddr)
                     此.写出("  br label %" & mergeLabel)
                     
                     此.写出(mergeLabel & ":")
@@ -5896,10 +5944,43 @@
             若 成员名 == "截取" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
-                设 strPtr = 此.取新寄存器()
-                此.写出("  " & strPtr & " = inttoptr i64 " & 对象Xt & " to %XTString*")
                 设 翻译始 = 此.编译表达式(节点.调用参数[0])
                 设 始Raw = 此.确保RawI64(翻译始[0], 翻译始[1])
+                // 批次三:字节集/字符串双类型分派(字节集下标按字节,字符串下标按字符)
+                // 汇聚用 alloca 而非 phi:参数(如 .字节数)自身是多块分派,phi 前驱标定会失效
+                设 _rAddr = 此.取新寄存器()
+                此.写出("  " & _rAddr & " = alloca i64")
+                设 _tid = 此.读类型ID(对象Xt)
+                设 _isB = 此.取新寄存器()
+                此.写出("  " & _isB & " = icmp eq i32 " & _tid & ", 10")
+                设 _bL = 此.标(此.取新标签("slice.bytes"))
+                设 _sL = 此.标(此.取新标签("slice.str"))
+                设 _mL = 此.标(此.取新标签("slice.merge"))
+                此.写出("  br i1 " & _isB & ", label %" & _bL & ", label %" & _sL)
+                此.写出(_bL & ":")
+                // 字节集:起 tagged;止缺省 tagged(-1) 到尾
+                设 _b始1 = 此.取新寄存器()
+                此.写出("  " & _b始1 & " = shl i64 " & 始Raw & ", 1")
+                设 _b始2 = 此.取新寄存器()
+                此.写出("  " & _b始2 & " = or i64 " & _b始1 & ", 1")
+                设 _b终T = "-1"
+                若 节点.调用参数.长度 > 1 {
+                    设 翻译终B = 此.编译表达式(节点.调用参数[1])
+                    设 终RawB = 此.确保RawI64(翻译终B[0], 翻译终B[1])
+                    设 _bt1 = 此.取新寄存器()
+                    此.写出("  " & _bt1 & " = shl i64 " & 终RawB & ", 1")
+                    设 _bt2 = 此.取新寄存器()
+                    此.写出("  " & _bt2 & " = or i64 " & _bt1 & ", 1")
+                    _b终T = _bt2
+                    此.写_释放_xt(翻译终B[0], 翻译终B[1])
+                }
+                设 _bRes = 此.取新寄存器()
+                此.写出("  " & _bRes & " = call i64 @\"xt_bytes_slice\"(i64 " & 对象Xt & ", i64 " & _b始2 & ", i64 " & _b终T & ")")
+                此.写出("  store i64 " & _bRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_sL & ":")
+                设 strPtr = 此.取新寄存器()
+                此.写出("  " & strPtr & " = inttoptr i64 " & 对象Xt & " to %XTString*")
                 设 终Raw = 此.取新寄存器()
                 若 节点.调用参数.长度 > 1 {
                     设 翻译终 = 此.编译表达式(节点.调用参数[1])
@@ -5913,8 +5994,13 @@
                 此.写出("  " & res & " = call %XTString* @xt_string_substring(%XTString* " & strPtr & ", i64 " & 始Raw & ", i64 " & 终Raw & ")")
                 设 resI64 = 此.取新寄存器()
                 此.写出("  " & resI64 & " = ptrtoint %XTString* " & res & " to i64")
+                此.写出("  store i64 " & resI64 & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_mL & ":")
+                设 _mRes = 此.取新寄存器()
+                此.写出("  " & _mRes & " = load i64, i64* " & _rAddr)
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
-                设 _r = [resI64, "i64"]
+                设 _r = [_mRes, "i64"]
                 返 _r
             }
             若 成员名 == "追加" {
@@ -6037,14 +6123,73 @@
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
                 设 翻译参 = 此.编译表达式(节点.调用参数[0])
                 设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                // 批次三:字节集(参为分隔字节值 0-255)/字符串(参为分隔串)双类型分派
+                设 _rAddr = 此.取新寄存器()
+                此.写出("  " & _rAddr & " = alloca i64")
+                设 _tid = 此.读类型ID(对象Xt)
+                设 _isB = 此.取新寄存器()
+                此.写出("  " & _isB & " = icmp eq i32 " & _tid & ", 10")
+                设 _bL = 此.标(此.取新标签("split.bytes"))
+                设 _sL = 此.标(此.取新标签("split.str"))
+                设 _mL = 此.标(此.取新标签("split.merge"))
+                此.写出("  br i1 " & _isB & ", label %" & _bL & ", label %" & _sL)
+                此.写出(_bL & ":")
+                设 _bRes = 此.取新寄存器()
+                此.写出("  " & _bRes & " = call i64 @\"xt_bytes_split\"(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  store i64 " & _bRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_sL & ":")
+                设 _sRes = 此.取新寄存器()
+                此.写出("  " & _sRes & " = call i64 @xt_string_split(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  store i64 " & _sRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_mL & ":")
                 设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i64 @xt_string_split(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  " & res & " = load i64, i64* " & _rAddr)
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 参Xt & ")")
                 设 _r = [res, "i64"]
                 返 _r
             }
+            // 批次三:字节集独有方法(取字节/写字节/到十六进制)
+            若 成员名 == "取字节" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_bytes_get\"(i64 " & 对象Xt & ", i64 " & 参Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "写字节" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 翻译参1 = 此.编译表达式(节点.调用参数[0])
+                设 参1Xt = 此.确保I64(翻译参1[0], 翻译参1[1])
+                设 翻译参2 = 此.编译表达式(节点.调用参数[1])
+                设 参2Xt = 此.确保I64(翻译参2[0], 翻译参2[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_bytes_set\"(i64 " & 对象Xt & ", i64 " & 参1Xt & ", i64 " & 参2Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参1Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参2Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
+            若 成员名 == "到十六进制" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"xt_bytes_to_hex\"(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                设 _r = [res, "i64"]
+                返 _r
+            }
             // 批次一:文本操作扩充(寻找/倒找/大小写/重复)——位置按逻辑字符,与 截取/字符数 同单位
+            // 批次三:寻找/倒找 对字节集同型分派(位置按字节)
             若 成员名 == "寻找" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
@@ -6057,8 +6202,28 @@
                     起Xt = 此.符(此.确保I64(翻译起[0], 翻译起[1]))
                     _有起 = 真
                 }
+                设 _rAddr = 此.取新寄存器()
+                此.写出("  " & _rAddr & " = alloca i64")
+                设 _tid = 此.读类型ID(对象Xt)
+                设 _isB = 此.取新寄存器()
+                此.写出("  " & _isB & " = icmp eq i32 " & _tid & ", 10")
+                设 _bL = 此.标(此.取新标签("find.bytes"))
+                设 _sL = 此.标(此.取新标签("find.str"))
+                设 _mL = 此.标(此.取新标签("find.merge"))
+                此.写出("  br i1 " & _isB & ", label %" & _bL & ", label %" & _sL)
+                此.写出(_bL & ":")
+                设 _bRes = 此.取新寄存器()
+                此.写出("  " & _bRes & " = call i64 @\"xt_bytes_find\"(i64 " & 对象Xt & ", i64 " & 子Xt & ", i64 " & 起Xt & ")")
+                此.写出("  store i64 " & _bRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_sL & ":")
+                设 _sRes = 此.取新寄存器()
+                此.写出("  " & _sRes & " = call i64 @\"xt_string_find\"(i64 " & 对象Xt & ", i64 " & 子Xt & ", i64 " & 起Xt & ")")
+                此.写出("  store i64 " & _sRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_mL & ":")
                 设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i64 @\"xt_string_find\"(i64 " & 对象Xt & ", i64 " & 子Xt & ", i64 " & 起Xt & ")")
+                此.写出("  " & res & " = load i64, i64* " & _rAddr)
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 子Xt & ")")
                 若 _有起 { 此.写出("  call void @xt_release(i64 " & 起Xt & ")") }
@@ -6070,8 +6235,28 @@
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
                 设 翻译子 = 此.编译表达式(节点.调用参数[0])
                 设 子Xt = 此.确保I64(翻译子[0], 翻译子[1])
+                设 _rAddr = 此.取新寄存器()
+                此.写出("  " & _rAddr & " = alloca i64")
+                设 _tid = 此.读类型ID(对象Xt)
+                设 _isB = 此.取新寄存器()
+                此.写出("  " & _isB & " = icmp eq i32 " & _tid & ", 10")
+                设 _bL = 此.标(此.取新标签("rfind.bytes"))
+                设 _sL = 此.标(此.取新标签("rfind.str"))
+                设 _mL = 此.标(此.取新标签("rfind.merge"))
+                此.写出("  br i1 " & _isB & ", label %" & _bL & ", label %" & _sL)
+                此.写出(_bL & ":")
+                设 _bRes = 此.取新寄存器()
+                此.写出("  " & _bRes & " = call i64 @\"xt_bytes_rfind\"(i64 " & 对象Xt & ", i64 " & 子Xt & ")")
+                此.写出("  store i64 " & _bRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_sL & ":")
+                设 _sRes = 此.取新寄存器()
+                此.写出("  " & _sRes & " = call i64 @\"xt_string_rfind\"(i64 " & 对象Xt & ", i64 " & 子Xt & ")")
+                此.写出("  store i64 " & _sRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_mL & ":")
                 设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i64 @\"xt_string_rfind\"(i64 " & 对象Xt & ", i64 " & 子Xt & ")")
+                此.写出("  " & res & " = load i64, i64* " & _rAddr)
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 子Xt & ")")
                 设 _r = [res, "i64"]
@@ -6163,8 +6348,29 @@
                 设 参1Xt = 此.确保I64(翻译参1[0], 翻译参1[1])
                 设 翻译参2 = 此.编译表达式(节点.调用参数[1])
                 设 参2Xt = 此.确保I64(翻译参2[0], 翻译参2[1])
+                // 批次三:字节集/字符串双类型分派(alloca 汇聚,防参数多块分派致 phi 前驱失效)
+                设 _rAddr = 此.取新寄存器()
+                此.写出("  " & _rAddr & " = alloca i64")
+                设 _tid = 此.读类型ID(对象Xt)
+                设 _isB = 此.取新寄存器()
+                此.写出("  " & _isB & " = icmp eq i32 " & _tid & ", 10")
+                设 _bL = 此.标(此.取新标签("repl.bytes"))
+                设 _sL = 此.标(此.取新标签("repl.str"))
+                设 _mL = 此.标(此.取新标签("repl.merge"))
+                此.写出("  br i1 " & _isB & ", label %" & _bL & ", label %" & _sL)
+                此.写出(_bL & ":")
+                设 _bRes = 此.取新寄存器()
+                此.写出("  " & _bRes & " = call i64 @\"xt_bytes_replace\"(i64 " & 对象Xt & ", i64 " & 参1Xt & ", i64 " & 参2Xt & ")")
+                此.写出("  store i64 " & _bRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_sL & ":")
+                设 _sRes = 此.取新寄存器()
+                此.写出("  " & _sRes & " = call i64 @xt_string_replace(i64 " & 对象Xt & ", i64 " & 参1Xt & ", i64 " & 参2Xt & ")")
+                此.写出("  store i64 " & _sRes & ", i64* " & _rAddr)
+                此.写出("  br label %" & _mL)
+                此.写出(_mL & ":")
                 设 res = 此.取新寄存器()
-                此.写出("  " & res & " = call i64 @xt_string_replace(i64 " & 对象Xt & ", i64 " & 参1Xt & ", i64 " & 参2Xt & ")")
+                此.写出("  " & res & " = load i64, i64* " & _rAddr)
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 参1Xt & ")")
                 此.写出("  call void @xt_release(i64 " & 参2Xt & ")")

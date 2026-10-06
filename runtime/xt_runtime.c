@@ -4290,6 +4290,282 @@ XTValue xt_file_flush(XTValue file_val) {
     return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
 }
 
+/* ==================== 批次三:字节集扩展 + 数值格式化 ==================== */
+
+// 内部助手:取 XTBytes,非法返回 NULL
+static XTBytes* _xt_bytes_of(XTValue v) {
+    if (!XT_IS_REAL_PTR(v)) return NULL;
+    if (((XTObject*)v)->type_id != XT_TYPE_BYTES) return NULL;
+    return (XTBytes*)v;
+}
+
+// 内部助手:按长度新建 XTBytes 并拷入数据
+static XTBytes* _xt_bytes_from_raw(const uint8_t* data, size_t len) {
+    XTBytes* b = (XTBytes*)xt_malloc(sizeof(XTBytes), XT_TYPE_BYTES);
+    b->capacity = len > 0 ? len : 1;
+    b->data = (uint8_t*)malloc(b->capacity);
+    if (len > 0) memcpy(b->data, data, len);
+    b->length = len;
+    return b;
+}
+
+// 到字节集(字符串) → 字节集(拷入字符串的 UTF-8 字节)
+XTValue xt_bytes_from_string(XTValue str_val) {
+    XTString* s = _xt_path_of(str_val);
+    if (!s) {
+        fprintf(stderr, "运行时错误: 到字节集 收到非字符串输入\n");
+        exit(1);
+    }
+    return (XTValue)_xt_bytes_from_raw((const uint8_t*)s->data, s->length);
+}
+
+// 字节集.长度(成员分派用) → 裸整数(与 xt_array_length/xt_dict_size 同 ABI,由调用方打标)
+size_t xt_bytes_length(XTValue bytes_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    if (!b) return 0;
+    return b->length;
+}
+
+// 字节集.截取(起, 止?) → 字节集(下标按字节,左闭右开;止缺省/越界到尾,起越界返空)
+XTValue xt_bytes_slice(XTValue bytes_val, XTValue start_val, XTValue end_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    if (!b) return (XTValue)_xt_bytes_from_raw(NULL, 0);
+    int64_t start = xt_to_int(start_val);
+    int64_t end = xt_to_int(end_val);
+    if (end < 0 || (size_t)end > b->length) end = (int64_t)b->length;
+    if (start < 0) start = 0;
+    if ((size_t)start > b->length) start = (int64_t)b->length;
+    if (end < start) end = start;
+    return (XTValue)_xt_bytes_from_raw(b->data + start, (size_t)(end - start));
+}
+
+// 字节集.寻找(子字节集, 起始?) → 字节位置,找不到 -1
+XTValue xt_bytes_find(XTValue bytes_val, XTValue sub_val, XTValue start_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    XTBytes* sub = _xt_bytes_of(sub_val);
+    if (!b || !sub) return XT_FROM_INT(-1);
+    int64_t start = xt_to_int(start_val);
+    if (start < 0) start = 0;
+    if (sub->length == 0) return XT_FROM_INT(start <= (int64_t)b->length ? start : (int64_t)b->length);
+    for (size_t i = (size_t)start; i + sub->length <= b->length; i++) {
+        if (memcmp(b->data + i, sub->data, sub->length) == 0) return XT_FROM_INT((int64_t)i);
+    }
+    return XT_FROM_INT(-1);
+}
+
+// 字节集.倒找(子字节集) → 最后出现位置,找不到 -1
+XTValue xt_bytes_rfind(XTValue bytes_val, XTValue sub_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    XTBytes* sub = _xt_bytes_of(sub_val);
+    if (!b || !sub) return XT_FROM_INT(-1);
+    if (sub->length == 0) return XT_FROM_INT((int64_t)b->length);
+    if (sub->length > b->length) return XT_FROM_INT(-1);
+    for (int64_t i = (int64_t)(b->length - sub->length); i >= 0; i--) {
+        if (memcmp(b->data + i, sub->data, sub->length) == 0) return XT_FROM_INT(i);
+    }
+    return XT_FROM_INT(-1);
+}
+
+// 字节集.替换(旧, 新) → 字节集(替换全部出现;旧为空集时原样返回)
+XTValue xt_bytes_replace(XTValue bytes_val, XTValue old_val, XTValue new_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    XTBytes* oldb = _xt_bytes_of(old_val);
+    XTBytes* newb = _xt_bytes_of(new_val);
+    if (!b || !oldb || !newb) return (XTValue)_xt_bytes_from_raw(NULL, 0);
+    if (oldb->length == 0) return (XTValue)_xt_bytes_from_raw(b->data, b->length);
+    // 先数出现次数定容量
+    size_t hits = 0;
+    for (size_t i = 0; i + oldb->length <= b->length; ) {
+        if (memcmp(b->data + i, oldb->data, oldb->length) == 0) { hits++; i += oldb->length; }
+        else i++;
+    }
+    size_t new_len = b->length + hits * (newb->length - oldb->length);
+    uint8_t* buf = (uint8_t*)malloc(new_len > 0 ? new_len : 1);
+    size_t w = 0;
+    for (size_t i = 0; i < b->length; ) {
+        if (i + oldb->length <= b->length && memcmp(b->data + i, oldb->data, oldb->length) == 0) {
+            memcpy(buf + w, newb->data, newb->length);
+            w += newb->length;
+            i += oldb->length;
+        } else {
+            buf[w++] = b->data[i++];
+        }
+    }
+    XTBytes* r = _xt_bytes_from_raw(buf, new_len);
+    free(buf);
+    return (XTValue)r;
+}
+
+// 字节集.取字节(位置) → 整(0-255;越界 -1)
+XTValue xt_bytes_get(XTValue bytes_val, XTValue idx_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    if (!b) return XT_FROM_INT(-1);
+    int64_t i = xt_to_int(idx_val);
+    if (i < 0 || (size_t)i >= b->length) return XT_FROM_INT(-1);
+    return XT_FROM_INT((int64_t)b->data[i]);
+}
+
+// 字节集.写字节(位置, 值) → 布尔(就地写,越界/值域外返假)
+XTValue xt_bytes_set(XTValue bytes_val, XTValue idx_val, XTValue val_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    if (!b) return XT_FALSE;
+    int64_t i = xt_to_int(idx_val);
+    int64_t v = xt_to_int(val_val);
+    if (i < 0 || (size_t)i >= b->length) return XT_FALSE;
+    if (v < 0 || v > 255) return XT_FALSE;
+    b->data[i] = (uint8_t)v;
+    return XT_TRUE;
+}
+
+// 字节集.到十六进制() → 字(大写连排,如 "E78E84";与字符串的 \XX 转义形态不同)
+XTValue xt_bytes_to_hex(XTValue bytes_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    if (!b) return (XTValue)xt_string_new("");
+    const char* hex = "0123456789ABCDEF";
+    char* buf = (char*)malloc(b->length * 2 + 1);
+    for (size_t i = 0; i < b->length; i++) {
+        buf[i * 2] = hex[b->data[i] >> 4];
+        buf[i * 2 + 1] = hex[b->data[i] & 0x0F];
+    }
+    XTString* r = xt_string_new_len(buf, b->length * 2);
+    free(buf);
+    return (XTValue)r;
+}
+
+// 字节集.分割(分隔字节值 0-255) → 数组<字节集>(保留空段,与字符串分割同风格)
+XTValue xt_bytes_split(XTValue bytes_val, XTValue sep_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    XTValue arr = (XTValue)xt_array_new(0);
+    if (!b) return arr;
+    int64_t sep = xt_to_int(sep_val);
+    if (sep < 0 || sep > 255) return arr;
+    uint8_t sb = (uint8_t)sep;
+    size_t seg_start = 0;
+    for (size_t i = 0; i <= b->length; i++) {
+        if (i == b->length || b->data[i] == sb) {
+            XTValue seg = (XTValue)_xt_bytes_from_raw(b->data + seg_start, i - seg_start);
+            xt_array_append(arr, seg);
+            xt_release(seg);
+            seg_start = i + 1;
+        }
+    }
+    return arr;
+}
+
+/* ---- 数值格式化 ---- */
+
+// 数学.到十六进制(x) → 字(大写无前缀;负数前加 "-";小数先截断取整)
+XTValue xt_math_to_hex(XTValue v) {
+    int64_t n = xt_to_int(v);
+    int neg = n < 0;
+    uint64_t u = neg ? (uint64_t)(-(n + 1)) + 1 : (uint64_t)n;
+    char tmp[24];
+    snprintf(tmp, sizeof(tmp), "%s%llX", neg ? "-" : "", (unsigned long long)u);
+    return (XTValue)xt_string_new(tmp);
+}
+
+// 数学.到八进制(x) → 字(无前缀;负数前加 "-")
+XTValue xt_math_to_oct(XTValue v) {
+    int64_t n = xt_to_int(v);
+    int neg = n < 0;
+    uint64_t u = neg ? (uint64_t)(-(n + 1)) + 1 : (uint64_t)n;
+    char tmp[28];
+    snprintf(tmp, sizeof(tmp), "%s%llo", neg ? "-" : "", (unsigned long long)u);
+    return (XTValue)xt_string_new(tmp);
+}
+
+// 数学.千分位(x, 小数位) → 字(整数部分三位分节;小数位>=0 定长舍入)
+XTValue xt_math_thousands(XTValue v, XTValue digits_val) {
+    int64_t digits = xt_to_int(digits_val);
+    if (digits < 0) digits = 0;
+    if (digits > 9) digits = 9;
+    char num[64];
+    snprintf(num, sizeof(num), "%.*f", (int)digits, xt_f64_of(v));
+    // 找小数点,整数部分插逗号
+    char out[96];
+    size_t w = 0;
+    size_t i = 0;
+    if (num[0] == '-') out[w++] = num[i++];
+    size_t int_len = 0;
+    while (num[i + int_len] && num[i + int_len] != '.') int_len++;
+    for (size_t j = 0; j < int_len; j++) {
+        if (j > 0 && (int_len - j) % 3 == 0) out[w++] = ',';
+        out[w++] = num[i + j];
+    }
+    i += int_len;
+    while (num[i]) out[w++] = num[i++];
+    out[w] = '\0';
+    return (XTValue)xt_string_new(out);
+}
+
+// 数学.到大写金额(x) → 字(中文大写人民币,如 "壹万贰仟叁佰肆拾伍元陆角柒分";无小数尾 "整")
+XTValue xt_math_to_rmb(XTValue v) {
+    static const char* digits_zh[] = {"零","壹","贰","叁","肆","伍","陆","柒","捌","玖"};
+    static const char* small_units[] = {"", "拾", "佰", "仟"};
+    static const char* big_units[] = {"", "万", "亿", "万亿"};
+    double d = xt_f64_of(v);
+    int neg = d < 0;
+    if (neg) d = -d;
+    // 先舍入到分,避免浮点尾巴(0.999 → 进位)
+    int64_t total_fen = (int64_t)llround(d * 100.0);
+    int64_t int_part = total_fen / 100;
+    int jiao = (int)((total_fen % 100) / 10);
+    int fen = (int)(total_fen % 10);
+    char out[160];
+    out[0] = '\0';
+    if (neg && total_fen > 0) strcat(out, "负");
+    if (int_part == 0) {
+        strcat(out, "零元");
+    } else {
+        // 按 4 位分级(个级/万级/亿级/万亿级)
+        int64_t groups[4];
+        int g = 0;
+        int64_t n = int_part;
+        while (n > 0 && g < 4) { groups[g++] = n % 10000; n /= 10000; }
+        int started = 0;      // 已产出更高位非零组
+        int pending_zero = 0; // 组间待补"零"(低组 < 1000 且非全零)
+        for (int gi = g - 1; gi >= 0; gi--) {
+            int64_t gv = groups[gi];
+            if (gv == 0) { if (started) pending_zero = 1; continue; }
+            if (started && (pending_zero || gv < 1000)) strcat(out, "零");
+            pending_zero = 0;
+            // 组内渲染:仟佰拾 + 数字,零折叠,尾零略
+            char seg[40];
+            seg[0] = '\0';
+            int zero_run = 0;
+            for (int pos = 3; pos >= 0; pos--) {
+                int64_t div = 1;
+                for (int k = 0; k < pos; k++) div *= 10;
+                int dig = (int)((gv / div) % 10);
+                if (dig == 0) {
+                    if (seg[0] != '\0') zero_run = 1;
+                    continue;
+                }
+                if (zero_run) { strcat(seg, "零"); zero_run = 0; }
+                strcat(seg, digits_zh[dig]);
+                strcat(seg, small_units[pos]);
+            }
+            // 组内前导零(如 0020 → 零贰拾)由组间规则处理,seg 从首个非零起
+            strcat(out, seg);
+            strcat(out, big_units[gi]);
+            started = 1;
+        }
+        strcat(out, "元");
+    }
+    if (jiao == 0 && fen == 0) {
+        strcat(out, "整");
+    } else {
+        if (jiao > 0) { strcat(out, digits_zh[jiao]); strcat(out, "角"); }
+        if (fen > 0) {
+            // 角位为零但有分:整数部分非零时补"零"(1.05→壹元零伍分;0.05→零元伍分)
+            if (jiao == 0 && int_part > 0) strcat(out, "零");
+            strcat(out, digits_zh[fen]);
+            strcat(out, "分");
+        }
+    }
+    return (XTValue)xt_string_new(out);
+}
+
 /**
  * @brief 字符串分割 (字面子串切分,同 Python split:保留空段,分隔符按整体字面匹配)
  */
