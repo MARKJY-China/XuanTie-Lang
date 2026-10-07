@@ -198,6 +198,9 @@ static unsigned char* xt_read_file_bytes(const char* u8path, int* outSize) {
    主循环下一轮正常退出,调用方统一执行一次 CloseWindow——避免与 XT_CloseWindow
    连用时二次 CloseWindow → rlUnloadRenderBatch 二次释放 → SIGABRT(issue #47) */
 static int xt_window_close_requested = 0;
+/* issue #56:关闭窗口() 幂等标记——raylib 的 CloseWindow 会卸载渲染批处理,
+   二次调用触发 rlUnloadRenderBatch 双重释放 → SIGABRT(macOS 实测)。置位后二次调用直接返回。 */
+static int xt_window_closed = 0;
 
 void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     // MSAA 4x:圆角矩形/斜边的 GPU 级抗锯齿(raylib 的 DrawRectangleRounded 是三角形扇
@@ -220,6 +223,7 @@ void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
 #endif
     InitWindow((int)xt_ni(w), (int)xt_ni(h), xt_get_cstr(title));
     xt_window_close_requested = 0; /* 新窗口重置"请求关闭"标志(issue #47) */
+    xt_window_closed = 0; /* 新窗口重置"已关闭"幂等标记(issue #56) */
 }
 
 uintptr_t XT_WindowShouldClose(void) {
@@ -227,6 +231,8 @@ uintptr_t XT_WindowShouldClose(void) {
 }
 
 void XT_CloseWindow(void) {
+    if (xt_window_closed) return; /* 幂等:二次调用直接返回(issue #56) */
+    xt_window_closed = 1;
     CloseWindow();
 }
 
