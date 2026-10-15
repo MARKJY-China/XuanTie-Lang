@@ -139,9 +139,38 @@ export function showContextMenu(x: number, y: number, items: ContextMenuEntry[])
 export const CONTEXT_SEP: unique symbol = Symbol('sep');
 
 /**
+ * 自绘下拉按钮:点开一个暗色菜单(复用 ctx-menu,带进出场动画)。
+ * 为什么不用原生 <select>:WebView2 的原生弹层不跟随 color-scheme,暗色主题下弹出亮块
+ * (实测 :root color-scheme:dark 无效,弹层仍是白底灰字、无圆角)。
+ */
+export function dropdownButton(label: string, items: () => ContextMenuEntry[], cls = ''): HTMLButtonElement {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'ds-dd ' + cls;
+  const t = document.createElement('span');
+  t.className = 'ds-dd-text';
+  t.textContent = label;
+  const ic = document.createElement('i');
+  ic.className = 'codicon codicon-chevron-down';
+  b.append(t, ic);
+  b.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const r = b.getBoundingClientRect();
+    showContextMenu(r.left, r.bottom + 2, items());
+  });
+  return b;
+}
+
+/** 改自绘下拉按钮的文字(状态变化后刷新标签) */
+export function dropdownLabel(b: HTMLButtonElement, label: string): void {
+  const t = b.querySelector('.ds-dd-text');
+  if (t) t.textContent = label;
+}
+
+/**
  * 向上展开的下拉菜单(输入区底部按钮专用):菜单底边贴 anchor 顶边(留 4px),
  * 左边缘对齐 anchor 左边缘(越界向右收),宽度至少与按钮同宽;点别处/右键关闭与
- * showContextMenu 一致。
+ * showContextMenu 一致(含收起飞出动画)。
  */
 export function showDropupMenu(anchor: HTMLElement, items: ContextMenuEntry[]): void {
   const root = document.getElementById('ctx-root') as HTMLElement;
@@ -167,8 +196,27 @@ export function showDropupMenu(anchor: HTMLElement, items: ContextMenuEntry[]): 
 
 export function closeContextMenu(): void {
   const root = document.getElementById('ctx-root') as HTMLElement;
-  root.classList.remove('open');
-  root.innerHTML = '';
+  if (!root.classList.contains('open')) return;
+  const menu = root.querySelector('.ctx-menu') as HTMLElement | null;
+  const done = (): void => {
+    root.classList.remove('open');
+    root.innerHTML = '';
+  };
+  if (!menu || menu.classList.contains('ctx-closing')) {
+    done();
+    return;
+  }
+  // 收起动画:先挂 .ctx-closing,动画结束(或兜底 140ms)后清 DOM;期间若重新打开,
+  // showContextMenu 会重置 innerHTML,计时器以菜单节点是否仍在文档中为准自动作废。
+  menu.classList.add('ctx-closing');
+  let fired = false;
+  const finish = (): void => {
+    if (fired) return;
+    fired = true;
+    if (menu.isConnected && menu.classList.contains('ctx-closing') && root.contains(menu)) done();
+  };
+  menu.addEventListener('animationend', finish, { once: true });
+  window.setTimeout(finish, 140);
 }
 
 export function showToast(message: string, kind: '' | 'ok' | 'err' = ''): void {

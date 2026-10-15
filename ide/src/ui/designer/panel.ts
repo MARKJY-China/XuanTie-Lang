@@ -10,9 +10,11 @@ import { layoutTree, type Measure } from './layout';
 import { paintDesign, type PaintResult } from './paint';
 import { valText, generateDesignFunction } from './generator';
 import { markBegin, markEnd } from './spec';
-import { COLOR_PALETTE, TOOLBOX, specOf } from './props';
+import { COLOR_PALETTE, GROUP_ORDER, PROP_SPECS, TOOLBOX, WIDGET_KEYS, specOf, type PropGroup } from './props';
 import {
   CONTEXT_SEP,
+  dropdownButton as ddButton,
+  dropdownLabel as ddLabel,
   showContextMenu,
   showCustomModal,
   type ContextMenuEntry,
@@ -88,35 +90,6 @@ function el(tag: string, cls: string, text?: string): HTMLElement {
   return e;
 }
 
-/**
- * 自绘下拉按钮:点开一个暗色菜单(复用 ctx-menu)。
- * 为什么不用原生 <select>:WebView2 的原生弹层不跟随 color-scheme,暗色主题下弹出亮块
- * (实测:设置里 :root color-scheme:dark 无效,弹层仍是白底灰字、无圆角)。
- */
-function ddButton(label: string, items: () => ContextMenuEntry[], cls = ''): HTMLButtonElement {
-  const b = document.createElement('button');
-  b.type = 'button';
-  b.className = 'ds-dd ' + cls;
-  const t = document.createElement('span');
-  t.className = 'ds-dd-text';
-  t.textContent = label;
-  const ic = document.createElement('i');
-  ic.className = 'codicon codicon-chevron-down';
-  b.append(t, ic);
-  b.addEventListener('click', (e) => {
-    e.stopPropagation();
-    const r = b.getBoundingClientRect();
-    showContextMenu(r.left, r.bottom + 2, items());
-  });
-  return b;
-}
-
-/** 改下拉按钮的文字(状态变化后刷新标签) */
-function ddLabel(b: HTMLButtonElement, label: string): void {
-  const t = b.querySelector('.ds-dd-text');
-  if (t) t.textContent = label;
-}
-
 /** 颜色值 → 预览色(画布同源的 12 色表;UI.色16/UI.色 由库解析,预览给出近似) */
 const SWATCH: Record<string, string> = {
   白: '#ffffff', 黑: '#000000', 红: '#ff5050', 绿: '#50dc50', 蓝: '#5078ff', 黄: '#ffdc3c',
@@ -160,6 +133,7 @@ export class DesignerPanel {
   private canvasHost: HTMLElement;
   private split: HTMLElement;
   private insp: HTMLElement;
+  private libPanel: HTMLElement;
   private issuesEl: HTMLElement;
 
   private regions: RegionRef[] = [];
@@ -178,6 +152,12 @@ export class DesignerPanel {
   private drag: DragState | null = null;
   private guides: HTMLElement[] = [];
   private hintTimer: number | undefined;
+  /** 检视面板:筛选词 / 折叠的段 / 待筛选行 / 段容器 / 当前追加目标 */
+  private filter = '';
+  private collapsed = new Set<string>();
+  private filterRows: Array<{ key: string; elm: HTMLElement; title: string }> = [];
+  private groupEls = new Map<string, HTMLElement>();
+  private appendTarget: HTMLElement | null = null;
 
   constructor(host: HTMLElement, private deps: DesignerDeps) {
     // 工具条:标题 + 文件/区 + 操作提示 + 状态徽标 + 刷新
@@ -206,13 +186,27 @@ export class DesignerPanel {
     refresh.addEventListener('click', () => this.open());
     bar.append(this.sub, this.picker, el('span', 'ds-tip', '拖动移动 · 角柄缩放 · 吸附对齐 · Ctrl+Z 撤销'), this.badge, refresh);
 
-    // 主体:画布 + 宽度可拖的分隔条 + 检视
+    // 主体:画布 | 控件库(独立面板) | 宽度可拖的分隔条 | 检视
     const body = el('div', 'ds-body');
     this.canvasHost = el('div', 'ds-canvas');
+    this.libPanel = el('div', 'ds-lib');
+    const libHead = el('div', 'ds-lib-head');
+    libHead.append(el('i', 'codicon codicon-library'), el('span', '', '控件库'));
+    const libList = el('div', 'ds-lib-list');
+    for (const g of TOOLBOX) {
+      libList.appendChild(el('div', 'ds-lib-group', g.group));
+      for (const w of g.widgets) {
+        const b = el('button', 'ds-lib-item', w);
+        b.title = '添加到选中的容器(选中叶子则插在其后)';
+        b.addEventListener('click', () => this.addWidget(w));
+        libList.appendChild(b);
+      }
+    }
+    this.libPanel.append(libHead, libList);
     this.split = el('div', 'ds-split');
     this.split.title = '拖动调整属性面板宽度';
     this.insp = el('div', 'ds-insp');
-    body.append(this.canvasHost, this.split, this.insp);
+    body.append(this.canvasHost, this.libPanel, this.split, this.insp);
 
     this.issuesEl = el('div', 'ds-issues');
     host.append(bar, body, this.issuesEl);
@@ -418,81 +412,181 @@ export class DesignerPanel {
     this.renderInspector();
   }
 
+  /**
+   * 检视面板(Godot 检视器式):节点标题栏 → 筛选框 → 按分组的属性行(标签左、编辑器右、
+   * 行尾 ↺ 还原) → 工具箱/编辑段。属性行只在"该键已存在"时出现,缺键用「＋ 属性」补
+   * (分组菜单,只列该控件真正读取的键,见 props.ts WIDGET_KEYS)。
+   */
   private renderInspector(): void {
     this.insp.innerHTML = '';
+    this.filterRows = [];
+    this.groupEls = new Map();
     const n = this.selected;
     const root = this.parsed?.root;
     if (!n) {
       this.insp.appendChild(el('div', 'ds-insp-hint', '点击画布中的控件查看/编辑属性;拖动可移动,角柄可缩放'));
       return;
     }
-    const 段 = (t: string): void => {
-      this.insp.appendChild(el('div', 'ds-sec', t));
-    };
-    const 行 = (label: string, val: string): void => {
-      const r = el('div', 'ds-row');
-      r.append(el('span', 'ds-k', label), el('span', 'ds-v', val));
-      this.insp.appendChild(r);
-    };
     const editable = this.parsed?.ok === true;
 
-    段('控件');
-    行('类型', n.kind === 'container' ? `容器 · ${n.widget}` : `控件 · ${n.widget}`);
-    if (n.varName) 行('变量名', n.varName);
-    else if (n.widget !== '空白' && n.widget !== '弹性') 行('变量名', '(内联叶子)');
-    行('源码行', String(n.line));
+    // 节点标题栏
+    const head = el('div', 'ds-nhead');
+    const sw = el('span', 'ds-chip', n.widget);
+    head.appendChild(sw);
+    head.appendChild(el('span', 'ds-chip-dim', n.kind === 'container' ? '容器' : '控件'));
+    head.appendChild(el('span', 'ds-chip-var', n.varName ?? '(内联叶子)'));
+    head.appendChild(el('span', 'ds-chip-dim', `行 ${n.line}`));
+    this.insp.appendChild(head);
+
+    if (editable) {
+      const search = document.createElement('input');
+      search.type = 'text';
+      search.className = 'ds-in ds-search';
+      search.placeholder = '筛选属性…';
+      search.value = this.filter;
+      search.addEventListener('input', () => {
+        this.filter = search.value.trim();
+        this.applyFilter();
+      });
+      this.insp.appendChild(search);
+    }
+
+    // 段:实参
     if (n.args.length > 0) {
-      段('实参');
-      n.args.forEach((a, i) => {
-        if (editable && (a.t === 'str' || a.t === 'num')) this.propTextRow(`#${i + 1}`, a);
-        else 行(`#${i + 1}`, valText(a));
+      this.section('实参', 'args', () => {
+        n.args.forEach((a, i) => {
+          if (editable && (a.t === 'str' || a.t === 'num')) this.propTextRow(`#${i + 1}`, a);
+          else {
+            const r = el('div', 'ds-prow');
+            r.append(el('span', 'ds-pk', `#${i + 1}`), el('span', 'ds-pv', valText(a)));
+            this.insp.appendChild(r);
+            this.filterRows.push({ key: `#${i + 1}`, elm: r, title: `实参 #${i + 1} ${valText(a)}` });
+          }
+        });
       });
     }
 
-    if (n.options.length > 0 || editable) {
-      段('选项(' + n.options.length + ')' + (editable ? '' : ' · 只读'));
-    }
-    for (const o of [...n.options]) {
-      if (editable) this.propRow(o.key, o.value);
-      else {
-        const r = el('div', 'ds-row');
-        r.append(el('span', 'ds-k', o.key), el('span', 'ds-v', valText(o.value)));
-        this.insp.appendChild(r);
-      }
+    // 段:属性 —— 该控件"全部可用键"平铺进分组(未设的给暗态占位,填值即写入)。
+    // 为什么不用「＋属性」下拉:菜单一长就溢出窗口、滚不动(实测),且缺键要靠翻菜单找;
+    // 平铺之后每个键都在它该在的位置,一眼能看到"能设什么、当前是什么"。
+    const setMap = new Map(n.options.map((o) => [o.key, o.value] as const));
+    const known = new Set<string>();
+    const groups = new Map<PropGroup | '其余', string[]>();
+    const push = (g: PropGroup | '其余', k: string): void => {
+      if (known.has(k)) return;
+      known.add(k);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g)!.push(k);
+    };
+    for (const k of WIDGET_KEYS[n.widget] ?? []) push(PROP_SPECS[k]?.group ?? '视觉', k);
+    for (const o of n.options) push(PROP_SPECS[o.key]?.group ?? '其余', o.key); // 未知键也留在"其余"
+    const order: Array<PropGroup | '其余'> = [...GROUP_ORDER, '其余'];
+    for (const g of order) {
+      const list = groups.get(g);
+      if (!list || list.length === 0) continue;
+      this.section(g === '其余' ? '其余(只读)' : g, 'opt:' + g, () => {
+        for (const k of list) {
+          const cur = setMap.get(k);
+          const sp = specOf(k);
+          if (cur !== undefined) {
+            if (editable && sp.kind !== 'readonly') {
+              this.propRow(k, cur, () => this.editTree((_r, n2) => removeOpt(n2, k), `${k} 已移除`));
+            } else {
+              const r = el('div', 'ds-prow');
+              r.append(el('span', 'ds-pk', k), el('span', 'ds-pv', valText(cur)));
+              if (editable) r.appendChild(el('span', 'ds-ro', '只读'));
+              this.row(r);
+              this.filterRows.push({ key: k, elm: r, title: k + ' ' + valText(cur) });
+            }
+          } else if (editable && sp.kind !== 'readonly') {
+            // 未设:暗态占位行,填值即写入(初值见 defaultValFor)
+            this.propRow(k, undefined, () => undefined);
+          } else if (cur === undefined && sp.kind !== 'readonly') {
+            const r = el('div', 'ds-prow dim');
+            r.append(el('span', 'ds-pk', k), el('span', 'ds-pv', '(未设)'));
+            this.row(r);
+            this.filterRows.push({ key: k, elm: r, title: k + ' 未设' });
+          }
+        }
+      });
     }
 
     if (editable && root) {
-      this.toolbox(n);
       const parent = findParent(root, n);
       const mode = moveMode(n, parent);
       const locked = lockedAxes(n, parent);
       const tags: string[] = [];
-      tags.push(mode === 'none' ? '根容器:在属性面板改 宽/高' : mode === 'xy' ? '拖动写 x/y' : '拖动写 平移x/y(不改兄弟排布)');
+      tags.push(mode === 'none' ? '根容器:改 宽/高 调整整体尺寸' : mode === 'xy' ? '拖动写 x/y' : '拖动写 平移x/y(不改兄弟排布)');
       if (locked.x || locked.y) tags.push('锁定轴:' + [locked.x ? '水平' : '', locked.y ? '垂直' : ''].filter(Boolean).join('/'));
-      段('编辑');
-      this.insp.appendChild(el('div', 'ds-k', tags.join(' · ')));
-      if (parent) {
-        const idx = parent.children.indexOf(n);
-        行('层级', `第 ${idx + 1} / ${parent.children.length} 项`);
-        const row = el('div', 'ds-actions');
-        const mk = (label: string, tip: string, op: LevelOp): void => {
-          const b = el('button', 'ds-btn ds-act', label);
-          b.title = tip;
-          b.addEventListener('click', () => this.doLevel(op));
-          row.appendChild(b);
-        };
-        mk('上移一层', '数组序前移(行/列 中即更靠左/上)', 'up');
-        mk('下移一层', '数组序后移(行/列 中即更靠右/下)', 'down');
-        mk('置顶', '移到数组末尾(叠/绝对 中为最上层)', 'top');
-        mk('置底', '移到数组开头(叠/绝对 中为最下层)', 'bottom');
-        this.insp.appendChild(row);
-      }
+      this.section('编辑', 'edit', () => {
+        this.row(el('div', 'ds-note-inline', tags.join(' · ')));
+        if (parent) {
+          const idx = parent.children.indexOf(n);
+          const r = el('div', 'ds-prow');
+          r.append(el('span', 'ds-pk', '层级'), el('span', 'ds-pv', `第 ${idx + 1} / ${parent.children.length} 项`));
+          this.row(r);
+          const lrow = el('div', 'ds-actions');
+          const mk = (label: string, tip: string, op: LevelOp): void => {
+            const b = el('button', 'ds-btn ds-act', label);
+            b.title = tip;
+            b.addEventListener('click', () => this.doLevel(op));
+            lrow.appendChild(b);
+          };
+          mk('上移一层', '数组序前移(行/列 中即更靠左/上)', 'up');
+          mk('下移一层', '数组序后移(行/列 中即更靠右/下)', 'down');
+          mk('置顶', '移到数组末尾(叠/绝对 中为最上层)', 'top');
+          mk('置底', '移到数组开头(叠/绝对 中为最下层)', 'bottom');
+          this.row(lrow);
+        }
+      });
     }
   }
 
-  // ---------------------------------------------------------------- 属性行(可编辑)
+  /** 分组段:可折叠标题(▸/▾);段内行注册进 filterRows 供筛选 */
+  private section(title: string, key: string, body: () => void): void {
+    const collapsed = this.collapsed.has(key);
+    const head = el('div', 'ds-ghead' + (collapsed ? ' collapsed' : ''));
+    head.appendChild(el('i', 'codicon ' + (collapsed ? 'codicon-chevron-right' : 'codicon-chevron-down')));
+    head.appendChild(el('span', 'ds-gtitle', title));
+    const wrap = el('div', 'ds-gbody' + (collapsed ? ' hidden' : ''));
+    head.addEventListener('click', () => {
+      if (this.collapsed.has(key)) this.collapsed.delete(key);
+      else this.collapsed.add(key);
+      this.renderInspector();
+    });
+    this.insp.append(head, wrap);
+    this.groupEls.set(key, wrap);
+    const before = this.insp.childNodes.length;
+    // body 直接往 wrap 里加:临时把追加目标切到 wrap
+    const prev = this.insp;
+    this.appendTarget = wrap;
+    try {
+      body();
+    } finally {
+      this.appendTarget = prev;
+    }
+    void before;
+  }
 
-  /** 通用提交:改树 → 写回;okMsg 出现在徽标上 */
+  /** 把行加进当前段(未在段内时加进面板根) */
+  private row(elm: HTMLElement): void {
+    (this.appendTarget ?? this.insp).appendChild(elm);
+  }
+
+  /** 筛选:按 key 子串过滤行;段内无命中则该段隐藏 */
+  private applyFilter(): void {
+    const q = this.filter.toLowerCase();
+    for (const r of this.filterRows) {
+      const hit = q === '' || r.title.toLowerCase().includes(q) || r.key.toLowerCase().includes(q);
+      r.elm.classList.toggle('hidden', !hit);
+    }
+    for (const [, wrap] of this.groupEls) {
+      const any = Array.from(wrap.querySelectorAll('.ds-prow')).some((e) => !e.classList.contains('hidden'));
+      wrap.classList.toggle('hidden', q !== '' && !any);
+    }
+  }
+
+  /** 分组段:可折叠标题(▸/▾);段内行注册进 filterRows 供筛选 */
   private editTree(mutate: (root: DesignNode, node: DesignNode) => boolean, okMsg: string): void {
     const root = this.parsed?.root;
     const n = this.selected;
@@ -509,13 +603,24 @@ export class DesignerPanel {
     }
   }
 
-  private propRow(key: string, cur: Val): void {
+  private propRow(key: string, curIn: Val | undefined, onRevert: () => void): void {
     const spec = specOf(key);
-    const row = el('div', 'ds-prow');
-    row.appendChild(el('span', 'ds-k', key));
+    const unset = curIn === undefined;
+    // 未设键走同一条渲染路径:给一个"空壳"值,编辑器自然显示为待填状态
+    const cur: Val = curIn ?? { t: 'num', raw: '' };
+    const row = el('div', 'ds-prow' + (unset ? ' dim' : ''));
+    row.dataset.key = key;
+    row.appendChild(el('span', 'ds-pk', key));
     const box = el('span', 'ds-pctl');
     row.appendChild(box);
+    const rev = el('button', 'ds-rev', '↺');
+    rev.title = '移除该键(回到库默认值)';
+    rev.addEventListener('click', () => onRevert());
+    if (unset) rev.classList.add('hidden');
+    row.appendChild(rev);
     if (spec.hint) row.title = spec.hint;
+    this.row(row);
+    this.filterRows.push({ key, elm: row, title: key + ' ' + (spec.hint ?? '') + (unset ? ' 未设' : '') });
 
     if (spec.kind === 'num') {
       const inp = document.createElement('input');
@@ -524,7 +629,7 @@ export class DesignerPanel {
       if (spec.min !== undefined) inp.min = String(spec.min);
       if (spec.max !== undefined) inp.max = String(spec.max);
       inp.value = cur.t === 'num' ? cur.raw : '';
-      inp.placeholder = cur.t === 'num' ? '' : valText(cur);
+      inp.placeholder = unset ? '未设' : cur.t === 'num' ? '' : valText(cur);
       inp.addEventListener('change', () => {
         const v = inp.value.trim();
         if (v === '') {
@@ -653,7 +758,6 @@ export class DesignerPanel {
       box.appendChild(el('span', 'ds-v', valText(cur)));
       if (spec.hint) box.appendChild(el('span', 'ds-ro', '只读'));
     }
-    this.insp.appendChild(row);
   }
 
   /** 实参里的字符串/数字:就地编辑(容器名引用、状态引用等不给改) */
@@ -662,7 +766,7 @@ export class DesignerPanel {
     if (!node) return;
     const idx = Number(label.slice(1)) - 1;
     const row = el('div', 'ds-prow');
-    row.appendChild(el('span', 'ds-k', label));
+    row.appendChild(el('span', 'ds-pk', label));
     const box = el('span', 'ds-pctl');
     const inp = document.createElement('input');
     inp.className = 'ds-in ds-text';
@@ -687,7 +791,8 @@ export class DesignerPanel {
     });
     box.appendChild(inp);
     row.appendChild(box);
-    this.insp.appendChild(row);
+    this.row(row);
+    this.filterRows.push({ key: label, elm: row, title: '实参 ' + label });
   }
 
   /** 自定义颜色输入(走 IDE 自己的弹窗,不用 window.prompt —— WebView2 内不可靠) */
@@ -726,34 +831,6 @@ export class DesignerPanel {
   }
 
   // ---------------------------------------------------------------- 工具箱
-
-  private toolbox(node: DesignNode): void {
-    this.insp.appendChild(el('div', 'ds-sec', '工具箱'));
-    const row = el('div', 'ds-actions');
-    const sel = ddButton('选择控件…', () =>
-      TOOLBOX.flatMap((g, gi) => [
-        ...(gi > 0 ? [CONTEXT_SEP as ContextMenuEntry] : []),
-        { label: g.group, header: true } as ContextMenuEntry,
-        ...g.widgets.map((w) => ({ label: w, action: () => this.addWidget(w) }) as ContextMenuEntry),
-      ]),
-    );
-    sel.title = '把新控件加进选中的容器(或选中控件的父容器)';
-    row.appendChild(sel);
-    const bCopy = el('button', 'ds-btn ds-act', '复制');
-    bCopy.title = '深拷贝选中控件(容器会拿到新变量名),插在其后';
-    bCopy.addEventListener('click', () => this.duplicateSelected());
-    const bDel = el('button', 'ds-btn ds-act', '删除');
-    bDel.title = '从父容器中删除选中控件(可 Ctrl+Z 撤销)';
-    bDel.addEventListener('click', () => this.deleteSelected());
-    row.append(bCopy, bDel);
-    this.insp.appendChild(row);
-    const hint = el(
-      'div',
-      'ds-k',
-      node.kind === 'container' ? '添加目标:选中的容器(追加为其子项)' : '添加目标:选中控件的父容器(插在其后)',
-    );
-    this.insp.appendChild(hint);
-  }
 
   private addWidget(widget: string): void {
     const root = this.parsed?.root;
