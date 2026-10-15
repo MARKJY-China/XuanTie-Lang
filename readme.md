@@ -21,7 +21,7 @@
 
 
 <p align="center">
-  <img src="assets/xuantie_logo_dark_256px.png" width="120" alt="玄铁徽标"/>
+  <img src="assets/big-code-icon-redius.png" width="120" alt="玄铁徽标"/>
   <br>
   <strong>重剑无锋，大巧不工</strong>
 </p>
