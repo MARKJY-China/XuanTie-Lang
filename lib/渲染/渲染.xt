@@ -12,14 +12,16 @@
 //   }
 //   R.关闭窗口()
 //
-// 缩放语义(issue #22「渲染库跨平台缩放」第一层落地):
+// 缩放语义(issue #22「渲染库跨平台缩放」):
 //   - 绘制坐标工作于「逻辑画布」——取屏幕宽/取屏幕高(HIGHDPI 下数值不变,如 800×600)
 //   - 物理像素由库处理——取渲染宽/取渲染高(HIGHDPI 下为逻辑尺寸 × 缩放比,如 1600×1200)
 //   - 高清屏(macOS Retina / Linux 高分屏)自动 2x framebuffer;Windows 已声明
 //     Per-Monitor DPI Aware V2——窗口跨 DPI 显示器不被系统强制拉伸
 //   - 图片纹理:加载纹理 在 2x 屏幕下自动优先选「文件名@2x.扩展名」变体,缺失回退原图
-//   - 开发者按逻辑坐标写界面即可,无需关心物理像素;SVG/@2x 命名/逻辑单位抽象等
-//     后续层仍在 issue #22 设计中
+//   - 坐标系抽象:取缩放系数() 查询当前缩放(2x 屏=2.0、100%=1.0);
+//     转像素(逻辑值) / 转逻辑(像素值) 双向换算——开发者按逻辑坐标写界面,
+//     截图工具量出的物理像素用 转逻辑 反算回逻辑坐标
+//   - 开发者按逻辑坐标写界面即可,无需关心物理像素
 //
 // 平台说明(issue #60「渲染库 Linux 不支持 Wayland 原生」):
 //   - Linux 附带 libraylib.linux-amd64.a:GLFW 双后端(Wayland+X11)构建,
@@ -43,6 +45,9 @@
 外 函 XT_GetScreenHeight(): 整
 外 函 XT_GetRenderWidth(): 整
 外 函 XT_GetRenderHeight(): 整
+外 函 XT_GetWindowScale(): 小数
+外 函 XT_ScaleToPixel(v: 小数): 小数
+外 函 XT_ScaleToLogical(v: 小数): 小数
 外 函 XT_SetWindowTitle(title: 字): 空
 外 函 XT_SetWindowResizable(on: 整): 空
 外 函 XT_SetWindowUndecorated(on: 整): 空
@@ -597,6 +602,21 @@
 // 获取渲染缓冲高度——framebuffer 物理像素
 公 函 取渲染高() {
     返 XT_GetRenderHeight()
+}
+
+// 窗口缩放系数——framebuffer 物理像素 ÷ 逻辑画布(@2x 下为 2.0、100% 下为 1.0;issue #22 坐标系抽象)
+公 函 取缩放系数() {
+    返 XT_GetWindowScale()
+}
+
+// 逻辑单位 → 物理像素(逻辑值 × 缩放系数;换算在桥内完成)
+公 函 转像素(逻辑值) {
+    返 XT_ScaleToPixel(逻辑值)
+}
+
+// 物理像素 → 逻辑单位(像素值 ÷ 缩放系数;截图工具量出的像素坐标反算用)
+公 函 转逻辑(像素值) {
+    返 XT_ScaleToLogical(像素值)
 }
 
 // ============================================================

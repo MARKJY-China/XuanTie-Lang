@@ -263,6 +263,27 @@ uintptr_t XT_GetRenderHeight(void) {
     return XT_FROM_INT(GetRenderHeight());
 }
 
+// 窗口缩放系数 = framebuffer 物理像素 / 逻辑画布（HIGHDPI @2x 下为 2.0，100% 下为 1.0；issue #22 坐标系抽象）
+uintptr_t XT_GetWindowScale(void) {
+    int sw = GetScreenWidth();
+    if (sw <= 0) return xt_make_float(1.0);
+    return xt_make_float((double)GetRenderWidth() / (double)sw);
+}
+
+// 逻辑单位 → 物理像素（换算在桥内完成，玄铁侧函数体无浮点算术）
+uintptr_t XT_ScaleToPixel(uintptr_t v) {
+    int sw = GetScreenWidth();
+    if (sw <= 0) return xt_make_float(xt_get_float(v));
+    return xt_make_float(xt_get_float(v) * (double)GetRenderWidth() / (double)sw);
+}
+
+// 物理像素 → 逻辑单位（截图工具量出的物理像素反算回逻辑坐标）
+uintptr_t XT_ScaleToLogical(uintptr_t v) {
+    int sw = GetScreenWidth();
+    if (sw <= 0) return xt_make_float(xt_get_float(v));
+    return xt_make_float(xt_get_float(v) * (double)sw / (double)GetRenderWidth());
+}
+
 void XT_SetWindowTitle(uintptr_t title) {
     const char* utf8 = xt_get_cstr(title);
 #ifdef _WIN32
