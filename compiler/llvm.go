@@ -138,6 +138,9 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	c.declaredGlobals["文件.写"] = true
 	c.symbolTable["文件.存在?"] = SymbolInfo{AddrReg: "@\"xt_file_exists\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["文件.存在?"] = true
+	// 文件.修改时间(路径):返回 结果 容器,值为秒级时间戳(issue #67 桥陈旧判定需要)
+	c.symbolTable["文件.修改时间"] = SymbolInfo{AddrReg: "@\"xt_file_mtime\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["文件.修改时间"] = true
 	// 文件.删(路径):带重试的删除,结果容器带错误(与自举编译器一侧对齐)
 	c.symbolTable["文件.删"] = SymbolInfo{AddrReg: "@\"xt_file_delete\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["文件.删"] = true
@@ -327,6 +330,7 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare i64 @xt_file_read(i64)\n")
 	res.WriteString("declare i64 @xt_file_write(i64, i64)\n")
 	res.WriteString("declare i64 @xt_file_exists(i64)\n")
+	res.WriteString("declare i64 @xt_file_mtime(i64)\n")
 	res.WriteString("declare i64 @xt_file_delete(i64)\n")
 	res.WriteString("declare i64 @xt_http_request(i64)\n")
 	res.WriteString("declare i64 @xt_math_random(i64)\n")
@@ -1893,6 +1897,14 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					xtVal := c.ensureI64(pathReg, pathType)
 					res := c.nextReg()
 					c.emit("  %s = call i64 @xt_file_exists(i64 %s)", res, xtVal)
+					c.emit("  call void @xt_release(i64 %s)", xtVal)
+					return res, "i64", ""
+				} else if e.Member.Value == "修改时间" {
+					// 文件.修改时间(路径):结果容器,.值为秒级时间戳(issue #67 判定桥 .o 是否陈旧)
+					pathReg, pathType, _ := c.compileExpression(e.Arguments[0])
+					xtVal := c.ensureI64(pathReg, pathType)
+					res := c.nextReg()
+					c.emit("  %s = call i64 @xt_file_mtime(i64 %s)", res, xtVal)
 					c.emit("  call void @xt_release(i64 %s)", xtVal)
 					return res, "i64", ""
 				} else if e.Member.Value == "删" {
