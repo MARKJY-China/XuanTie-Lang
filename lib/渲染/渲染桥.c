@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <math.h>   // llround(issue #69 数值分派)
 #if !defined(_WIN32)
@@ -1460,6 +1461,118 @@ uintptr_t XT_SynthSoundEx(uintptr_t freq_hz, uintptr_t ms, uintptr_t wave, uintp
     }
     xt_snd_pool[slot] = s2;
     xt_synth_pcm[slot] = pcm;                    // 保活;XT_UnloadSound 释放
+    xt_snd_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
+// 扫频带通(issue #94 扩展)——白噪等波形通过中心频率随时间扫动的 SVF 带通 = 风声/呜咽
+// 方向: 0 升(起始→终止) 1 降(终止→起始) 2 往复(升→降往返,呜咽感)
+typedef struct { double f, q, low, band; } XtSvf;
+static double xt_svf_bp(XtSvf* sv, double in) {
+    double low = sv->low, band = sv->band;
+    low += sv->f * band;
+    double high = in - low - sv->q * band;
+    band += sv->f * high;
+    sv->low = low; sv->band = band;
+    return band;
+}
+uintptr_t XT_SynthSoundSweep(uintptr_t freq_hz, uintptr_t ms, uintptr_t wave, uintptr_t vol,
+                             uintptr_t f0h, uintptr_t f1h, uintptr_t qh, uintptr_t dir) {
+    int slot = xt_snd_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    double f = xt_get_float(freq_hz);
+    int m = (int)xt_ni(ms);
+    int wv = (int)xt_ni(wave);
+    double v = xt_get_float(vol);
+    double f0 = xt_get_float(f0h), f1 = xt_get_float(f1h);
+    double q = xt_get_float(qh); double q_target = q;   // 带宽平滑目标(随机段切换时渐变,避免爆音)
+    int d = (int)xt_ni(dir);
+    if (f <= 0.0) f = 440.0;
+    if (m <= 0) m = 120;
+    if (m > 10000) m = 10000;
+    if (wv < 0) wv = 0; if (wv > 4) wv = 4;
+    if (v <= 0.0) v = 0.35; if (v > 1.0) v = 1.0;
+    if (f0 < 20.0) f0 = 20.0; if (f0 > 8000.0) f0 = 8000.0;
+    if (f1 < 20.0) f1 = 20.0; if (f1 > 8000.0) f1 = 8000.0;
+    if (q <= 0.0) q = 0.8; if (q > 4.0) q = 4.0; if (q < 0.02) q = 0.02;
+    if (d < 0) d = 0; if (d > 4) d = 4;
+    const int rate = 22050;
+    int n = (int)((long long)rate * m / 1000);
+    if (n < 1) n = 1;
+    short* pcm = (short*)malloc(sizeof(short) * (size_t)n);
+    if (!pcm) return XT_FROM_INT(0);
+    double w = 2.0 * 3.14159265358979323846 * f / (double)rate;
+    double ph = 0.0;
+    unsigned int rng = (unsigned int)time(NULL) ^ (unsigned int)((uintptr_t)pcm >> 4) ^ 0x9e3779b9u;   // 每次调用种子不同(每次播放随机)
+    double fc = (f0 + f1) * 0.5, seg_from = fc, seg_to = fc; int seg_i = 1, seg_len = 1, pause_left = 0;   // 随机滑行状态(含随机停顿)
+    XtSvf sv; sv.f = 0.0; sv.q = q; sv.low = 0.0; sv.band = 0.0;
+    int fade = rate / 100; if (fade > n / 2) fade = n / 2;
+    for (int i = 0; i < n; i++) {
+        double x;
+        if (wv == 4) {
+            rng = rng * 1664525u + 1013904223u;
+            x = ((double)(rng >> 8) / 16777216.0) * 2.0 - 1.0;
+        } else {
+            if (wv == 0) x = sin(ph);
+            else if (wv == 1) x = (ph < 3.14159265358979323846) ? ph / 3.14159265358979323846 * 2.0 - 1.0 : 1.0 - (ph - 3.14159265358979323846) / 3.14159265358979323846 * 2.0;
+            else if (wv == 2) x = ph / 3.14159265358979323846 * 2.0 - 1.0;
+            else x = (ph < 3.14159265358979323846) ? 1.0 : -1.0;
+            ph += w;
+            if (ph >= 2.0 * 3.14159265358979323846) ph -= 2.0 * 3.14159265358979323846;
+        }
+        double t = (double)i / (double)(n - 1);
+        double tt = t;
+        double fc;
+        if (d == 3) {   // 随机滑行:每段 600~1200ms 滑到随机端点,方向/范围/速度随机;30% 概率随机停顿 200~600ms;带宽(共振)每段 5%~25% 随机
+            if (seg_i >= seg_len) {
+                if (pause_left <= 0 && ((double)(rng >> 8) / 16777216.0) < 0.3) {
+                    pause_left = (int)(rate * (0.2 + ((double)(rng >> 8) / 16777216.0) * 0.4));
+                }
+                if (pause_left > 0) {
+                    pause_left--;
+                } else {
+                    seg_from = fc;
+                    seg_to = f0 + (f1 - f0) * ((double)(rng >> 8) / 16777216.0);
+                    seg_len = (int)(rate * (0.6 + ((double)(rng >> 8) / 16777216.0) * 0.6));
+                    if (seg_len < 1) seg_len = 1;
+                    seg_i = 0;
+                    q_target = 0.025 + ((double)(rng >> 8) / 16777216.0) * 0.1;   // 带宽 5%~25% 随机(渐变到达)
+                }
+            }
+            fc = seg_from + (seg_to - seg_from) * ((double)seg_i / (double)seg_len);
+            seg_i++;
+        } else if (d == 4) {   // 静止:中心频率固定(长期铺垫氛围,如 180Hz 低频风声底)
+            fc = f0;
+        } else {
+            if (d == 1) tt = 1.0 - t;
+            else if (d == 2) tt = (t < 0.5) ? t * 2.0 : (1.0 - t) * 2.0;
+            fc = f0 + (f1 - f0) * tt;
+        }
+        sv.f = 2.0 * sin(3.14159265358979323846 * fc / (double)rate);
+        sv.q += (q_target - sv.q) * 0.001;   // 带宽平滑过渡(~45ms),消除段切换爆音
+        double y = xt_svf_bp(&sv, x) * (2.0 * sv.q) * 0.5;   // 归一留峰值余量:噪声峰值因子高,全幅会顶满饱和(炸麦)
+        double env = 1.0;
+        if (i < fade) env = (double)i / (double)fade;
+        if (i > n - fade) env = (double)(n - i) / (double)fade;
+        double s = tanh(y * v * 2.0) / tanh(2.0) * 32767.0;   // 温和软限幅(不方波化)
+        s *= env;
+        if (s > 32767.0) s = 32767.0;
+        if (s < -32767.0) s = -32767.0;
+        pcm[i] = (short)s;
+    }
+    Wave wv2;
+    wv2.frameCount = (unsigned int)n;
+    wv2.sampleRate = (unsigned int)rate;
+    wv2.sampleSize = 16;
+    wv2.channels = 1;
+    wv2.data = pcm;
+    Sound s2 = LoadSoundFromWave(wv2);
+    if (s2.stream.buffer == NULL || s2.frameCount == 0) {
+        free(pcm);
+        return XT_FROM_INT(0);
+    }
+    xt_snd_pool[slot] = s2;
+    xt_synth_pcm[slot] = pcm;
     xt_snd_used[slot] = 1;
     return XT_FROM_INT(slot + 1);
 }
