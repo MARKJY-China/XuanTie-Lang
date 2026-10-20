@@ -1194,6 +1194,11 @@ static double xt_peak_run(XtPeak* p, double x) {
 
 // freeverb 简化混响(mono: 4 comb + 2 allpass;tunings 按 22050 采样率折算)
 typedef struct { double* buf; int idx, size; double fb, damp, damp_lp; double mod_ph, mod_sp; } XtComb;
+// 混响坑位备忘(完整版:docs/混响实现踩坑记录.md, issue #94):
+// - freeverb(comb+allpass) 尾音金属薄钢板感 → 换 FDN,勿回退
+// - FDN 线长须质数互质,否则模态拍频"起伏/双音"
+// - allpass 必须全通(分子带 fb):缺 fb 高频增益>1 = 放大器 → 尾音饱和方块波"甩水"
+// - 湿音增益从输出侧补,勿靠注入硬顶(tanh 饱和 = 方块波)
 typedef struct { double* buf; int idx, size; double fb; double mod_ph, mod_sp; } XtAllpass;
 typedef struct { double* buf; int idx, size; } XtDelay;
 // FDN 反馈延迟网络(issue #94 混响升级:8 线交叉互连,能量循环扩散,无 comb 金属共振)
