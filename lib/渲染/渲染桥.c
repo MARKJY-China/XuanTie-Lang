@@ -1155,18 +1155,32 @@ static double xt_rng_next(void) {
 }
 
 // 单振荡器波形采样(相位角 rad):0=正弦 1=三角 2=锯齿 3=方波 4=白噪
-static double xt_osc_sample(int wave, double ph) {
+// polyBLEP 带限修正窗:消除锯齿/方波在 Nyquist 之上的谐波混叠折叠(短周期"抖动"根因)
+// 听感验收(2026-10-20):修复后 450Hz 混叠杂散 161.8→2.5,抖动消除;方波≈FL 3xOsc 方波套 5735Hz 61% 低通(FL EQ2 实测对比),
+//   柔和但干净——22050 Nyquist 上限 + polyBLEP 滚降所致,用户拍板保持现状。详见 docs/波形带限与听感验收记录.md
+static double xt_poly_blep(double t, double dt) {
+    if (t < dt) {
+        t /= dt;
+        return t + t - t * t - 1.0;
+    } else if (t > 1.0 - dt) {
+        t = (t - 1.0) / dt;
+        return t * t + t + t + 1.0;
+    }
+    return 0.0;
+}
+static double xt_osc_sample(int wave, double ph, double dt) {
     const double tau = 2.0 * 3.14159265358979323846;
     switch (wave) {
         case 1: { // 三角
             double p = fmod(ph, tau);
             return 4.0 * fabs(p / tau - 0.5) - 1.0; }
-        case 2: { // 锯齿(上升)
-            double p = fmod(ph, tau);
-            return 2.0 * (p / tau) - 1.0; }
-        case 3: { // 方波(50% 占空)
-            double p = fmod(ph, tau);
-            return (p < tau / 2.0) ? 1.0 : -1.0; }
+        case 2: { // 锯齿(上升)+ polyBLEP 带限
+            double t = fmod(ph, tau) / tau;
+            return 2.0 * t - 1.0 - xt_poly_blep(t, dt); }
+        case 3: { // 方波(50% 占空)+ polyBLEP 带限
+            double t = fmod(ph, tau) / tau;
+            double v = (t < 0.5) ? 1.0 : -1.0;
+            return v + xt_poly_blep(t, dt) - xt_poly_blep(fmod(t + 0.5, 1.0), dt); }
         case 4:  return xt_rng_next();                 // 白噪
         default: return sin(ph);                       // 正弦
     }
@@ -1352,7 +1366,7 @@ uintptr_t XT_SynthSoundEx(uintptr_t freq_hz, uintptr_t ms, uintptr_t wave, uintp
 
     for (int i = 0; i < n; i++) {
         // 1) 波形
-        double s = xt_osc_sample(wv, w * (double)i);
+        double s = xt_osc_sample(wv, w * (double)i, w / (2.0 * 3.14159265358979323846));
         // 2) ADSR 包络 × 音量
         double env;
         if (i < a_n) env = (double)i / (double)a_n;
@@ -1676,7 +1690,7 @@ uintptr_t XT_SynthSoundMulti(uintptr_t freq_hz, uintptr_t ms, uintptr_t osc_coun
     for (int i = 0; i < n; i++) {
         // 1) 多振荡器混合(各自 频率比 × 基频,加权累加)
         double s = 0.0;
-        for (int k = 0; k < cnt; k++) s += vv[k] * xt_osc_sample(wv[k], w[k] * (double)i);
+        for (int k = 0; k < cnt; k++) s += vv[k] * xt_osc_sample(wv[k], w[k] * (double)i, w[k] / (2.0 * 3.14159265358979323846));
         // 2) ADSR 包络(音量已并入各振荡器权重)
         double env;
         if (i < a_n) env = (double)i / (double)a_n;
