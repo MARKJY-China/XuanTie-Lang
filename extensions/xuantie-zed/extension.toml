@@ -1,0 +1,14 @@
+id = "xuantie-language"
+name = "Xuantie Language"
+version = "0.1.0"
+schema_version = 1
+authors = ["user2"]
+description = "XuanTie (玄铁) language support for Zed: tree-sitter syntax highlighting"
+repository = "https://github.com/MARKJY-China/XuanTie-Lang"
+license = "MIT"
+
+# grammar 以预编译 wasm 形式随扩展分发（grammars/xuantie.wasm），
+# repository/rev 记录 grammar.js 源码所在（玄铁主仓库），Zed 检测到本地 wasm 即直接加载。
+[grammars.xuantie]
+repository = "https://github.com/MARKJY-China/XuanTie-Lang"
+rev = "3f182e0491d602c6ae0906940ee854a3472a40aa"
