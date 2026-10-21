@@ -61,6 +61,9 @@ permissions:
 
 jobs:
   dmg:
+    # 用最新 runner(编译 SDK 最新):红绿灯样式由编译时的 SDK 版本决定,
+    # macOS 26 的红绿灯比 macOS 14 的大一圈、渲染样式不同——
+    # 若用 macos-14 打包,产物在 macOS 26 上会退化成旧样式,故此处不要沿用主仓库工具链的 macos-14 惯例
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
