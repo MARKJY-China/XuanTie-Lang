@@ -5,7 +5,9 @@ use tauri::{AppHandle, Manager};
 
 fn find_on_path(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var("PATH").ok()?;
-    for dir in path_var.split(';') {
+    // PATH 分隔符按平台:Windows 用 ;,macOS/Linux 用 :
+    let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+    for dir in path_var.split(sep) {
         let dir = dir.trim().trim_matches('"');
         if dir.is_empty() {
             continue;

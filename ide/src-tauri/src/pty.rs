@@ -52,9 +52,15 @@ pub async fn pty_start(
             c
         }
         None => {
-            let mut c = CommandBuilder::new("powershell.exe");
-            c.arg("-NoLogo");
-            c
+            // 默认 shell 按平台选择:Windows=PowerShell,其他=用户 SHELL(通常 /bin/zsh)
+            if cfg!(target_os = "windows") {
+                let mut c = CommandBuilder::new("powershell.exe");
+                c.arg("-NoLogo");
+                c
+            } else {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+                CommandBuilder::new(shell)
+            }
         }
     };
     if !cwd.is_empty() {
@@ -162,4 +168,14 @@ pub async fn pty_kill(state: State<'_, AppState>, session: String) -> Result<(),
         // master 随结构体丢弃,ConPTY 句柄随之关闭
     }
     Ok(())
+}
+
+/// 清空全部 pty 会话(窗口销毁/重建时调用,防残留会话导致前端重建后"会话已存在")
+pub fn kill_all(state: &tauri::State<'_, AppState>) {
+    let Ok(mut map) = state.pty.lock() else {
+        return;
+    };
+    for (_, mut s) in map.drain() {
+        let _ = s.killer.kill();
+    }
 }

@@ -1,5 +1,6 @@
 // 设置缓存与工具链路径解析(设置 → PATH → 工作区约定位置 → xtc 锚定位置)
 import * as backend from './backend';
+import { invoke } from '@tauri-apps/api/core';
 import { dirname } from './util';
 import { defaultSettings, type AppSettings, type TreeDisplay } from './types';
 
@@ -22,8 +23,14 @@ export function getSettings(): AppSettings {
 }
 
 export async function saveSettings(next: AppSettings): Promise<void> {
+  const recentChanged =
+    (next.recentWorkspaces ?? []).join('\u0000') !== (cache.recentWorkspaces ?? []).join('\u0000');
   cache = next;
   await backend.settingsSave(JSON.stringify(next, null, 2));
+  // macOS:仅当最近工程列表变化时重建系统菜单(避免每次设置保存都全量重建)
+  if (recentChanged && navigator.userAgent.includes('Macintosh')) {
+    await invoke('menu_sync_recent').catch(() => undefined);
+  }
 }
 
 async function valid(p: string | undefined): Promise<string | null> {
@@ -57,31 +64,34 @@ export async function resolveTiepm(): Promise<string | null> {
   }
 }
 
+// 工具可执行文件后缀:Windows=.exe,其他平台无后缀
+const EXE = navigator.userAgent.includes('Windows') ? '.exe' : '';
+
 // xt_lsp 解析链:
-// ① 设置 ② PATH ③ <工作区>\lsp\xt_lsp.exe(玄铁仓库开发布局)
-// ④ xtc.exe 同目录(发行布局) ⑤⑥ 从 xtc 目录向上 1-2 级找 lsp\xt_lsp.exe
-//    (开发布局 build\env\xtc.exe → 仓库根 lsp\xt_lsp.exe;用户自己的工程靠 ④⑤⑥ 兜底)
+// ① 设置 ② PATH ③ <工作区>/lsp/xt_lsp(玄铁仓库开发布局)
+// ④ xtc 同目录(发行布局) ⑤⑥ 从 xtc 目录向上 1-2 级找 lsp/xt_lsp
+//    (开发布局 build/env/xtc → 仓库根 lsp/xt_lsp;用户自己的工程靠 ④⑤⑥ 兜底)
 export async function resolveLspServer(workspace: string): Promise<string | null> {
   const hit = await valid(cache.lspServerPath);
   if (hit) return hit;
   try {
-    const onPath = await backend.toolLocate('xt_lsp');
+    const onPath = await backend.toolLocate(`xt_lsp${EXE}`);
     if (onPath) return onPath;
   } catch {
     // PATH 无,继续后面的候选
   }
   const candidates: string[] = [];
   if (workspace) {
-    candidates.push(backend.joinPath(backend.joinPath(workspace, 'lsp'), 'xt_lsp.exe'));
+    candidates.push(backend.joinPath(backend.joinPath(workspace, 'lsp'), `xt_lsp${EXE}`));
   }
   const xtc = await resolveXtc();
   if (xtc) {
     const dir = dirname(xtc);
     const up1 = dirname(dir);
     const up2 = dirname(up1);
-    candidates.push(backend.joinPath(dir, 'xt_lsp.exe'));
-    candidates.push(backend.joinPath(backend.joinPath(up1, 'lsp'), 'xt_lsp.exe'));
-    candidates.push(backend.joinPath(backend.joinPath(up2, 'lsp'), 'xt_lsp.exe'));
+    candidates.push(backend.joinPath(dir, `xt_lsp${EXE}`));
+    candidates.push(backend.joinPath(backend.joinPath(up1, 'lsp'), `xt_lsp${EXE}`));
+    candidates.push(backend.joinPath(backend.joinPath(up2, 'lsp'), `xt_lsp${EXE}`));
   }
   for (const c of candidates) {
     if (await backend.fsExists(c)) return c;

@@ -1,6 +1,7 @@
 // DOM 骨架、面板尺寸分割条、VSCode 式菜单栏、自绘标题栏(纯 DOM,无框架)
-// 图标纪律(AGENTS.md):禁止 Emoji,一律 @vscode/codicons + 玄铁 .ico
-import xtIco from '../assets/xuantie.ico';
+// 图标纪律(AGENTS.md):禁止 Emoji,一律 @vscode/codicons + 玄铁图标
+// 窗口左上角图标:IDE 专属橙色图标(与 Dock/系统图标同源,不用玄铁语言标)
+import xtIco from '../assets/xt-ide.ico';
 
 export interface LayoutHandles {
   app: HTMLElement;
@@ -75,8 +76,8 @@ export interface LayoutHandles {
 }
 
 const TEMPLATE = `
-<div id="toolbar" data-tauri-drag-region>
-  <img class="titlebar-ico" src="${xtIco}" alt="" draggable="false" data-tauri-drag-region />
+<div id="toolbar">
+  <img class="titlebar-ico" src="${xtIco}" alt="" draggable="false" />
   <div class="menubar">
     <button class="menu-btn" id="menu-btn-file">文件(F)</button>
     <button class="menu-btn" id="menu-btn-edit">编辑(E)</button>
@@ -394,27 +395,72 @@ export function initMenus(menus: MenuDecl[], onAction: (act: string) => void): v
   });
 }
 
-// 自绘标题栏窗口控制:最小化/最大化还原/关闭;拖拽与双击最大化由 data-tauri-drag-region 承担
+// 自绘标题栏窗口控制:最小化/最大化还原/关闭;拖拽与双击由前端手动处理
+// (不用 data-tauri-drag-region:macOS 上它把双击交给系统 zoom,目标不贴近整屏且与本项目
+// 手动"铺满可用工作区"逻辑打架,故改为 startDragging 拖拽 + 双击手动切换)
 export function initWindowControls(L: LayoutHandles): void {
   void (async () => {
     const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    const { invoke } = await import('@tauri-apps/api/core');
     const win = getCurrentWindow();
+    // macOS 适配:系统 zoom 目标不贴近整屏,最大化/双击标题栏改走手动"铺满可用工作区/还原";
+    // 最小化/关闭维持原实现(系统行为,功能正常)。Windows/Linux 行为不变。
+    const isMac = navigator.userAgent.includes('Macintosh');
 
-    const syncMaxIcon = (): void => {
-      void win.isMaximized().then((maxed) => {
-        L.winMaxIco.className = 'codicon ' + (maxed ? 'codicon-chrome-restore' : 'codicon-chrome-maximize');
-        L.winMax.title = maxed ? '向下还原' : '最大化';
-      });
+    const syncMaxIcon = (maxed: boolean): void => {
+      L.winMaxIco.className = 'codicon ' + (maxed ? 'codicon-chrome-restore' : 'codicon-chrome-maximize');
+      L.winMax.title = maxed ? '向下还原' : '最大化';
+    };
+
+    const toggleMax = (): void => {
+      if (isMac) {
+        void invoke<boolean>('mac_maximize')
+          .then(syncMaxIcon)
+          .catch(() => undefined);
+      } else {
+        void win.toggleMaximize();
+        window.setTimeout(() => {
+          void win.isMaximized().then(syncMaxIcon);
+        }, 120);
+      }
     };
 
     L.winMin.addEventListener('click', () => void win.minimize());
-    L.winMax.addEventListener('click', () => {
-      void win.toggleMaximize();
-      window.setTimeout(syncMaxIcon, 120);
-    });
+    L.winMax.addEventListener('click', toggleMax);
     L.winClose.addEventListener('click', () => void win.close());
-    void win.onResized(() => syncMaxIcon());
-    syncMaxIcon();
+    // 标题栏拖拽 + 双击切换(左键,按钮/菜单/输入控件除外):
+    // 350ms 内第二次按下视为双击 → 切换最大化,不进入拖拽;否则 startDragging 移动窗口。
+    let lastDownAt = 0;
+    L.toolbar.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement;
+      if (t.closest('button, .menubar, a, input, select, textarea')) return;
+      const now = Date.now();
+      if (now - lastDownAt < 350) {
+        lastDownAt = 0;
+        toggleMax();
+      } else {
+        lastDownAt = now;
+        void win.startDragging();
+      }
+    });
+    void win.onResized(() => {
+      if (isMac) {
+        void invoke<boolean>('mac_maximized').then(syncMaxIcon).catch(() => undefined);
+      } else {
+        void win.isMaximized().then(syncMaxIcon);
+      }
+    });
+    if (isMac) {
+      void invoke<boolean>('mac_maximized').then(syncMaxIcon).catch(() => undefined);
+      // macOS:系统红绿灯(overlay 标题栏)接管窗口控制 → 隐藏自绘 logo 与右上角
+      // 三大金刚,工具栏左侧让出红绿灯区域(约 78px);Windows/Linux 保留自绘。
+      document.querySelector<HTMLElement>('.titlebar-ico')?.style.setProperty('display', 'none');
+      document.querySelector<HTMLElement>('#win-controls')?.style.setProperty('display', 'none');
+      L.toolbar.style.setProperty('padding-left', '78px');
+    } else {
+      void win.isMaximized().then(syncMaxIcon);
+    }
   })();
 }
 
