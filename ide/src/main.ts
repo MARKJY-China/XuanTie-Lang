@@ -362,13 +362,13 @@ function unsavedDialog(count: number, names: string): Promise<'save' | 'close' |
 // 关窗拦截:Rust 已同步 prevent;macOS 无未保存时红点隐藏/放行销毁由 Rust 直接做(不依赖 UA 判据),
 // 这里只阻止 JS 端自动 destroy;有未保存文件时询问后显式关闭(destroy 跳过本回调,避免自锁)。
 void getCurrentWindow().onCloseRequested(async (event) => {
-  const 脏 = tabs.dirtyPaths();
-  if (脏.length === 0) {
+  const dirty = tabs.dirtyPaths();
+  if (dirty.length === 0) {
     if (isMac) event.preventDefault(); // 红点已由 Rust 隐藏;阻止 JS 端自动 destroy
     return; // 非 macOS 无脏:不 preventDefault → JS 端默认 destroy
   }
   event.preventDefault();
-  const r = await unsavedDialog(脏.length, 脏.map((p) => basename(p)).join('、'));
+  const r = await unsavedDialog(dirty.length, dirty.map((p) => basename(p)).join('、'));
   if (r === 'cancel') return;
   if (r === 'save') {
     try {
