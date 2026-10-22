@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>   // llround(issue #69 数值分派)
+#include <time.h>  // nanosleep(issue #95 暂停 真休眠)
 #if !defined(_WIN32)
 #include <glob.h>   // POSIX:运行时 glob 探测系统字体路径(如 AssetsV2 动态 asset 目录)
 #endif
@@ -1022,7 +1023,28 @@ uintptr_t XT_GetTime(void) {
 }
 
 void XT_WaitTime(uintptr_t seconds) {
-    WaitTime(xt_get_float(seconds));
+    /* issue #95:raylib 的 WaitTime 在部分平台是忙等(GetTime 自旋),macOS 上暂停(秒) 会吃满一个核
+       且不按时返回。这里改用系统休眠:Windows Sleep / POSIX nanosleep,精确且不占 CPU。 */
+    double s = xt_get_float(seconds);
+    if (s <= 0.0) return;
+#ifdef _WIN32
+    /* 分片上限:单次 Sleep 过大会吞掉窗口消息,按 50ms 切片醒来再睡 */
+    {
+        double remain = s;
+        while (remain > 0.0) {
+            double step = remain > 0.05 ? 0.05 : remain;
+            Sleep((unsigned long)(step * 1000.0));
+            remain -= step;
+        }
+    }
+#else
+    {
+        struct timespec ts;
+        ts.tv_sec = (time_t)s;
+        ts.tv_nsec = (long)((s - (double)ts.tv_sec) * 1e9);
+        while (nanosleep(&ts, &ts) == -1) { /* 被信号打断:按剩余时间续睡 */ }
+    }
+#endif
 }
 
 // ============================================================
@@ -1318,6 +1340,10 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
        glyphCount=224 非 0,旧检测失效——issue #43 实测伪成功)→ 返回 0,不占槽位 */
     if (f.glyphCount == 0 || f.texture.id == GetFontDefault().texture.id) return XT_FROM_INT(0);
 
+    /* 字形图集采样必须是双线性(issue #89):raylib 默认最近邻, macOS 无 GDI 光栅化,
+       于是字体边缘全是硬锯齿。Windows 走 GDI 路径时另有设置,这里覆盖 ttf 直载路径。 */
+    SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);
+
     xt_font_pool[xt_font_count] = f;
     xt_font_count++;
     return XT_FROM_INT(xt_font_count);  // 返回 1-based 整数索引
@@ -1376,6 +1402,9 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     free(codepoints);
     /* 真失败检测(同 XT_LoadFont:消除伪成功——issue #43) */
     if (f.glyphCount == 0 || f.texture.id == GetFontDefault().texture.id) return XT_FROM_INT(0);
+
+    /* 双线性采样(issue #89,与 XT_LoadFont 同口径) */
+    SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);
 
     xt_font_pool[xt_font_count] = f;
     xt_font_count++;
@@ -1913,7 +1942,10 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
 }
 #endif
 
-/* 截图导出 PNG(当前帧缓冲;渲染调试/自动化验收用——须在 结束绘图 之后调用) */
+/* 截图导出 PNG(当前帧缓冲;渲染调试/自动化验收用)。
+   调用时机:必须在 `开始绘图` 与 `结束绘图` **之间**。LoadImageFromScreen 读的是当前后缓冲,
+   `结束绘图` 会 SwapScreenBuffer,之后再读拿到的是交换后的空帧——macOS 实测导出全黑(issue #92)。
+   旧注释写的"须在 结束绘图 之后调用"与实际相反,已纠正。 */
 void XT_SaveScreenshot(uintptr_t pathVal) {
     if (!IS_PTR(pathVal)) return;
     // 不用 raylib TakeScreenshot:它会把 "G:/..." 正斜杠绝对路径也拼上工作目录。

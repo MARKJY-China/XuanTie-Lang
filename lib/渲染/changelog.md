@@ -1,5 +1,13 @@
 # 渲染库 Changelog
 
+## v1.3.4
+
+**修复**
+
+- **字体抗锯齿(issue #89)**：ttf 直载路径（`加载字体` / `加载字体Ex`）在字形图集纹理上补 `SetTextureFilter(BILINEAR)`。此前只有 Windows GDI 路径设置；macOS 无 GDI 光栅化，字体边缘全是硬锯齿。
+- **`暂停(秒数)` 忙等(issue #95)**：`XT_WaitTime` 不再调用 raylib 的 WaitTime（部分平台是 GetTime 自旋，macOS 吃满一个核且不按时返回），改为系统休眠——Windows `Sleep`（50ms 切片，避免吞窗口消息）/ POSIX `nanosleep`（被信号打断按剩余时间续睡）。
+- **截图时机注释纠错(issue #92)**：原注释称"须在 结束绘图 之后调用"，与实际相反——之后读到的是交换后的空帧（macOS 实测全黑）。正确时机是 `开始绘图` 与 `结束绘图` 之间。
+
 ## v1.3.3
 
 **新增**
