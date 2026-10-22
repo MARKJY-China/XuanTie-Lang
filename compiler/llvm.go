@@ -13,6 +13,7 @@ import (
 	"xuantie/ast"
 	"xuantie/lexer"
 	"xuantie/parser"
+	"xuantie/token"
 )
 
 type SymbolInfo struct {
@@ -43,6 +44,7 @@ type LLVMCompiler struct {
 	classes         map[string]*ClassInfo
 	scopeStack      [][]string      // 每层作用域需要 release 的寄存器列表
 	arenaPoolRegs   map[string]bool // Arena 池变量的 alloca 寄存器，退出作用域时最后释放
+	constNames      map[string]bool // 常 声明的名字：对它们再赋值属明确编程错误
 	currentFunc     string          // 为空表示在 main 中
 	currentClass    string          // 当前正在转译的类名
 	currentLabel    string          // 最近一个基本块标签
@@ -127,6 +129,7 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 		moduleAliases:   make(map[string]bool),
 		declaredGlobals: make(map[string]bool),
 		arenaPoolRegs:   make(map[string]bool),
+	constNames:     make(map[string]bool),
 		allocaSet:       make(map[string]bool),
 		funcReturnTypes: make(map[string]string),
 	}
@@ -652,6 +655,9 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 			c.emit("  call void @xt_release(i64 %s)", xtValReg)
 		}
 	case *ast.VarStatement:
+		if s.Token.Type == token.TOKEN_CONST {
+			c.constNames[s.Name.Value] = true
+		}
 		valReg, valType, valClass := c.compileExpression(s.Value)
 		// 只有局部变量且初始值为标量时，才尝试优化
 		isScalar := c.isScalarType(valType) && (c.currentFunc != "" || c.currentClass != "")
@@ -713,6 +719,10 @@ func (c *LLVMCompiler) compileStatement(stmt ast.Statement) {
 			}
 		}
 	case *ast.AssignStatement:
+		if c.constNames[s.Name] {
+			c.addError("[行:%d] 常量 '%s' 不能重新赋值（常 声明只允许初始化一次；要可变请改用 设）", s.GetLine(), s.Name)
+			return
+		}
 		if s.Name == "_" {
 			valReg, valType, _ := c.compileExpression(s.Value)
 			if !c.isScalarType(valType) {
