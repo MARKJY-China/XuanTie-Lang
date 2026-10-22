@@ -394,6 +394,16 @@
         }
     }
 
+    // issue #83:macOS 上可执行文件名含非 ASCII 会让 GLFW/CoreFoundation 在 _glfwInitCocoa 里崩
+    // (SIGTRAP,退出码 133),且 cp 改名成 ASCII 即正常。根治要改 GLFW 或做 exec 重定向,当前先给出可操作警告。
+    // 判据:字节数 != 字符数 即含非 ASCII(纯 ASCII 两者相等)。
+    若 平台 == "darwin" 且 输出路径 != "" {
+        若 输出路径.字节数 != 输出路径.字符数 {
+            示("警告: macOS 上可执行文件名含非 ASCII 字符,启动可能在 GLFW 初始化阶段崩溃(SIGTRAP, issue #83)")
+            示("      规避:用 -sc 指定 ASCII 产物名,例如 -sc app")
+        }
+    }
+
     设 开始时间 = 0
     若 统计时间 { 开始时间 = 时.毫秒() }
 

@@ -308,6 +308,16 @@ func main() {
 		if targetOS == "windows" {
 			outputName += ".exe"
 		}
+		// issue #83:macOS 可执行文件名含非 ASCII → GLFW/CoreFoundation 初始化崩(SIGTRAP 133)
+		if targetOS == "darwin" {
+			for _, r := range outputName {
+				if r > 127 {
+					fmt.Println("警告: macOS 上可执行文件名含非 ASCII 字符,启动可能在 GLFW 初始化阶段崩溃(SIGTRAP, issue #83)")
+					fmt.Println("      规避:给源文件用 ASCII 名,或编译后 cp 成 ASCII 名再运行")
+					break
+				}
+			}
+		}
 
 		gccExe := "gcc"
 		if targetOS == "windows" && targetArch == "arm64" {
