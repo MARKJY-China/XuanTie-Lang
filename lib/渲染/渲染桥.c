@@ -1022,6 +1022,16 @@ uintptr_t XT_GetTime(void) {
     return xt_make_float(GetTime());
 }
 
+/* 窗口 DPI 缩放系数(issue #81/#87):raylib 的 GetWindowScaleDPI 经 GLFW 取显示器缩放——
+   macOS Retina = 2.0;Windows 125% = 1.25(取决于进程 DPI 感知档位);Wayland 由合成器 scale 透出。
+   x/y 绝大多数情况相同,统一取 x;非法值兜底 1.0。 */
+uintptr_t XT_GetWindowScale(void) {
+    Vector2 s = GetWindowScaleDPI();
+    double v = (double)s.x;
+    if (v <= 0.0) v = 1.0;
+    return xt_make_float(v);
+}
+
 void XT_WaitTime(uintptr_t seconds) {
     /* issue #95:raylib 的 WaitTime 在部分平台是忙等(GetTime 自旋),macOS 上暂停(秒) 会吃满一个核
        且不按时返回。这里改用系统休眠:Windows Sleep / POSIX nanosleep,精确且不占 CPU。 */

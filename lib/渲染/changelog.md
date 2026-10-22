@@ -2,6 +2,10 @@
 
 ## v1.3.4
 
+**新增**
+
+- **坐标系缩放查询(issue #81 / #87)**：新增 `取缩放系数()` / `转像素(逻辑值)` / `转逻辑(像素值)`，底层用 raylib `GetWindowScaleDPI`（经 GLFW 透出显示器缩放：macOS Retina=2、Windows 125%=1.25、Linux Wayland 跟随合成器 scale；取不到时兜底 1.0）。这是 #22 坐标抽象的最小落地：应用层仍按逻辑单位写坐标，需要对齐物理像素时用换算函数。
+
 **修复**
 
 - **字体抗锯齿(issue #89)**：ttf 直载路径（`加载字体` / `加载字体Ex`）在字形图集纹理上补 `SetTextureFilter(BILINEAR)`。此前只有 Windows GDI 路径设置；macOS 无 GDI 光栅化，字体边缘全是硬锯齿。
