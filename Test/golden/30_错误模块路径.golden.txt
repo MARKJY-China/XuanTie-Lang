@@ -1,3 +1,7 @@
 compile_ok=False
 exit=
-
+编译错误: 无法预扫描模块文件
+  来源文件: <ROOT>\Test\30_错误模块路径.xt
+  引入路径: ./nonexistent_module_xyz.xt
+  解析为:   <ROOT>\Test\nonexistent_module_xyz.xt（文件不存在）
+  提示：请检查 '引' 路径是否正确（相对路径以源文件所在目录为基准）

@@ -1,3 +1,3 @@
 compile_ok=False
 exit=
-
+编译错误: [<ROOT>\Test\143_未知标识符提示防误伤.xt 行:5, 列:5] 未知标识符 '是否为空'

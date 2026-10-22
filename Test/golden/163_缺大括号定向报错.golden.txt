@@ -1,4 +1,4 @@
 compile_ok=False
 exit=
-解析错误 —— G:\FUsed_Folders\Project\XuanTie\Test\163_缺大括号定向报错.xt
-[G:\FUsed_Folders\Project\XuanTie\Test\163_缺大括号定向报错.xt 行:5, 列:1] 若 的条件后面缺少 { } 代码块(玄铁要求显式大括号)
+解析错误 —— <ROOT>\Test\163_缺大括号定向报错.xt
+[<ROOT>\Test\163_缺大括号定向报错.xt 行:5, 列:1] 若 的条件后面缺少 { } 代码块(玄铁要求显式大括号)

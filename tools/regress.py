@@ -87,6 +87,10 @@ VOLATILE = [
 
 def normalize(text, sort_lines):
     text = text.replace("\r\n", "\n")
+    # 绝对路径归一化:编译错误/日志里带 "<仓库根>/Test/xxx.xt",换机器(CI)就不是同一个字符串。
+    # 记录与比对两侧都替换成 <ROOT>,基线才能跨机器复用。
+    text = text.replace(str(ROOT), "<ROOT>")
+    text = text.replace(str(ROOT).replace("\\", "/"), "<ROOT>")
     for pat, rep in VOLATILE:
         text = pat.sub(rep, text)
     lines = []
@@ -157,7 +161,12 @@ def one_test(xtfile, record):
         with open(golden_path(name), "w", encoding="utf-8") as f:
             f.write("compile_ok=%s\n" % compile_ok)
             f.write("exit=%s\n" % run_rc)
-            f.write(normalize(run_out, sorted_mode))
+            # 编译失败时把编译器输出也记进基线(此前只记 compile_ok,导致"报什么错"无法被回归钉住,
+            # 例如 issue #57 的级联噪声这类文案问题改坏了也发现不了)
+            if not compile_ok:
+                f.write(normalize(cout, sorted_mode))
+            else:
+                f.write(normalize(run_out, sorted_mode))
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, name + ".log"), "w", encoding="utf-8") as f:
             f.write("=== compile ===\n" + cout + "\n=== run(exit=%s) ===\n" % run_rc + run_out)
@@ -174,7 +183,16 @@ def one_test(xtfile, record):
     g_body = "\n".join(glines[2:])
 
     if not compile_ok:
-        return ("COMPILE_FAIL" if g_compile else "PASS(预期编译失败-与基线一致)", name, compile_tail)
+        if g_compile:
+            return ("COMPILE_FAIL", name, compile_tail)
+        # 基线也是编译失败:除了"仍然失败",还要比对错误文本(钉住文案,例如级联噪声不得复现)。
+        # 旧基线只有两行(无正文)时跳过文本比对,保持向后兼容。
+        if g_body.strip() and normalize(cout, sorted_mode) != g_body:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(os.path.join(LOG_DIR, name + ".diff.log"), "w", encoding="utf-8") as f:
+                f.write("=== 本次编译输出 ===\n" + cout + "\n=== 基线(归一化) ===\n" + g_body)
+            return ("DIFF(编译错误文本与基线不一致)", name, "详见 temp/regression_logs/%s.diff.log" % name)
+        return ("PASS(预期编译失败-与基线一致)", name, compile_tail)
 
     # 并发类测试:反复运行 STRESS_REPEATS 次,每次都要与基线一致
     repeats = STRESS_REPEATS if is_stress else 1

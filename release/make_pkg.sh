@@ -56,8 +56,10 @@ else
 fi
 PKG=$ROOT/temp/pkg_test/XuanTie
 
-# 跨平台工具(macOS 无 md5sum/stat -c;bootstrap_check.sh 同款回落)
-MD5()   { md5sum "$1" 2>/dev/null | cut -d' ' -f1 || md5 -q "$1"; }
+# 跨平台工具(macOS 无 md5sum/stat -c)。必须用 command -v 判存在:
+# 旧写法 `md5sum ... | cut` 在 macOS 上 md5sum 不存在,但管道的退出码来自 cut(0),
+# `|| md5 -q` 永远不触发 → 指纹写空(macOS 发行包 MANIFEST 出现过 md5= 空值)。
+MD5()   { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
 FSIZE() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 
 # Windows 工具链前置检查(非 Windows 不需要)
