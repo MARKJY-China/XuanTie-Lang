@@ -3,7 +3,7 @@
 import * as monaco from 'monaco-editor';
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
 import { open as pickDialog } from '@tauri-apps/plugin-dialog';
-import { getCurrentWindow, PhysicalSize } from '@tauri-apps/api/window';
+import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -47,6 +47,12 @@ import { AiChatPanel, type ChatMsg } from './ai/aichat';
 import { listen } from '@tauri-apps/api/event';
 import { checkAndFetchDocs } from './ai/docs';
 import { PreflightConsole } from './ui/preflight-console';
+
+// 平台判据(模块级,全文件共用):WKWebView 的 UA 可能不含 Macintosh,platform 双保险
+const isMac = navigator.platform === 'MacIntel' || navigator.userAgent.includes('Macintosh');
+const isWin = navigator.userAgent.includes('Windows');
+/** 可执行文件后缀:Windows=.exe,其他平台无后缀 */
+const EXE = isWin ? '.exe' : '';
 import { XUANTIE_PRIMER } from './ai/xuantie-primer';
 import type { PreflightState } from './ai/aichat';
 import { setAiLogEnabled, installGlobalErrorHooks } from './ai/log-bus';
@@ -94,7 +100,10 @@ window.addEventListener('error', (e) => {
   showToast(`脚本错误: ${e.message}`, 'err');
 });
 window.addEventListener('unhandledrejection', (e) => {
-  showToast(`异步错误: ${String(e.reason)}`, 'err');
+  const reason = String(e.reason ?? '');
+  // Tauri IPC 在窗口隐藏/销毁时取消挂起的 invoke 是正常语义(如 "canceled"),不是错误,不打扰用户
+  if (reason.includes('canceled') || reason.includes('cancelled')) return;
+  showToast(`异步错误: ${reason}`, 'err');
 });
 initWindowControls(L);
 
@@ -311,7 +320,11 @@ function setDesignerMode(on: boolean): void {
 }
 L.btnDesignerToggle.addEventListener('click', () => setDesignerMode(!designerOn));
 // 模型变更(设计器写回 / Ctrl+Z 撤销重做 / AI 改写)→ 设计器开着就重读重绘(拖拽中不打断)
-editor.onDidChangeModelContent(() => designerPanel.refreshIfOpen());
+// 同时实时同步未保存计数给 Rust(macOS 红点=隐藏时判断是否先弹询问)
+editor.onDidChangeModelContent(() => {
+  designerPanel.refreshIfOpen();
+  syncUnsaved();
+});
 
 /** 未保存计数同步给 Rust(关机拦截 WM_QUERYENDSESSION 需同步读取,读不到 JS 状态) */
 function syncUnsaved(): void {
@@ -346,12 +359,18 @@ function unsavedDialog(count: number, names: string): Promise<'save' | 'close' |
   ).then((v) => (v === 'save' || v === 'close' ? v : 'cancel'));
 }
 
-// 关窗拦截:有未保存文件先问,三选后才真正退出(destroy 跳过本回调,避免自锁)
+// 关窗拦截:Rust 已同步 prevent;macOS 无未保存时红点隐藏/放行销毁由 Rust 直接做(不依赖 UA 判据),
+// 这里只阻止 JS 端自动 destroy;有未保存文件时询问后显式关闭(destroy 跳过本回调,避免自锁)。
 void getCurrentWindow().onCloseRequested(async (event) => {
-  const 脏 = tabs.dirtyPaths();
-  if (脏.length === 0) return;
+  // 注:原代码此变量为中文「脏」,已改为英文 dirty——本工程是 TypeScript(非中文编程语言),
+  // 英文标识符更通用,故一并纠正。
+  const dirty = tabs.dirtyPaths();
+  if (dirty.length === 0) {
+    if (isMac) event.preventDefault(); // 红点已由 Rust 隐藏;阻止 JS 端自动 destroy
+    return; // 非 macOS 无脏:不 preventDefault → JS 端默认 destroy
+  }
   event.preventDefault();
-  const r = await unsavedDialog(脏.length, 脏.map((p) => basename(p)).join('、'));
+  const r = await unsavedDialog(dirty.length, dirty.map((p) => basename(p)).join('、'));
   if (r === 'cancel') return;
   if (r === 'save') {
     try {
@@ -361,10 +380,16 @@ void getCurrentWindow().onCloseRequested(async (event) => {
       return;
     }
   }
-  try {
-    await getCurrentWindow().destroy(); // 跳过本回调直接销毁(避免再次触发保存询问)
-  } catch (err) {
-    showToast(`关闭窗口失败:${String(err)}`, 'err');
+  // 询问后:macOS 红点语义=隐藏常驻(不销毁);非 macOS=正常关闭退出
+  const win = getCurrentWindow();
+  if (isMac) {
+    await win.hide();
+  } else {
+    try {
+      await win.destroy(); // 跳过本回调直接销毁(避免再次触发保存询问)
+    } catch (err) {
+      showToast(`关闭窗口失败:${String(err)}`, 'err');
+    }
   }
 });
 
@@ -1107,7 +1132,7 @@ async function startLsp(): Promise<void> {
   await lsp.stop();
   const server = await resolveLspServer(workspace);
   if (!server) {
-    const detail = '未找到 xt_lsp.exe:设置 → PATH → 工作区 lsp\\ → xtc 同目录/上两级 全部落空';
+    const detail = `未找到 ${'xt_lsp' + (isWin ? '.exe' : '')}:设置 → PATH → 工作区 lsp/ → xtc 同目录/上两级 全部落空`;
     updateLspStatus('disconnected', detail);
     showToast(detail + '。可在设置里手工指定。', 'err');
     return;
@@ -1419,9 +1444,9 @@ function settingsModal(): Promise<void> {
     '设置',
     (body, close) => {
       const rows: Array<{ key: string; label: string; probe: string; value: string }> = [
-        { key: 'lsp', label: 'xt_lsp.exe(LSP 服务器)', probe: 'xt_lsp', value: s.lspServerPath },
-        { key: 'xtc', label: 'xtc.exe(编译器)', probe: 'xtc', value: s.xtcPath },
-        { key: 'tiepm', label: 'tiepm.exe(铁铺包管理器)', probe: 'tiepm', value: s.tiepmPath },
+        { key: 'lsp', label: `xt_lsp${EXE}(LSP 服务器)`, probe: 'xt_lsp', value: s.lspServerPath },
+        { key: 'xtc', label: `xtc${EXE}(编译器)`, probe: 'xtc', value: s.xtcPath },
+        { key: 'tiepm', label: `tiepm${EXE}(铁铺包管理器)`, probe: 'tiepm', value: s.tiepmPath },
       ];
       const inputs = new Map<string, HTMLInputElement>();
       for (const row of rows) {
@@ -1451,7 +1476,7 @@ function settingsModal(): Promise<void> {
         btnPick.className = 'mbtn';
         btnPick.textContent = '选…';
         btnPick.addEventListener('click', () => {
-          void pickFile(`选择 ${row.probe}.exe`).then((p) => {
+          void pickFile(`选择 ${row.probe}${EXE}`).then((p) => {
             if (p) input.value = p;
           });
         });
@@ -1737,7 +1762,7 @@ async function buildCurrent(): Promise<void> {
     return;
   }
   const base = basename(p).replace(/\.xt$/i, '');
-  await compileTo(xtc, p, backend.joinPath(dir, `${base}.exe`));
+  await compileTo(xtc, p, backend.joinPath(dir, `${base}${EXE}`));
 }
 
 async function buildProject(): Promise<void> {
@@ -1762,7 +1787,7 @@ async function buildProject(): Promise<void> {
     return;
   }
   const base = basename(entryFile).replace(/\.xt$/i, '');
-  await compileTo(xtc, entryPath, backend.joinPath(dir, `${base}.exe`));
+  await compileTo(xtc, entryPath, backend.joinPath(dir, `${base}${EXE}`));
 }
 
 // ---- 查看(底部面板/侧栏开关) ----
@@ -2684,7 +2709,12 @@ function bindUi(): void {
         ],
       },
     ],
-    (act) => {
+    handleMenuAct,
+  );
+
+  // macOS 系统菜单桥接:系统菜单点击走同一动作链(菜单项 id 即 act);
+  // 自绘菜单行隐藏,由屏幕顶部系统菜单接管(Windows/Linux 保留自绘菜单行)
+  function handleMenuAct(act: string): void {
       if (act === 'open-folder') openFolder();
       else if (act === 'new-project') void newProjectModal();
       else if (act.startsWith('recent-open:')) {
@@ -2747,8 +2777,13 @@ function bindUi(): void {
       } else if (act === 'help-about') {
         void aboutModal();
       }
-    },
-  );
+  }
+
+  // macOS:监听系统菜单点击 → 走 handleMenuAct;隐藏自绘菜单行(系统菜单接管)
+  if (navigator.userAgent.includes('Macintosh')) {
+    document.querySelector<HTMLElement>('.menubar')?.style.setProperty('display', 'none');
+    void listen<string>('menu-act', (e) => handleMenuAct(e.payload)).catch(() => undefined);
+  }
 
   byId('wl-open').addEventListener('click', openFolder);
   byId('wl-new').addEventListener('click', () => void newProjectModal());
@@ -2894,9 +2929,25 @@ async function boot(): Promise<void> {
   fileTree.setDisplay(getSettings().treeDisplay ?? defaultSettings().treeDisplay);
   applyEye();
   // 恢复上一次的界面布局(AI dock 开关 + 窗口尺寸 + 缩放 + 主题)
+  // 仅冷启动恢复窗口尺寸:dev 模式(vite)下保存文件会触发整页热重载,若每次都
+  // 重新 setSize 会把窗口强制跳回记忆尺寸(用户刚手动调过的窗口被拉回旧值),
+  // 叠加无边框窗口在 macOS 上 resize 时渲染区不同步 → 窗口反复乱闪/内容错位。
+  // sessionStorage 在同一窗口的热重载后保留,冷启动为空 → 只在冷启动执行一次。
+  // onResized 的 payload 是物理像素,旧版误当逻辑尺寸存过(Retina 2x 下放大 2 倍,
+  // 窗口 5120×3328 超出屏幕只露左上角 → 其余空白);故启动时用主显示器逻辑尺寸
+  // 校验记忆值,超屏(脏物理数据)则忽略,回落到配置默认窗口尺寸。
   const uiPrev = getSettings().ui;
-  if (uiPrev?.w && uiPrev?.h) {
-    void getCurrentWindow().setSize(new PhysicalSize(uiPrev.w, uiPrev.h)).catch(() => undefined);
+  if (sessionStorage.getItem('xt-ui-ready') === null) {
+    sessionStorage.setItem('xt-ui-ready', '1');
+    const w0 = getCurrentWindow();
+    const mon = await currentMonitor().catch(() => null);
+    const scale = mon ? mon.scaleFactor : await w0.scaleFactor().catch(() => 1);
+    const lw = mon ? mon.size.width / scale : 0;
+    const lh = mon ? mon.size.height / scale : 0;
+    if (uiPrev?.w && uiPrev?.h && lw > 0 && lh > 0 && uiPrev.w <= lw - 40 && uiPrev.h <= lh - 40) {
+      // 记忆值为逻辑尺寸(记录侧已按 scaleFactor 归一),用 LogicalSize 应用
+      void w0.setSize(new LogicalSize(uiPrev.w, uiPrev.h)).catch(() => undefined);
+    }
   }
   if (getSettings().zoom) void applyZoom();
   applyTheme();
@@ -2908,17 +2959,30 @@ async function boot(): Promise<void> {
     void backend.openAiConsole().catch((err: unknown) => showToast(`打开控制台失败: ${String(err)}`, 'err'));
   });
   // 窗口尺寸记忆(防抖;最大化时不记)
+  // onResized 的 payload 是物理像素(Retina 下 = 逻辑×2);记录时按 scaleFactor
+  // 归一为逻辑尺寸,启动恢复时才不会把窗口放大 2 倍超出屏幕。
   let sizeTimer: number | undefined;
   getCurrentWindow().onResized((e) => {
     window.clearTimeout(sizeTimer);
     sizeTimer = window.setTimeout(() => {
-      void getCurrentWindow().isMaximized().then((maxed) => {
+      // macOS 手动"铺满可用工作区"态等价于最大化,同样不记(否则重启后窗口变满屏)
+      const maxedP = navigator.userAgent.includes('Macintosh')
+        ? invoke<boolean>('mac_maximized')
+        : getCurrentWindow().isMaximized();
+      void maxedP.then((maxed) => {
         if (maxed) return;
         const { width, height } = e.payload as unknown as { width: number; height: number };
-        void saveSettings({
-          ...getSettings(),
-          ui: { ...getSettings().ui, w: width, h: height },
-        }).catch(() => undefined);
+        void getCurrentWindow()
+          .scaleFactor()
+          .then((sf) => {
+            const w = Math.round(width / sf);
+            const h = Math.round(height / sf);
+            void saveSettings({
+              ...getSettings(),
+              ui: { ...getSettings().ui, w, h },
+            }).catch(() => undefined);
+          })
+          .catch(() => undefined);
       });
     }, 800);
   });
