@@ -1,0 +1,4 @@
+compile_ok=False
+exit=
+编译错误: [G:\FUsed_Folders\Project\XuanTie\Test\164_全角引号给提示.xt 行:5, 列:3] 未知标识符 '“你好”'
+  提示: 全角引号 “ ” ‘ ’ 不能用作字符串定界符，请改用 ASCII 双引号 "…" 或单引号 '…'
