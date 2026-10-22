@@ -2124,6 +2124,19 @@ void xt_socket_register_methods(XTSocket* s) {
 
 // --- Result 方法实现 ---
 
+XTValue xt_result_guard(XTValue v, XTValue method_val) {
+    const char* method = "接着/否则";
+    if (XT_IS_REAL_PTR(method_val) && ((XTObject*)method_val)->type_id == XT_TYPE_STRING) {
+        method = ((XTString*)method_val)->data;
+    }
+    if (!XT_IS_REAL_PTR(v) || ((XTObject*)v)->type_id != XT_TYPE_RESULT) {
+        fprintf(stderr, "运行时错误: 该值不是 结果 对象，不能调用 .%s\n", method);
+        fprintf(stderr, "  提示: .接着/.否则 只能接在 结果 上；若要取值请先判 .成功 再取 .值\n");
+        exit(1);
+    }
+    return v;
+}
+
 // 结果.接着(成功回调)
 static XTValue xt_result_then_method(XTValue self, XTValue callback) {
     XTResult* r = (XTResult*)self;

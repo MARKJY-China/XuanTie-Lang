@@ -1348,6 +1348,7 @@
         此.写出("declare void @\"exit\"(i32)")
         此.写出("declare i64 @\"xt_to_int\"(i64)")
         此.写出("declare i8* @\"xt_result_new\"(i32, i8*, i8*)")
+        此.写出("declare i64 @\"xt_result_guard\"(i64, i64)")
         此.写出("declare i8* @\"xt_float_new\"(double)")
         此.写出("declare %XTString* @\"xt_json_serialize\"(i64)")
         此.写出("declare i64 @\"xt_json_deserialize\"(%XTString*)")
@@ -6666,6 +6667,16 @@
             若 成员名 == "接着" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 _法名 = 此.符(此.获取字符串对象("接着"))
+
+                设 _法串 = 此.取新寄存器()
+
+                此.写出("  " & _法串 & " = inttoptr i64 " & _法名 & " to i8*")
+
+                设 _守 = 此.取新寄存器()
+
+                此.写出("  " & _守 & " = call i64 @\"xt_result_guard\"(i64 " & 对象Xt & ", i64 " & _法名 & ")")
+                对象Xt = _守
                 设 resPtr = 此.取新寄存器()
                 此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
                 设 isSuccPtr = 此.取新寄存器()
@@ -6693,8 +6704,9 @@
                 设 函指Xt = 此.确保I64(翻译参[0], 翻译参[1])
                 
                 设 callbackRes = 此.执行动态调用(函指Xt, ["i64 " & val])
-                此.写出("  store i64 " & callbackRes & ", i64* " & resAddr)
-                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                // 返回 结果 自身,让 .接着().否则() 能安全链式调用(issue:成功路径段错误)
+                此.写出("  call void @xt_release(i64 " & callbackRes & ")")
+                此.写出("  store i64 " & 对象Xt & ", i64* " & resAddr)
                 此.写出("  call void @xt_release(i64 " & 函指Xt & ")")
                 此.写出("  br label %" & mergeLabel)
                 
@@ -6707,6 +6719,16 @@
             若 成员名 == "否则" {
                 设 翻译左 = 此.编译表达式(左节点)
                 设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                设 _法名 = 此.符(此.获取字符串对象("否则"))
+
+                设 _法串 = 此.取新寄存器()
+
+                此.写出("  " & _法串 & " = inttoptr i64 " & _法名 & " to i8*")
+
+                设 _守 = 此.取新寄存器()
+
+                此.写出("  " & _守 & " = call i64 @\"xt_result_guard\"(i64 " & 对象Xt & ", i64 " & _法名 & ")")
+                对象Xt = _守
                 设 resPtr = 此.取新寄存器()
                 此.写出("  " & resPtr & " = inttoptr i64 " & 对象Xt & " to %XTResult*")
                 设 isSuccPtr = 此.取新寄存器()
@@ -6734,8 +6756,8 @@
                 设 函指Xt = 此.确保I64(翻译参[0], 翻译参[1])
                 
                 设 callbackRes = 此.执行动态调用(函指Xt, ["i64 " & err])
-                此.写出("  store i64 " & callbackRes & ", i64* " & resAddr)
-                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & callbackRes & ")")
+                此.写出("  store i64 " & 对象Xt & ", i64* " & resAddr)
                 此.写出("  call void @xt_release(i64 " & 函指Xt & ")")
                 此.写出("  br label %" & mergeLabel)
                 
