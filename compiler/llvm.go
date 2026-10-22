@@ -277,6 +277,7 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare i64 @xt_bool_new(i1)\n")
 	res.WriteString("declare i64 @xt_func_new(i8*)\n")
 	res.WriteString("declare %XTString* @xt_string_new(i8*)\n")
+	res.WriteString("declare void @xt_member_missing(i64)\n")
 	res.WriteString("declare i64 @xt_string_get_char(i64, i64)\n")
 	res.WriteString("declare i64 @xt_string_get_byte(i64, i64)\n")
 	res.WriteString("declare i64 @xt_string_byte_length(i64)\n")
@@ -1477,6 +1478,16 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			return reg, "i64", ""
 		}
 		return "0", "i64", ""
+	case *ast.SerializeExpression:
+		// 化(x):JSON 序列化。此前 LLVM 后端未实现本节点,落入 default 编译为 0(空),
+		// 导致 示(化(x)) 输出空、写文件写成 "null"(与解释器不一致)——玄铁网吧 bug 报告 #1 根因。
+		valReg, valType, _ := c.compileExpression(e.Value)
+		xtVal := c.ensureI64(valReg, valType)
+		sRes := c.nextReg()
+		c.emit("  %s = call %%XTString* @xt_json_serialize(i64 %s)", sRes, xtVal)
+		sXt := c.nextReg()
+		c.emit("  %s = ptrtoint %%XTString* %s to i64", sXt, sRes)
+		return sXt, "i64", ""
 	case *ast.CallExpression:
 		rawFuncName := ""
 		if ident, ok := e.Function.(*ast.Identifier); ok {
@@ -2004,11 +2015,26 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		isNotNull := c.nextReg()
 		c.emit("  %s = icmp ne i64 %s, 0", isNotNull, objXt)
 		notNullLabel := c.nextLabel("method.notnull")
+		nullErrLabel := c.nextLabel("method.nullerr")
 		mergeLabel := c.nextLabel("method.merge")
 		resAddr := c.nextReg()
 		c.emitAlloca("%s = alloca i64", resAddr)
 		c.emit("  store i64 0, i64* %s", resAddr)
-		c.emit("  br i1 %s, label %%%s, label %%%s", isNotNull, notNullLabel, mergeLabel)
+		c.emit("  br i1 %s, label %%%s, label %%%s", isNotNull, notNullLabel, nullErrLabel)
+
+		// 空值(NULL)上调用成员方法:运行时优雅报错(与 xt_member_missing 同口径,
+		// 同解释器「不支持的成员调用」行为),不再静默返回空或解引用崩溃
+		c.emit("%s:", nullErrLabel)
+		nameAlias := c.addString(e.Member.Value)
+		nameRaw := c.nextReg()
+		c.emit("  %s = getelementptr inbounds [%d x i8], [%d x i8]* @%s, i64 0, i64 0",
+			nameRaw, len(e.Member.Value)+1, len(e.Member.Value)+1, nameAlias)
+		nameObj := c.nextReg()
+		c.emit("  %s = call %%XTString* @xt_string_new(i8* %s)", nameObj, nameRaw)
+		nameXt := c.nextReg()
+		c.emit("  %s = ptrtoint %%XTString* %s to i64", nameXt, nameObj)
+		c.emit("  call void @xt_member_missing(i64 %s)", nameXt)
+		c.emit("  br label %%%s", mergeLabel)
 
 		c.emit("%s:", notNullLabel)
 
