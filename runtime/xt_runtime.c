@@ -966,6 +966,17 @@ XTValue xt_string_to_hex_string(XTValue str_val) {
 /* UTF-8 严格校验:全合法返回 (size_t)-1;否则返回首个非法字节的偏移。
    拒绝:0x80-0xC1 / 0xF5-0xFF 首字节、续字节不足或格式错、E0/F0 过长编码、
         F4 超界(>U+10FFFF)、ED A0-BF 代理区。 */
+static size_t xt_utf8_bad_offset(const uint8_t* p, size_t n);
+// 公共入口:源文件编码体检。返回首个非法 UTF-8 字节偏移,全合法返回 -1。
+// 供编译器在读取源码后立即调用:GBK/ANSI 文件若继续往下词法分析,报出来的是
+// 「未知标识符」「未闭合的字符串字面量」这类误导性错误(用户看不出是编码问题)。
+int64_t xt_utf8_invalid_offset(XTValue str_val) {
+    if (!XT_IS_REAL_PTR(str_val) || ((XTObject*)str_val)->type_id != XT_TYPE_STRING) return XT_FROM_INT(-1);
+    XTString* s = (XTString*)str_val;
+    size_t bad = xt_utf8_bad_offset((const uint8_t*)s->data, s->length);
+    if (bad == (size_t)-1) return XT_FROM_INT(-1);
+    return XT_FROM_INT((int64_t)bad);
+}
 static size_t xt_utf8_bad_offset(const uint8_t* p, size_t n) {
     size_t i = 0;
     while (i < n) {

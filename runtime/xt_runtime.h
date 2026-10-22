@@ -419,6 +419,8 @@ int xt_compare(XTValue a, XTValue b);
 void* xt_result_new(int is_success, void* value, void* error);
 /// 结果链路类型守卫:非 结果 对象调用 .接着/.否则 时明确报错退出(此前按 XTResult* 解引用直接段错误)
 XTValue xt_result_guard(XTValue v, XTValue method_val);
+/// 源文件编码体检:返回首个非法 UTF-8 字节偏移,全合法返回 -1
+int64_t xt_utf8_invalid_offset(XTValue str_val);
 
 /// 基础堆内存分配，带对象头初始化
 void* xt_malloc(size_t size, uint32_t type_id);

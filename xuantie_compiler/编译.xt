@@ -150,6 +150,8 @@
 
         // 初始化内置全局符号映射
         此.符号表["文件.读"] = "@\"xt_file_read\""
+        此.符号表["UTF8非法偏移"] = "@\"xt_utf8_invalid_offset\""
+        此.函数表["UTF8非法偏移"] = 真
         此.函数表["文件.读"] = 真
         此.符号表["文件.写"] = "@\"xt_file_write\""
         此.函数表["文件.写"] = 真
@@ -1349,6 +1351,7 @@
         此.写出("declare i64 @\"xt_to_int\"(i64)")
         此.写出("declare i8* @\"xt_result_new\"(i32, i8*, i8*)")
         此.写出("declare i64 @\"xt_result_guard\"(i64, i64)")
+        此.写出("declare i64 @\"xt_utf8_invalid_offset\"(i64)")
         此.写出("declare i8* @\"xt_float_new\"(double)")
         此.写出("declare %XTString* @\"xt_json_serialize\"(i64)")
         此.写出("declare i64 @\"xt_json_deserialize\"(%XTString*)")

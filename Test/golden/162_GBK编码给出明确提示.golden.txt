@@ -1,0 +1,4 @@
+compile_ok=False
+exit=
+错误: 源文件不是 UTF-8 编码(首个非法字节偏移 4)
+  提示: GBK/ANSI 编码请先另存为 UTF-8(记事本/VS Code 均可导出 UTF-8)
