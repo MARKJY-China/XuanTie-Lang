@@ -102,7 +102,8 @@ window.addEventListener('error', (e) => {
 window.addEventListener('unhandledrejection', (e) => {
   const reason = String(e.reason ?? '');
   // Tauri IPC 在窗口隐藏/销毁时取消挂起的 invoke 是正常语义(如 "canceled"),不是错误,不打扰用户
-  if (reason.includes('canceled') || reason.includes('cancelled')) return;
+  // 注意:Tauri 实际返回 "Canceled: Canceled"(大写 C),过滤必须大小写不敏感
+  if (reason.toLowerCase().includes('canceled') || reason.toLowerCase().includes('cancelled')) return;
   showToast(`异步错误: ${reason}`, 'err');
 });
 initWindowControls(L);

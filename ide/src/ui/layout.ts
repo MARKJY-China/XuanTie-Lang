@@ -414,9 +414,10 @@ export function initWindowControls(L: LayoutHandles): void {
 
     const toggleMax = (): void => {
       if (isMac) {
-        void invoke<boolean>('mac_maximize')
-          .then(syncMaxIcon)
-          .catch(() => undefined);
+        // macOS:双击顶栏 = 单向"铺满当前桌面可用区域"(保留系统菜单栏与 Dock)。
+        // Mac 无 Windows 式最大化,平铺即常态:Rust 侧 mac_maximize 已为单向
+        // (总是铺满,不还原;窗口被移走后再双击也会重新铺满)。
+        void invoke<boolean>('mac_maximize').then(syncMaxIcon).catch(() => undefined);
       } else {
         void win.toggleMaximize();
         window.setTimeout(() => {
@@ -428,22 +429,38 @@ export function initWindowControls(L: LayoutHandles): void {
     L.winMin.addEventListener('click', () => void win.minimize());
     L.winMax.addEventListener('click', toggleMax);
     L.winClose.addEventListener('click', () => void win.close());
-    // 标题栏拖拽 + 双击切换(左键,按钮/菜单/输入控件除外):
-    // 350ms 内第二次按下视为双击 → 切换最大化,不进入拖拽;否则 startDragging 移动窗口。
+    // 标题栏拖拽 + 双击切换(左键):
+    // 350ms 内第二次按下视为双击 → 切换最大化并阻止默认行为
+    // (避免双击落在按钮上时文字被选中/误触发单击动作);按钮/菜单等交互控件上不拖拽,
+    // 但仍参与双击判定,保证双击顶栏任意位置都能切换最大化。
     let lastDownAt = 0;
+    let dblSuppressClick = false;
     L.toolbar.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       const t = e.target as HTMLElement;
-      if (t.closest('button, .menubar, a, input, select, textarea')) return;
+      const onInteractive = !!t.closest('button, .menubar, a, input, select, textarea');
       const now = Date.now();
       if (now - lastDownAt < 350) {
         lastDownAt = 0;
+        dblSuppressClick = true;
+        window.setTimeout(() => { dblSuppressClick = false; }, 400);
+        e.preventDefault(); // 阻止双击选中文字
         toggleMax();
-      } else {
-        lastDownAt = now;
-        void win.startDragging();
+        return;
       }
+      lastDownAt = now;
+      if (onInteractive) return; // 交互控件上不拖拽,但已记录时间供下一次双击判定
+      void win.startDragging();
     });
+    // 双击后的 click(第二次按下→抬起)不放行,避免误触发按钮单击动作
+    L.toolbar.addEventListener('click', (e) => {
+      if (dblSuppressClick) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+    // WKWebView 双击选中在第一次按下即开始,selectstart 阶段拦截最可靠
+    L.toolbar.addEventListener('selectstart', (e) => e.preventDefault());
     void win.onResized(() => {
       if (isMac) {
         void invoke<boolean>('mac_maximized').then(syncMaxIcon).catch(() => undefined);
