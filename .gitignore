@@ -110,3 +110,5 @@ INVESTIGATION_xt.md
 !/lib/SQLite/*.o
 # 独立契约仓库(嵌套 git 仓库,不得被主仓库当子模块/裸目录吸收)
 /xt-ecosystem/
+# 会话日志属本地工作记录,不入库(跨会话交接写进契约或正式文档)
+/docs/sessions/
