@@ -1574,8 +1574,12 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 		if info, ok := c.symbolTable[rawFuncName]; ok && info.IsGlobal {
 			declaredRetType = info.Type
 		} else {
-			// 只有在没有显式声明的情况下，且以 xt_ 开头且不是 xt_to_int，才视为内置 i8* 返回函数
-			if (strings.HasPrefix(funcName, "@\"xt_") || strings.HasPrefix(funcName, "@xt_")) && !strings.Contains(funcName, "xt_to_int") {
+			// 只有在没有显式声明的情况下，且以 xt_ 开头且不是 xt_to_int，才视为内置 i8* 返回函数。
+			// 例外:convert_to_* 三兄弟(整/小数/字)走 i64(i64) ABI(runtime 返回 XTValue),
+			// 按 i8* 处理会与 declare 冲突——Apple clang 直接报
+			// "defined with type 'i64 (i64)*' but expected 'i8* (i8*)*'"(darwin CI 实测)。
+			if (strings.HasPrefix(funcName, "@\"xt_") || strings.HasPrefix(funcName, "@xt_")) &&
+				!strings.Contains(funcName, "xt_to_int") && !strings.Contains(funcName, "xt_convert_to_") {
 				isBuiltin = true
 				declaredRetType = "i8*"
 			}
