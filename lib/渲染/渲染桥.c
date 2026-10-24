@@ -373,7 +373,21 @@ void XT_BeginDrawing(void) {
     BeginDrawing();
 }
 
+/* 延迟截图:XT_SaveScreenshot 只登记路径,真正抓帧在 XT_EndDrawing 里、SwapScreenBuffer 之前。
+   声明放这里是因为 XT_EndDrawing 定义在前面(见 issue #92)。 */
+static char* xt_shot_pending = NULL;
+
 void XT_EndDrawing(void) {
+    // issue #92:抓帧必须在交换缓冲之前完成。放在这里,调用方写在 开始/结束绘图 之间或之后都能拿到本帧。
+    if (xt_shot_pending) {
+        Image img = LoadImageFromScreen();
+        if (img.data) {
+            ExportImage(img, xt_shot_pending);
+            UnloadImage(img);
+        }
+        free(xt_shot_pending);
+        xt_shot_pending = NULL;
+    }
     EndDrawing();
 }
 
@@ -2635,18 +2649,21 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
 }
 #endif
 
-/* 截图导出 PNG(当前帧缓冲;渲染调试/自动化验收用)。
-   调用时机:必须在 `开始绘图` 与 `结束绘图` **之间**。LoadImageFromScreen 读的是当前后缓冲,
-   `结束绘图` 会 SwapScreenBuffer,之后再读拿到的是交换后的空帧——macOS 实测导出全黑(issue #92)。
-   旧注释写的"须在 结束绘图 之后调用"与实际相反,已纠正。 */
-void XT_SaveScreenshot(uintptr_t pathVal) {
-    if (!IS_PTR(pathVal)) return;
-    // 不用 raylib TakeScreenshot:它会把 "G:/..." 正斜杠绝对路径也拼上工作目录。
-    // ExportImage 底层 fopen:相对路径天然按 CWD 解析,绝对路径原样使用。
-    Image img = LoadImageFromScreen();
-    if (!img.data) return;
-    ExportImage(img, xt_get_cstr(pathVal));
-    UnloadImage(img);
+/* 截图导出 PNG(渲染调试/自动化验收用)。issue #92 改为「请求式」:
+   本函数只登记路径,真正的抓帧由 XT_EndDrawing 在 SwapScreenBuffer 之前完成——
+   调用方写在 开始绘图/结束绘图 之间或之后都不会再拿到交换后的空帧(macOS 实测全黑)。
+   同一帧内多次调用只有最后一次生效(路径被覆盖,旧路径释放)。
+   返回 1=已登记,0=路径非法。 */
+uintptr_t XT_SaveScreenshot(uintptr_t pathVal) {
+    if (!IS_PTR(pathVal)) return XT_FROM_INT(0);
+    const char* p = xt_get_cstr(pathVal);
+    if (!p || !*p) return XT_FROM_INT(0);
+    free(xt_shot_pending);
+    size_t len = strlen(p);
+    xt_shot_pending = (char*)malloc(len + 1);
+    if (!xt_shot_pending) return XT_FROM_INT(0);
+    memcpy(xt_shot_pending, p, len + 1);
+    return XT_FROM_INT(1);
 }
 
 /* 裁剪(UI 输入栏等需限制绘制区域的控件用):raylib BeginScissorMode/EndScissorMode 桥接 */

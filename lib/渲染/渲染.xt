@@ -1,4 +1,4 @@
-// 渲染.xt — 玄铁渲染库 v1.3.5
+// 渲染.xt — 玄铁渲染库 v1.3.6
 // 基于 raylib，通过 C 桥接层提供 2D/3D 图形渲染能力
 //
 // 用法:
@@ -106,7 +106,7 @@
 外 函 XT_LoadFont(filename: 字, fontSize: 整): 整
 外 函 XT_LoadFontEx(filename: 字, fontSize: 整, refText: 字): 整
 外 函 XT_FontGDI_Create(face: 字, size: 整): 整
-外 函 XT_SaveScreenshot(path: 字): 空
+外 函 XT_SaveScreenshot(path: 字): 整
 外 函 XT_BeginScissor(x: 整, y: 整, w: 整, h: 整): 空
 外 函 XT_EndScissor(): 空
 外 函 xt_string_from_codepoint(cp: 整): 字
@@ -654,13 +654,14 @@
     返 XT_FontGDI_Create(字体名, 字号)
 }
 
-// 把当前帧缓冲导出为 PNG 文件。
-// 必须在 开始绘图 与 结束绘图 之间调用：结束绘图 会交换前后缓冲，之后再读只能拿到空帧。
+// 请求导出当前帧为 PNG 文件（渲染调试/自动化验收用）。
+// 调用即登记，真正的抓帧发生在 结束绘图 内部、交换缓冲之前，因此写在 开始绘图/结束绘图 之间或之后都不会拿到空帧。
+// 同一帧内多次调用只有最后一次生效；若这一帧没走 结束绘图（例如没有窗口），则不会产生文件。
 //
 // 参数 路径: 字符串 — 输出 PNG 路径（相对路径按工作目录解析，绝对路径原样使用）
-// 返回: 无
+// 返回: 整 — 1=已登记，0=路径非法或内存不足
 公 函 截图(路径) {
-    XT_SaveScreenshot(路径)
+    返 XT_SaveScreenshot(路径)
 }
 
 // 设置裁剪矩形：此后绘制只在该区域内生效，直到 裁剪结束。
