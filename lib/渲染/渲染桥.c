@@ -873,6 +873,12 @@ uintptr_t XT_LoadTextureSVG(uintptr_t filename, uintptr_t w, uintptr_t h) {
             nsvgDelete(svg);
         }
     }
+    // 与 加载纹理 对齐:文件缺失 / 解析失败 / 光栅化失败都不该给一个指向空纹理的句柄。
+    // 旧行为无条件返回非 0,调用方以为成功却画出空白,还查不出原因。
+    if (tex.id == 0 || tex.width == 0 || tex.height == 0) {
+        xt_tex_used[slot] = 0;
+        return XT_FROM_INT(0);
+    }
     xt_tex_pool[slot] = tex;
     xt_tex_used[slot] = 1;
     return XT_FROM_INT(slot + 1);
