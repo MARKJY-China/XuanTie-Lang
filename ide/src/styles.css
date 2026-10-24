@@ -40,6 +40,7 @@ body {
   padding: 0 10px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
+  user-select: none; -webkit-user-select: none; /* 自绘顶栏:禁止文字选中(WKWebView 需 -webkit- 前缀),双击顶栏不出现文本高亮 */
 }
 .titlebar-ico { width: 18px; height: 18px; }
 #toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
@@ -759,6 +760,7 @@ body {
   display: inline-flex; align-items: center; gap: 5px;
   background: transparent; border: none; border-bottom: 2px solid transparent;
   color: var(--fg-dim); cursor: pointer; font-size: 12.5px; font-family: inherit;
+  user-select: none; -webkit-user-select: none; /* 底部面板 tab:禁止文字选中 */
 }
 .btab .codicon { font-size: 14px; }
 .btab.active { color: var(--fg); border-bottom-color: var(--accent); }

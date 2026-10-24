@@ -141,8 +141,11 @@ pub async fn preflight_run(app: tauri::AppHandle, xtc: String) -> Result<Preflig
     }
     emit_progress(&app, serde_json::json!({ "type": "stage", "text": "编译完成,运行探针…" }));
 
-    // 运行产物
-    let exe = dir.join("preflight.exe");
+    // 运行产物:xtc tie 在 Windows 输出 preflight.exe,macOS/Linux 无后缀输出 preflight —— 探测实际文件名
+    let mut exe = dir.join("preflight.exe");
+    if !exe.exists() {
+        exe = dir.join("preflight");
+    }
     let (rcode, rout, rerr) = run_streaming(&app, &exe.to_string_lossy(), &[], &dir, 60, "探针").await?;
     let mut items = Vec::new();
     for line in rout.lines() {

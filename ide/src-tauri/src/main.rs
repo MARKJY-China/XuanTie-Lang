@@ -100,39 +100,44 @@ fn set_unsaved(app: tauri::AppHandle, n: u32) {
     shutdown_guard::set_unsaved(n);
 }
 
-// ---- macOS 窗口最大化:铺满可用工作区(自动避开菜单栏与 Dock) / 还原 ----
+// ---- macOS 窗口最大化:单向铺满可用工作区(自动避开菜单栏与 Dock),带系统缩放动画 ----
 // 为什么手写:macOS 上 toggleMaximize(系统 zoom)的目标不贴近整屏,与用户习惯不符;
-// 故 macOS 上手动铺满 primary_monitor 的 work_area 并记忆原几何,还原时恢复。
-// 铺满态用内存标记(mac_prev_geom 是否 Some)判定,不比对像素(系统缩放/对齐会引入像素差)。
+// 故 macOS 上手动铺满 primary_monitor 的 work_area。单向语义:Mac 无 Windows 式
+// 最大化,平铺即常态——双击总是铺满(窗口被移走后再次双击也会重新铺满),不还原。
+// 动画:NSWindow setFrame:display:animate: 提供与系统一致的平铺动画。
 // Windows/Linux 维持系统 toggleMaximize 语义(该 command 仅 macOS 生效)。
 #[tauri::command]
 fn mac_maximize(window: tauri::WebviewWindow, state: tauri::State<AppState>) -> Result<bool, String> {
     #[cfg(target_os = "macos")]
     {
-        let mut guard = state.mac_prev_geom.lock().unwrap();
-        if let Some((x, y, w, h)) = guard.take() {
-            // 铺满中 → 还原到铺满前几何
-            window
-                .set_position(tauri::PhysicalPosition::new(x, y))
-                .map_err(|e| e.to_string())?;
-            window
-                .set_size(tauri::PhysicalSize::new(w, h))
-                .map_err(|e| e.to_string())?;
-            Ok(false)
-        } else {
-            // 未铺满 → 记录当前几何,铺满可用工作区
-            let pos = window.outer_position().map_err(|e| e.to_string())?;
-            let size = window.outer_size().map_err(|e| e.to_string())?;
-            *guard = Some((pos.x, pos.y, size.width, size.height));
-            let monitor = window
-                .primary_monitor()
-                .map_err(|e| e.to_string())?
-                .ok_or_else(|| "no primary monitor".to_string())?;
-            let wa = monitor.work_area();
-            window.set_position(wa.position).map_err(|e| e.to_string())?;
-            window.set_size(wa.size).map_err(|e| e.to_string())?;
-            Ok(true)
-        }
+        use objc2::rc::Id;
+        use objc2_app_kit::NSWindow;
+        use objc2_foundation::{NSPoint, NSRect, NSSize};
+        let _ = state; // 单向铺满,不再记忆/还原原几何
+        let monitor = window
+            .primary_monitor()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "no primary monitor".to_string())?;
+        let wa = monitor.work_area();
+        let sf = window.scale_factor().map_err(|e| e.to_string())?;
+        let msize = monitor.size();
+        let x = wa.position.x as f64 / sf;
+        let y_tl = wa.position.y as f64 / sf;
+        let w = wa.size.width as f64 / sf;
+        let h = wa.size.height as f64 / sf;
+        // AppKit setFrame 用左下原点全局坐标:把 work_area(左上原点)翻转 Y
+        let screen_h = msize.height as f64 / sf;
+        let y_ns = screen_h - (y_tl + h);
+        // tauri ns_window() 返回裸指针,retain 成 Id<NSWindow> 后调用带动画的 setFrame
+        let ns_ptr = window.ns_window().map_err(|e| e.to_string())?;
+        let ns: Id<NSWindow> = unsafe { Id::retain(ns_ptr.cast::<NSWindow>()) }
+            .ok_or_else(|| "ns_window is null".to_string())?;
+        ns.setFrame_display_animate(
+            NSRect::new(NSPoint::new(x, y_ns), NSSize::new(w, h)),
+            true,
+            true,
+        );
+        Ok(true)
     }
     #[cfg(not(target_os = "macos"))]
     {
