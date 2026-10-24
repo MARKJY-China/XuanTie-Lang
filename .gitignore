@@ -112,3 +112,5 @@ INVESTIGATION_xt.md
 /xt-ecosystem/
 # 会话日志属本地工作记录,不入库(跨会话交接写进契约或正式文档)
 /docs/sessions/
+# API 参考为 tools/gen-api.mjs 的生成物,不入库(离线包会带上)
+/GUIDE/API/
