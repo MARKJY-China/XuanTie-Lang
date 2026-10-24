@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <math.h>   // llround(issue #69 数值分派)
 #include <time.h>  // nanosleep(issue #95 暂停 真休眠)
@@ -1168,6 +1169,671 @@ uintptr_t XT_SynthSound(uintptr_t freq_hz, uintptr_t ms) {
     return XT_FROM_INT(slot + 1);
 }
 
+// ═══════════════════════════════════════════════════════════════
+// 合成器扩展(issue #94)——波形 / ADSR 包络 / EQ / 延迟 / 混响
+// 波形: 0=正弦 1=三角 2=锯齿 3=方波 4=白噪;音量 0~1;
+// 包络: 起音/衰减/释音 毫秒,延持电平 0~1(全 0 时退化为原 10ms 淡入淡出);
+// EQ: 低/中/高 三带 peaking 增益 dB(0=直通);
+// 延迟: 时间毫秒(0=关),反馈 0~1,混合 0~1;
+// 混响: 房间大小 0~1(0=关),湿干比 0~1。
+// 返回与文件音效同一槽位池的句柄(槽号+1),0 表示失败;播放/释放走既有 播音效/释音效。
+// ═══════════════════════════════════════════════════════════════
+
+// 确定性白噪 LCG(同输入同输出,便于复现)
+static unsigned long xt_rng_state = 2463534242UL;
+static double xt_rng_next(void) {
+    xt_rng_state = xt_rng_state * 1664525UL + 1013904223UL;
+    return (double)((xt_rng_state >> 16) & 0x7FFF) / 32767.0 * 2.0 - 1.0;
+}
+
+// 单振荡器波形采样(相位角 rad):0=正弦 1=三角 2=锯齿 3=方波 4=白噪
+// polyBLEP 带限修正窗:消除锯齿/方波在 Nyquist 之上的谐波混叠折叠(短周期"抖动"根因)
+// 听感验收(2026-10-20):修复后 450Hz 混叠杂散 161.8→2.5,抖动消除;方波≈FL 3xOsc 方波套 5735Hz 61% 低通(FL EQ2 实测对比),
+//   柔和但干净——22050 Nyquist 上限 + polyBLEP 滚降所致,用户拍板保持现状。详见 docs/波形带限与听感验收记录.md
+static double xt_poly_blep(double t, double dt) {
+    if (t < dt) {
+        t /= dt;
+        return t + t - t * t - 1.0;
+    } else if (t > 1.0 - dt) {
+        t = (t - 1.0) / dt;
+        return t * t + t + t + 1.0;
+    }
+    return 0.0;
+}
+static double xt_osc_sample(int wave, double ph, double dt) {
+    const double tau = 2.0 * 3.14159265358979323846;
+    switch (wave) {
+        case 1: { // 三角
+            double p = fmod(ph, tau);
+            return 4.0 * fabs(p / tau - 0.5) - 1.0; }
+        case 2: { // 锯齿(上升)+ polyBLEP 带限
+            double t = fmod(ph, tau) / tau;
+            return 2.0 * t - 1.0 - xt_poly_blep(t, dt); }
+        case 3: { // 方波(50% 占空)+ polyBLEP 带限
+            double t = fmod(ph, tau) / tau;
+            double v = (t < 0.5) ? 1.0 : -1.0;
+            return v + xt_poly_blep(t, dt) - xt_poly_blep(fmod(t + 0.5, 1.0), dt); }
+        case 4:  return xt_rng_next();                 // 白噪
+        default: return sin(ph);                       // 正弦
+    }
+}
+
+// 简易双二阶 peaking 滤波(transposed direct form II)
+typedef struct { double b0, b1, b2, a1, a2, z1, z2; } XtPeak;
+static void xt_peak_init(XtPeak* p, double f0, double q, double gain_db, double fs) {
+    double A = pow(10.0, gain_db / 40.0);
+    double w0 = 2.0 * 3.14159265358979323846 * f0 / fs;
+    double cs = cos(w0), sn = sin(w0), alpha = sn / (2.0 * q);
+    double a0 = 1.0 + alpha / A;
+    p->b0 = (1.0 + alpha * A) / a0;
+    p->b1 = (-2.0 * cs) / a0;
+    p->b2 = (1.0 - alpha * A) / a0;
+    p->a1 = (-2.0 * cs) / a0;
+    p->a2 = (1.0 - alpha / A) / a0;
+    p->z1 = p->z2 = 0.0;
+}
+static double xt_peak_run(XtPeak* p, double x) {
+    double y = p->b0 * x + p->z1;
+    p->z1 = p->b1 * x - p->a1 * y + p->z2;
+    p->z2 = p->b2 * x - p->a2 * y;
+    return y;
+}
+
+// freeverb 简化混响(mono: 4 comb + 2 allpass;tunings 按 22050 采样率折算)
+typedef struct { double* buf; int idx, size; double fb, damp, damp_lp; double mod_ph, mod_sp; } XtComb;
+// 混响坑位备忘(完整版:docs/混响实现踩坑记录.md, issue #94):
+// - freeverb(comb+allpass) 尾音金属薄钢板感 → 换 FDN,勿回退
+// - FDN 线长须质数互质,否则模态拍频"起伏/双音"
+// - allpass 必须全通(分子带 fb):缺 fb 高频增益>1 = 放大器 → 尾音饱和方块波"甩水"
+// - 湿音增益从输出侧补,勿靠注入硬顶(tanh 饱和 = 方块波)
+typedef struct { double* buf; int idx, size; double fb; double mod_ph, mod_sp; } XtAllpass;
+typedef struct { double* buf; int idx, size; } XtDelay;
+// FDN 反馈延迟网络(issue #94 混响升级:8 线交叉互连,能量循环扩散,无 comb 金属共振)
+static void xt_allpass_init(XtAllpass* a, int samples);   // 前向声明(xt_fdn_init 调用在定义前)
+static double xt_allpass_run(XtAllpass* a, double x);   // 前向声明:xt_fdn_step 线内扩散使用
+typedef struct { double* buf; int idx, size; double damp, damp_lp; double mod_ph, mod_sp; XtAllpass ap; } XtFdnLine;   // 线内 allpass 扩散:打破梳状模态,频谱平滑
+static void xt_fdn_init(XtFdnLine* L, int samples) {
+    L->buf = (double*)calloc((size_t)samples, sizeof(double));
+    L->size = samples; L->idx = 0; L->damp = 0.35; L->damp_lp = 0.0;   // 反馈低通加深:模态共振钝化
+    L->mod_ph = (double)(samples % 97) * 0.13; L->mod_sp = 0.00005;   // 慢速 LFO 打散模态拍频
+    xt_allpass_init(&L->ap, 60);   // 线内扩散器(60 采样=2.7ms):共振模态真正打散,甩水回声雾化
+}
+// 单步:读 8 线输出(经阻尼低通),Householder 正交矩阵反馈,干音注入线 0
+static void xt_fdn_step(double* out, XtFdnLine* L, double x, double g) {
+    double s[16], sum = 0.0;
+    for (int i = 0; i < 16; i++) {
+        double o = xt_allpass_run(&L[i].ap, L[i].buf[L[i].idx]);
+        L[i].damp_lp = o * (1.0 - L[i].damp) + L[i].damp_lp * L[i].damp;
+        s[i] = L[i].damp_lp; sum += s[i]; out[i] = o;
+    }
+    for (int i = 0; i < 16; i++) {
+        double fb = s[i] - 0.125 * sum;   // (I - 2/N·J)·s:Householder 正交扩散
+        double w = fb * g;
+        if (i == 0) w += 1.0 * x;   // 注入保持 1.0:过载会让尾音 tanh 饱和削平(甩水/铁板听感)
+        int wi = L[i].idx + (int)(2.5 * sin(L[i].mod_ph));   // LFO 漂移模态,打散拍频
+        if (wi < 0) wi += L[i].size; if (wi >= L[i].size) wi -= L[i].size;
+        L[i].buf[wi] = w;
+        L[i].mod_ph += L[i].mod_sp;
+        L[i].idx++; if (L[i].idx >= L[i].size) L[i].idx = 0;
+    }
+}
+
+static void xt_comb_init(XtComb* c, int samples) {
+    c->buf = (double*)calloc((size_t)samples, sizeof(double));
+    c->size = samples; c->idx = 0; c->fb = 0.0; c->damp = 0.7; c->damp_lp = 0.0;
+    c->mod_ph = (double)(samples % 97) * 0.17; c->mod_sp = 0.00005;   // 慢速 LFO 打破静态梳状峰
+}
+static double xt_comb_run(XtComb* c, double x) {
+    double out = c->buf[c->idx];
+    c->damp_lp = out * (1.0 - c->damp) + c->damp_lp * c->damp;
+    int wi = c->idx + (int)(1.5 * sin(c->mod_ph));
+    if (wi < 0) wi += c->size; if (wi >= c->size) wi -= c->size;
+    c->buf[wi] = x + c->damp_lp * c->fb;
+    c->mod_ph += c->mod_sp;
+    c->idx++; if (c->idx >= c->size) c->idx = 0;
+    return out;
+}
+static void xt_allpass_init(XtAllpass* a, int samples) {
+    a->buf = (double*)calloc((size_t)samples, sizeof(double));
+    a->size = samples; a->idx = 0; a->fb = 0.65;   // 扩散反馈增强
+    a->mod_ph = (double)(samples % 53) * 0.29; a->mod_sp = 0.00004;   // 慢速 LFO 扩散
+}
+static double xt_allpass_run(XtAllpass* a, double x) {
+    double out = -a->fb * x + a->buf[a->idx];   // 全通必需:分子带 fb,否则高频增益 >1 变放大器(甩水/铁板根因)
+    int wi = a->idx + (int)(1.0 * sin(a->mod_ph));
+    if (wi < 0) wi += a->size; if (wi >= a->size) wi -= a->size;
+    a->buf[wi] = x + out * a->fb;
+    a->mod_ph += a->mod_sp;
+    a->idx++; if (a->idx >= a->size) a->idx = 0;
+    return out;
+}
+static void xt_delay_init(XtDelay* d, int samples) {
+    d->buf = (double*)calloc((size_t)samples, sizeof(double));
+    d->size = samples; d->idx = 0;
+}
+static double xt_delay_run(XtDelay* d, double x) {
+    double out = d->buf[d->idx];
+    d->buf[d->idx] = x;
+    d->idx++; if (d->idx >= d->size) d->idx = 0;
+    return out;
+}
+
+uintptr_t XT_SynthSoundEx(uintptr_t freq_hz, uintptr_t ms, uintptr_t wave, uintptr_t vol,
+                          uintptr_t atk_ms, uintptr_t dec_ms, uintptr_t sus_lvl, uintptr_t rel_ms,
+                          uintptr_t bass_db, uintptr_t mid_db, uintptr_t treb_db,
+                          uintptr_t dly_ms, uintptr_t dly_fb, uintptr_t dly_mix,
+                          uintptr_t rev_room, uintptr_t rev_mix) {
+    int slot = xt_snd_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    double f = xt_get_float(freq_hz);
+    int m = (int)xt_ni(ms);
+    int wv = (int)xt_ni(wave);
+    double v  = xt_get_float(vol);
+    double atk = xt_get_float(atk_ms), dec = xt_get_float(dec_ms);
+    double sus = xt_get_float(sus_lvl), rel = xt_get_float(rel_ms);
+    double bdb = xt_get_float(bass_db), mdb = xt_get_float(mid_db), tdb = xt_get_float(treb_db);
+    double dly = xt_get_float(dly_ms), dfb = xt_get_float(dly_fb), dmx = xt_get_float(dly_mix);
+    double rrm = xt_get_float(rev_room), rmx = xt_get_float(rev_mix);
+    // 钳制
+    if (f <= 0.0) f = 440.0;
+    if (m <= 0) m = 120;
+    if (m > 10000) m = 10000;
+    if (wv < 0) wv = 0; if (wv > 4) wv = 4;
+    if (v <= 0.0) v = 0.35; if (v > 1.0) v = 1.0;
+    if (atk < 0.0) atk = 0.0; if (dec < 0.0) dec = 0.0; if (rel < 0.0) rel = 0.0;
+    if (sus < 0.0) sus = 0.0; if (sus > 1.0) sus = 1.0;
+    if (bdb < -24.0) bdb = -24.0; if (bdb > 24.0) bdb = 24.0;
+    if (mdb < -24.0) mdb = -24.0; if (mdb > 24.0) mdb = 24.0;
+    if (tdb < -24.0) tdb = -24.0; if (tdb > 24.0) tdb = 24.0;
+    if (dly < 0.0) dly = 0.0; if (dly > 2000.0) dly = 2000.0;
+    if (dfb < 0.0) dfb = 0.0; if (dfb > 0.95) dfb = 0.95;
+    if (dmx < 0.0) dmx = 0.0; if (dmx > 1.0) dmx = 1.0;
+    if (rrm < 0.0) rrm = 0.0; if (rrm > 0.95) rrm = 0.95;
+    if (rmx < 0.0) rmx = 0.0; if (rmx > 1.0) rmx = 1.0;
+
+    const int rate = 22050;
+    int n = (int)((long long)rate * m / 1000);
+    if (n < 1) n = 1;
+    short* pcm = (short*)malloc(sizeof(short) * (size_t)n);
+    if (!pcm) return XT_FROM_INT(0);
+    double w = 2.0 * 3.14159265358979323846 * f / (double)rate;
+
+    // 包络样本数(起音/衰减/释音),延持段为两者之间
+    int a_n = (int)(rate * atk / 1000.0);
+    int d_n = (int)(rate * dec / 1000.0);
+    int r_n = (int)(rate * rel / 1000.0);
+    if (a_n > n / 2) a_n = n / 2;
+    if (d_n > n - a_n - r_n) d_n = (n - a_n - r_n > 0) ? (n - a_n - r_n) : 0;
+    if (r_n > n - a_n - d_n) r_n = (n - a_n - d_n > 0) ? (n - a_n - d_n) : 0;
+    // 包络缺省退化:全 0 → 原 10ms 淡入淡出
+    if (a_n == 0 && d_n == 0 && r_n == 0 && sus >= 1.0) {
+        int fade = rate / 100;
+        if (fade > n / 2) fade = n / 2;
+        a_n = fade; r_n = fade;
+    }
+
+    // EQ 三带
+    XtPeak eqL, eqM, eqT;
+    xt_peak_init(&eqL, 200.0, 0.7, bdb, (double)rate);
+    xt_peak_init(&eqM, 1000.0, 0.7, mdb, (double)rate);
+    xt_peak_init(&eqT, 5000.0, 0.7, tdb, (double)rate);
+
+    // 延迟/混响(0 值即关闭)
+    XtDelay dline;   XtDelay* dp = NULL;
+    XtFdnLine fl[16]; int ccount = 0;   // FDN 8 线(issue #94 混响升级,无 comb 金属共振)
+    double fg = 0.28 + rrm * 0.7; if (fg > 0.95) fg = 0.95;   // FDN 反馈增益
+    double tail_lp = 0.0;   // 尾音一阶低通状态:压共振金属感
+    XtAllpass ap[16]; int acount = 0;
+    if (dly > 0.0) {
+        int dn = (int)(rate * dly / 1000.0);
+        if (dn < 1) dn = 1;
+        xt_delay_init(&dline, dn); dp = &dline;
+    }
+    if (rrm > 0.0) {
+        static const int fdn_t[16] = { 349, 367, 389, 409, 431, 457, 479, 499, 521, 547, 571, 599, 619, 647, 683, 733 };  // 16 质数线 15.8-33.2ms,房间空间更大
+        static const int ap_t[16]   = { 278, 221, 171, 113, 65, 41, 31, 23, 17, 13, 11, 7, 5, 3, 2, 1 };  // 16 级深度扩散
+        for (int i = 0; i < 16; i++) { xt_fdn_init(&fl[i], fdn_t[i]); ccount++; }
+        for (int i = 0; i < 16; i++) { xt_allpass_init(&ap[i], ap_t[i]); acount++; }
+    }
+
+    for (int i = 0; i < n; i++) {
+        // 1) 波形
+        double s = xt_osc_sample(wv, w * (double)i, w / (2.0 * 3.14159265358979323846));
+        // 2) ADSR 包络 × 音量
+        double env;
+        if (i < a_n) env = (double)i / (double)a_n;
+        else if (i < a_n + d_n) env = 1.0 - (1.0 - sus) * ((double)(i - a_n) / (double)d_n);
+        else if (i >= n - r_n) env = sus * (double)(n - 1 - i) / (double)r_n;
+        else env = sus;
+        s *= v * env;
+        // 3) EQ 三带
+        s = xt_peak_run(&eqL, s);
+        s = xt_peak_run(&eqM, s);
+        s = xt_peak_run(&eqT, s);
+        // 4) 延迟(输入 = 原声 + 反馈回声)
+        if (dp) {
+            double e = xt_delay_run(dp, s + (dp->idx < dp->size ? dp->buf[dp->idx] : 0.0) * dfb);
+            s = s * (1.0 - dmx) + e * dmx;
+        }
+        // 5) 混响(4 comb + 2 allpass,湿干混合)
+        if (ccount > 0) {
+            double wet = 0.0;
+            double fouts[16];
+            xt_fdn_step(fouts, fl, s, fg);
+            for (int k = 0; k < 16; k++) wet += fouts[k];
+            wet /= 16.0;
+            wet *= 3.0;   // 湿音输出侧增益补偿(全通修复后无放大,可安全提响)
+            for (int k = 0; k < acount; k++) wet = xt_allpass_run(&ap[k], wet);
+            tail_lp = wet * 0.47 + tail_lp * 0.53;
+            wet = tail_lp;
+            if (i < 882) wet *= (double)i / 882.0;   // 湿音 40ms 渐入,消除起始瞬态敲击(水滴铁板)
+            s = s * (1.0 - rmx * 0.5) + wet * (rmx * 0.5);   // 干音期湿音压 50%:水滴可控且混响有参与感;尾音期全开
+        }
+        // 6) 软限幅防爆音
+        s = tanh(s);
+        pcm[i] = (short)(s * 32767.0);
+    }
+    // 效果尾音:音符结束后延迟/混响继续输出(留白回声),避免尾音被音效长度硬切
+    if (dp || ccount > 0) {
+        int tail = 0;
+        if (dp) { int td = (int)(rate * dly / 1000.0) * 5; if (td > tail) tail = td; }
+        if (ccount > 0) {
+                // 动态尾长:高反馈房间衰减慢,尾长按最长 comb 衰减到 -66dB 计算,避免尾音硬截止
+                double fbmax = 0.28 + rrm * 0.7; if (fbmax > 0.95) fbmax = 0.95;
+                int tr = (int)(rate * 2.0);
+                if (fbmax > 0.90) {
+                    double period = 733.0 / rate;   // 最长 FDN 线(与 fdn_t[15] 同步)
+                    double ncyc = log(0.0005) / log(fbmax);
+                    int need = (int)(period * ncyc * rate);
+                    if (need > tr) tr = need;
+                }
+                if (tr > tail) tail = tr;
+            }
+        if (tail > 0) {
+            int total = n + tail;
+            short* npcm = (short*)realloc(pcm, sizeof(short) * (size_t)total);
+            if (npcm) {
+                pcm = npcm;
+                for (int j = n; j < total; j++) {
+                    double s = 0.0;   // 音符已结束,只输出效果尾音
+                    if (dp) {
+                        double e = xt_delay_run(dp, s + (dp->idx < dp->size ? dp->buf[dp->idx] : 0.0) * dfb);
+                        s = s * (1.0 - dmx) + e * dmx;
+                    }
+                    if (ccount > 0) {
+                        double wet = 0.0;
+                        double fouts[16];
+                        xt_fdn_step(fouts, fl, s, fg);
+                        wet = 0.0;
+                        for (int k = 0; k < 16; k++) wet += fouts[k];
+                        wet /= 16.0;
+                        wet *= 10.0;   // 尾音期湿音放大:尾音是混响主体(干音期保持 3.0)
+                        for (int k = 0; k < acount; k++) wet = xt_allpass_run(&ap[k], wet);
+                        s = s * (1.0 - rmx) + wet * rmx;
+                    }
+                    if (ccount > 0) {
+                        tail_lp = s * 0.47 + tail_lp * 0.53;   // ~2.2kHz 一阶低通,压尾音金属共振(钢板模态在中低频)
+                        s = tail_lp;
+                        int fade_n = (int)(rate * 0.3);
+                        if (fade_n > 0 && (total - j) < fade_n) s = s * ((double)(total - j) / fade_n);
+                    }
+                    s = tanh(s);
+                    pcm[j] = (short)(s * 32767.0);
+                }
+                n = total;
+            }
+        }
+    }
+    // 调试导出:环境变量 XT_WAVE_DUMP 存在时写 raw PCM(16bit mono),用于尾音时域分析
+    if (getenv("XT_WAVE_DUMP")) {
+        FILE* fd = fopen(getenv("XT_WAVE_DUMP"), "wb");
+        if (fd) { fwrite(pcm, sizeof(short), (size_t)n, fd); fclose(fd); }
+    }
+    // 释放效果器缓冲
+    if (dp) { free(dp->buf); }
+    for (int k = 0; k < ccount; k++) { free(fl[k].buf); free(fl[k].ap.buf); }
+    for (int k = 0; k < acount; k++) free(ap[k].buf);
+
+    Wave wv2;
+    wv2.frameCount = (unsigned int)n;
+    wv2.sampleRate = (unsigned int)rate;
+    wv2.sampleSize = 16;
+    wv2.channels = 1;
+    wv2.data = pcm;
+    Sound s2 = LoadSoundFromWave(wv2);
+    if (s2.stream.buffer == NULL || s2.frameCount == 0) {
+        free(pcm);
+        return XT_FROM_INT(0);
+    }
+    xt_snd_pool[slot] = s2;
+    xt_synth_pcm[slot] = pcm;                    // 保活;XT_UnloadSound 释放
+    xt_snd_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
+// 扫频带通(issue #94 扩展)——白噪等波形通过中心频率随时间扫动的 SVF 带通 = 风声/呜咽
+// 方向: 0 升(起始→终止) 1 降(终止→起始) 2 往复(升→降往返,呜咽感)
+typedef struct { double f, q, low, band; } XtSvf;
+static double xt_svf_bp(XtSvf* sv, double in) {
+    double low = sv->low, band = sv->band;
+    low += sv->f * band;
+    double high = in - low - sv->q * band;
+    band += sv->f * high;
+    sv->low = low; sv->band = band;
+    return band;
+}
+uintptr_t XT_SynthSoundSweep(uintptr_t freq_hz, uintptr_t ms, uintptr_t wave, uintptr_t vol,
+                             uintptr_t f0h, uintptr_t f1h, uintptr_t qh, uintptr_t dir) {
+    int slot = xt_snd_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    double f = xt_get_float(freq_hz);
+    int m = (int)xt_ni(ms);
+    int wv = (int)xt_ni(wave);
+    double v = xt_get_float(vol);
+    double f0 = xt_get_float(f0h), f1 = xt_get_float(f1h);
+    double q = xt_get_float(qh); double q_target = q;   // 带宽平滑目标(随机段切换时渐变,避免爆音)
+    int d = (int)xt_ni(dir);
+    if (f <= 0.0) f = 440.0;
+    if (m <= 0) m = 120;
+    if (m > 10000) m = 10000;
+    if (wv < 0) wv = 0; if (wv > 4) wv = 4;
+    if (v <= 0.0) v = 0.35; if (v > 1.0) v = 1.0;
+    if (f0 < 20.0) f0 = 20.0; if (f0 > 8000.0) f0 = 8000.0;
+    if (f1 < 20.0) f1 = 20.0; if (f1 > 8000.0) f1 = 8000.0;
+    if (q <= 0.0) q = 0.8; if (q > 4.0) q = 4.0; if (q < 0.02) q = 0.02;
+    if (d < 0) d = 0; if (d > 4) d = 4;
+    const int rate = 22050;
+    int n = (int)((long long)rate * m / 1000);
+    if (n < 1) n = 1;
+    short* pcm = (short*)malloc(sizeof(short) * (size_t)n);
+    if (!pcm) return XT_FROM_INT(0);
+    double w = 2.0 * 3.14159265358979323846 * f / (double)rate;
+    double ph = 0.0;
+    unsigned int rng = (unsigned int)time(NULL) ^ (unsigned int)((uintptr_t)pcm >> 4) ^ 0x9e3779b9u;   // 每次调用种子不同(每次播放随机)
+    double fc = (f0 + f1) * 0.5, seg_from = fc, seg_to = fc; int seg_i = 1, seg_len = 1, pause_left = 0;   // 随机滑行状态(含随机停顿)
+    XtSvf sv; sv.f = 0.0; sv.q = q; sv.low = 0.0; sv.band = 0.0;
+    int fade = rate / 100; if (fade > n / 2) fade = n / 2;
+    for (int i = 0; i < n; i++) {
+        double x;
+        if (wv == 4) {
+            rng = rng * 1664525u + 1013904223u;
+            x = ((double)(rng >> 8) / 16777216.0) * 2.0 - 1.0;
+        } else {
+            if (wv == 0) x = sin(ph);
+            else if (wv == 1) x = (ph < 3.14159265358979323846) ? ph / 3.14159265358979323846 * 2.0 - 1.0 : 1.0 - (ph - 3.14159265358979323846) / 3.14159265358979323846 * 2.0;
+            else if (wv == 2) x = ph / 3.14159265358979323846 * 2.0 - 1.0;
+            else x = (ph < 3.14159265358979323846) ? 1.0 : -1.0;
+            ph += w;
+            if (ph >= 2.0 * 3.14159265358979323846) ph -= 2.0 * 3.14159265358979323846;
+        }
+        double t = (double)i / (double)(n - 1);
+        double tt = t;
+        double fc;
+        if (d == 3) {   // 随机滑行:每段 600~1200ms 滑到随机端点,方向/范围/速度随机;30% 概率随机停顿 200~600ms;带宽(共振)每段 5%~25% 随机
+            if (seg_i >= seg_len) {
+                if (pause_left <= 0 && ((double)(rng >> 8) / 16777216.0) < 0.3) {
+                    pause_left = (int)(rate * (0.2 + ((double)(rng >> 8) / 16777216.0) * 0.4));
+                }
+                if (pause_left > 0) {
+                    pause_left--;
+                } else {
+                    seg_from = fc;
+                    seg_to = f0 + (f1 - f0) * ((double)(rng >> 8) / 16777216.0);
+                    seg_len = (int)(rate * (0.6 + ((double)(rng >> 8) / 16777216.0) * 0.6));
+                    if (seg_len < 1) seg_len = 1;
+                    seg_i = 0;
+                    q_target = 0.025 + ((double)(rng >> 8) / 16777216.0) * 0.1;   // 带宽 5%~25% 随机(渐变到达)
+                }
+            }
+            fc = seg_from + (seg_to - seg_from) * ((double)seg_i / (double)seg_len);
+            seg_i++;
+        } else if (d == 4) {   // 静止:中心频率固定(长期铺垫氛围,如 180Hz 低频风声底)
+            fc = f0;
+        } else {
+            if (d == 1) tt = 1.0 - t;
+            else if (d == 2) tt = (t < 0.5) ? t * 2.0 : (1.0 - t) * 2.0;
+            fc = f0 + (f1 - f0) * tt;
+        }
+        sv.f = 2.0 * sin(3.14159265358979323846 * fc / (double)rate);
+        sv.q += (q_target - sv.q) * 0.001;   // 带宽平滑过渡(~45ms),消除段切换爆音
+        double y = xt_svf_bp(&sv, x) * (2.0 * sv.q) * 0.5;   // 归一留峰值余量:噪声峰值因子高,全幅会顶满饱和(炸麦)
+        double env = 1.0;
+        if (i < fade) env = (double)i / (double)fade;
+        if (i > n - fade) env = (double)(n - i) / (double)fade;
+        double s = tanh(y * v * 2.0) / tanh(2.0) * 32767.0;   // 温和软限幅(不方波化)
+        s *= env;
+        if (s > 32767.0) s = 32767.0;
+        if (s < -32767.0) s = -32767.0;
+        pcm[i] = (short)s;
+    }
+    Wave wv2;
+    wv2.frameCount = (unsigned int)n;
+    wv2.sampleRate = (unsigned int)rate;
+    wv2.sampleSize = 16;
+    wv2.channels = 1;
+    wv2.data = pcm;
+    Sound s2 = LoadSoundFromWave(wv2);
+    if (s2.stream.buffer == NULL || s2.frameCount == 0) {
+        free(pcm);
+        return XT_FROM_INT(0);
+    }
+    xt_snd_pool[slot] = s2;
+    xt_synth_pcm[slot] = pcm;
+    xt_snd_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
+// 合成器多振荡器(issue #94 扩展)——固定 4 槽,振荡器数 1~4,每槽 波形/音量/频率比;
+// 槽音量 0 = 未显式给 → 自动均分(每槽 0.35/n,与单振荡器默认响度一致);
+// 频率比 = 相对基频倍数(1=同频, 2=高八度, 0.5=低八度);
+// 包络/EQ/延迟/混响 参数与 XT_SynthSoundEx 完全一致,全局作用于混合后整体。
+uintptr_t XT_SynthSoundMulti(uintptr_t freq_hz, uintptr_t ms, uintptr_t osc_count,
+                             uintptr_t w1, uintptr_t v1, uintptr_t r1,
+                             uintptr_t w2, uintptr_t v2, uintptr_t r2,
+                             uintptr_t w3, uintptr_t v3, uintptr_t r3,
+                             uintptr_t w4, uintptr_t v4, uintptr_t r4,
+                             uintptr_t atk_ms, uintptr_t dec_ms, uintptr_t sus_lvl, uintptr_t rel_ms,
+                             uintptr_t bass_db, uintptr_t mid_db, uintptr_t treb_db,
+                             uintptr_t dly_ms, uintptr_t dly_fb, uintptr_t dly_mix,
+                             uintptr_t rev_room, uintptr_t rev_mix) {
+    int slot = xt_snd_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    double f = xt_get_float(freq_hz);
+    int m = (int)xt_ni(ms);
+    int cnt = (int)xt_ni(osc_count);
+    if (f <= 0.0) f = 440.0;
+    if (m <= 0) m = 120;
+    if (m > 10000) m = 10000;
+    if (cnt < 1) cnt = 1; if (cnt > 4) cnt = 4;
+
+    int    wv[4] = { (int)xt_ni(w1), (int)xt_ni(w2), (int)xt_ni(w3), (int)xt_ni(w4) };
+    double vv[4] = { xt_get_float(v1), xt_get_float(v2), xt_get_float(v3), xt_get_float(v4) };
+    double rr[4] = { xt_get_float(r1), xt_get_float(r2), xt_get_float(r3), xt_get_float(r4) };
+    for (int k = 0; k < 4; k++) {
+        if (wv[k] < 0) wv[k] = 0; if (wv[k] > 4) wv[k] = 4;
+        if (rr[k] <= 0.0) rr[k] = 1.0; if (rr[k] > 20.0) rr[k] = 20.0;
+        if (vv[k] <= 0.0) vv[k] = 0.35 / (double)cnt;   // 自动均分,总响度与单振荡器默认一致
+        if (vv[k] > 1.0) vv[k] = 1.0;
+    }
+
+    double atk = xt_get_float(atk_ms), dec = xt_get_float(dec_ms);
+    double sus = xt_get_float(sus_lvl), rel = xt_get_float(rel_ms);
+    double bdb = xt_get_float(bass_db), mdb = xt_get_float(mid_db), tdb = xt_get_float(treb_db);
+    double dly = xt_get_float(dly_ms), dfb = xt_get_float(dly_fb), dmx = xt_get_float(dly_mix);
+    double rrm = xt_get_float(rev_room), rmx = xt_get_float(rev_mix);
+    if (atk < 0.0) atk = 0.0; if (dec < 0.0) dec = 0.0; if (rel < 0.0) rel = 0.0;
+    if (sus < 0.0) sus = 0.0; if (sus > 1.0) sus = 1.0;
+    if (bdb < -24.0) bdb = -24.0; if (bdb > 24.0) bdb = 24.0;
+    if (mdb < -24.0) mdb = -24.0; if (mdb > 24.0) mdb = 24.0;
+    if (tdb < -24.0) tdb = -24.0; if (tdb > 24.0) tdb = 24.0;
+    if (dly < 0.0) dly = 0.0; if (dly > 2000.0) dly = 2000.0;
+    if (dfb < 0.0) dfb = 0.0; if (dfb > 0.95) dfb = 0.95;
+    if (dmx < 0.0) dmx = 0.0; if (dmx > 1.0) dmx = 1.0;
+    if (rrm < 0.0) rrm = 0.0; if (rrm > 0.95) rrm = 0.95;
+    if (rmx < 0.0) rmx = 0.0; if (rmx > 1.0) rmx = 1.0;
+
+    const int rate = 22050;
+    int n = (int)((long long)rate * m / 1000);
+    if (n < 1) n = 1;
+    short* pcm = (short*)malloc(sizeof(short) * (size_t)n);
+    if (!pcm) return XT_FROM_INT(0);
+    double w[4];
+    for (int k = 0; k < 4; k++)
+        w[k] = 2.0 * 3.14159265358979323846 * f * rr[k] / (double)rate;
+
+    // 包络样本数(起音/衰减/释音),延持段为两者之间
+    int a_n = (int)(rate * atk / 1000.0);
+    int d_n = (int)(rate * dec / 1000.0);
+    int r_n = (int)(rate * rel / 1000.0);
+    if (a_n > n / 2) a_n = n / 2;
+    if (d_n > n - a_n - r_n) d_n = (n - a_n - r_n > 0) ? (n - a_n - r_n) : 0;
+    if (r_n > n - a_n - d_n) r_n = (n - a_n - d_n > 0) ? (n - a_n - d_n) : 0;
+    // 包络缺省退化:全 0 → 原 10ms 淡入淡出
+    if (a_n == 0 && d_n == 0 && r_n == 0 && sus >= 1.0) {
+        int fade = rate / 100;
+        if (fade > n / 2) fade = n / 2;
+        a_n = fade; r_n = fade;
+    }
+
+    // EQ 三带
+    XtPeak eqL, eqM, eqT;
+    xt_peak_init(&eqL, 200.0, 0.7, bdb, (double)rate);
+    xt_peak_init(&eqM, 1000.0, 0.7, mdb, (double)rate);
+    xt_peak_init(&eqT, 5000.0, 0.7, tdb, (double)rate);
+
+    // 延迟/混响(0 值即关闭)
+    XtDelay dline;   XtDelay* dp = NULL;
+    XtFdnLine fl[16]; int ccount = 0;   // FDN 8 线(issue #94 混响升级,无 comb 金属共振)
+    double fg = 0.28 + rrm * 0.7; if (fg > 0.95) fg = 0.95;   // FDN 反馈增益
+    double tail_lp = 0.0;   // 尾音一阶低通状态:压共振金属感
+    XtAllpass ap[16]; int acount = 0;
+    if (dly > 0.0) {
+        int dn = (int)(rate * dly / 1000.0);
+        if (dn < 1) dn = 1;
+        xt_delay_init(&dline, dn); dp = &dline;
+    }
+    if (rrm > 0.0) {
+        static const int fdn_t[16] = { 349, 367, 389, 409, 431, 457, 479, 499, 521, 547, 571, 599, 619, 647, 683, 733 };  // 16 质数线 15.8-33.2ms,房间空间更大
+        static const int ap_t[16]   = { 278, 221, 171, 113, 65, 41, 31, 23, 17, 13, 11, 7, 5, 3, 2, 1 };  // 16 级深度扩散
+        for (int i = 0; i < 16; i++) { xt_fdn_init(&fl[i], fdn_t[i]); ccount++; }
+        for (int i = 0; i < 16; i++) { xt_allpass_init(&ap[i], ap_t[i]); acount++; }
+    }
+
+    for (int i = 0; i < n; i++) {
+        // 1) 多振荡器混合(各自 频率比 × 基频,加权累加)
+        double s = 0.0;
+        for (int k = 0; k < cnt; k++) s += vv[k] * xt_osc_sample(wv[k], w[k] * (double)i, w[k] / (2.0 * 3.14159265358979323846));
+        // 2) ADSR 包络(音量已并入各振荡器权重)
+        double env;
+        if (i < a_n) env = (double)i / (double)a_n;
+        else if (i < a_n + d_n) env = 1.0 - (1.0 - sus) * ((double)(i - a_n) / (double)d_n);
+        else if (i >= n - r_n) env = sus * (double)(n - 1 - i) / (double)r_n;
+        else env = sus;
+        s *= env;
+        // 3) EQ 三带
+        s = xt_peak_run(&eqL, s);
+        s = xt_peak_run(&eqM, s);
+        s = xt_peak_run(&eqT, s);
+        // 4) 延迟(输入 = 原声 + 反馈回声)
+        if (dp) {
+            double e = xt_delay_run(dp, s + (dp->idx < dp->size ? dp->buf[dp->idx] : 0.0) * dfb);
+            s = s * (1.0 - dmx) + e * dmx;
+        }
+        // 5) 混响(4 comb + 2 allpass,湿干混合)
+        if (ccount > 0) {
+            double wet = 0.0;
+            double fouts[16];
+            xt_fdn_step(fouts, fl, s, fg);
+            for (int k = 0; k < 16; k++) wet += fouts[k];
+            wet /= 16.0;
+            wet *= 3.0;   // 湿音输出侧增益补偿(全通修复后无放大,可安全提响)
+            for (int k = 0; k < acount; k++) wet = xt_allpass_run(&ap[k], wet);
+            tail_lp = wet * 0.47 + tail_lp * 0.53;
+            wet = tail_lp;
+            if (i < 882) wet *= (double)i / 882.0;   // 湿音 40ms 渐入,消除起始瞬态敲击(水滴铁板)
+            s = s * (1.0 - rmx * 0.5) + wet * (rmx * 0.5);   // 干音期湿音压 50%:水滴可控且混响有参与感;尾音期全开
+        }
+        // 6) 软限幅防爆音
+        s = tanh(s);
+        pcm[i] = (short)(s * 32767.0);
+    }
+    // 效果尾音:音符结束后延迟/混响继续输出(留白回声),避免尾音被音效长度硬切
+    if (dp || ccount > 0) {
+        int tail = 0;
+        if (dp) { int td = (int)(rate * dly / 1000.0) * 5; if (td > tail) tail = td; }
+        if (ccount > 0) {
+                // 动态尾长:高反馈房间衰减慢,尾长按最长 comb 衰减到 -66dB 计算,避免尾音硬截止
+                double fbmax = 0.28 + rrm * 0.7; if (fbmax > 0.95) fbmax = 0.95;
+                int tr = (int)(rate * 2.0);
+                if (fbmax > 0.90) {
+                    double period = 733.0 / rate;   // 最长 FDN 线(与 fdn_t[15] 同步)
+                    double ncyc = log(0.0005) / log(fbmax);
+                    int need = (int)(period * ncyc * rate);
+                    if (need > tr) tr = need;
+                }
+                if (tr > tail) tail = tr;
+            }
+        if (tail > 0) {
+            int total = n + tail;
+            short* npcm = (short*)realloc(pcm, sizeof(short) * (size_t)total);
+            if (npcm) {
+                pcm = npcm;
+                for (int j = n; j < total; j++) {
+                    double s = 0.0;   // 音符已结束,只输出效果尾音
+                    if (dp) {
+                        double e = xt_delay_run(dp, s + (dp->idx < dp->size ? dp->buf[dp->idx] : 0.0) * dfb);
+                        s = s * (1.0 - dmx) + e * dmx;
+                    }
+                    if (ccount > 0) {
+                        double wet = 0.0;
+                        double fouts[16];
+                        xt_fdn_step(fouts, fl, s, fg);
+                        wet = 0.0;
+                        for (int k = 0; k < 16; k++) wet += fouts[k];
+                        wet /= 16.0;
+                        wet *= 10.0;   // 尾音期湿音放大:尾音是混响主体(干音期保持 3.0)
+                        for (int k = 0; k < acount; k++) wet = xt_allpass_run(&ap[k], wet);
+                        s = s * (1.0 - rmx) + wet * rmx;
+                    }
+                    if (ccount > 0) {
+                        tail_lp = s * 0.47 + tail_lp * 0.53;   // ~2.2kHz 一阶低通,压尾音金属共振(钢板模态在中低频)
+                        s = tail_lp;
+                        int fade_n = (int)(rate * 0.3);
+                        if (fade_n > 0 && (total - j) < fade_n) s = s * ((double)(total - j) / fade_n);
+                    }
+                    s = tanh(s);
+                    pcm[j] = (short)(s * 32767.0);
+                }
+                n = total;
+            }
+        }
+    }
+    // 调试导出:环境变量 XT_WAVE_DUMP 存在时写 raw PCM(16bit mono),用于尾音时域分析
+    if (getenv("XT_WAVE_DUMP")) {
+        FILE* fd = fopen(getenv("XT_WAVE_DUMP"), "wb");
+        if (fd) { fwrite(pcm, sizeof(short), (size_t)n, fd); fclose(fd); }
+    }
+    // 释放效果器缓冲
+    if (dp) { free(dp->buf); }
+    for (int k = 0; k < ccount; k++) { free(fl[k].buf); free(fl[k].ap.buf); }
+    for (int k = 0; k < acount; k++) free(ap[k].buf);
+
+    Wave wv2;
+    wv2.frameCount = (unsigned int)n;
+    wv2.sampleRate = (unsigned int)rate;
+    wv2.sampleSize = 16;
+    wv2.channels = 1;
+    wv2.data = pcm;
+    Sound s2 = LoadSoundFromWave(wv2);
+    if (s2.stream.buffer == NULL || s2.frameCount == 0) {
+        free(pcm);
+        return XT_FROM_INT(0);
+    }
+    xt_snd_pool[slot] = s2;
+    xt_synth_pcm[slot] = pcm;                    // 保活;XT_UnloadSound 释放
+    xt_snd_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
 uintptr_t XT_LoadMusicStream(uintptr_t filename) {
     int slot = xt_mus_alloc();
     if (slot < 0) return XT_FROM_INT(0);
