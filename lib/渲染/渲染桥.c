@@ -204,6 +204,11 @@ static int xt_window_close_requested = 0;
    二次调用触发 rlUnloadRenderBatch 双重释放 → SIGABRT(macOS 实测)。置位后二次调用直接返回。 */
 static int xt_window_closed = 0;
 
+/* 延迟截图(issue #92):登记路径 + 是否处于 开始绘图/结束绘图 之间。
+   定义放这里是因为 关闭窗口 与 结束绘图 都要用,而它们一个在前一个在后。 */
+static char* xt_shot_pending = NULL;
+static int   xt_in_draw_frame = 0;
+
 void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     // MSAA 4x:圆角矩形/斜边的 GPU 级抗锯齿(raylib 的 DrawRectangleRounded 是三角形扇
     // 拼合,不开多重采样时边缘台阶感严重)。须在 InitWindow 前设置;取不到多样本
@@ -235,6 +240,15 @@ uintptr_t XT_WindowShouldClose(void) {
 void XT_CloseWindow(void) {
     if (xt_window_closed) return; /* 幂等:二次调用直接返回(issue #56) */
     xt_window_closed = 1;
+    if (xt_shot_pending) {
+        fprintf(stderr,
+                "[渲染库][错误] 截图 未产出文件:%s\n"
+                "  已登记,但关闭窗口前没有再次调用 `结束绘图`,没有机会抓帧。\n"
+                "  请把 截图 挪到 `开始绘图` 与 `结束绘图` 之间。\n",
+                xt_shot_pending);
+        free(xt_shot_pending);
+        xt_shot_pending = NULL;
+    }
     CloseWindow();
 }
 
@@ -370,25 +384,26 @@ void XT_SetEscExit(uintptr_t on) {
 }
 
 void XT_BeginDrawing(void) {
+    xt_in_draw_frame = 1;
     BeginDrawing();
 }
 
-/* 延迟截图:XT_SaveScreenshot 只登记路径,真正抓帧在 XT_EndDrawing 里、SwapScreenBuffer 之前。
-   声明放这里是因为 XT_EndDrawing 定义在前面(见 issue #92)。 */
-static char* xt_shot_pending = NULL;
-
 void XT_EndDrawing(void) {
-    // issue #92:抓帧必须在交换缓冲之前完成。放在这里,调用方写在 开始/结束绘图 之间或之后都能拿到本帧。
+    // issue #92:抓帧必须在交换缓冲之前完成。
     if (xt_shot_pending) {
         Image img = LoadImageFromScreen();
         if (img.data) {
             ExportImage(img, xt_shot_pending);
             UnloadImage(img);
+        } else {
+            fprintf(stderr, "[渲染库][错误] 截图:无法读取当前帧缓冲,未写出 %s(窗口未初始化或渲染上下文丢失)\n",
+                    xt_shot_pending);
         }
         free(xt_shot_pending);
         xt_shot_pending = NULL;
     }
     EndDrawing();
+    xt_in_draw_frame = 0;
 }
 
 /* 泵输入事件(不交换缓冲):正常渲染帧由 EndDrawing 内部自动调用;
@@ -1113,8 +1128,20 @@ static void* xt_synth_pcm[32];   // 合成音效的 PCM 缓冲:LoadSoundFromWave
 static Music xt_mus_pool[32];
 static int   xt_mus_used[32];
 
-static int xt_snd_alloc(void) { for (int i = 0; i < 32; i++) if (!xt_snd_used[i]) return i; return -1; }
-static int xt_mus_alloc(void) { for (int i = 0; i < 32; i++) if (!xt_mus_used[i]) return i; return -1; }
+/* issue #103:音频 API 依赖 初始化音频()。设备未就绪时只打一次中文提示(不拦截),
+   调用方照旧拿到 0/静默失败——但不再只有 raylib 的英文警告。
+   提示只打一次(静态标志),设备就绪后自然不再出现。 */
+static int xt_audio_hint_printed = 0;
+static void xt_audio_hint(void) {
+    if (IsAudioDeviceReady()) return;
+    if (xt_audio_hint_printed) return;
+    xt_audio_hint_printed = 1;
+    fprintf(stderr,
+            "[渲染库][提示] 音频设备未初始化,请先调用 初始化音频();本次调用将返回失败(句柄 0)。\n");
+}
+
+static int xt_snd_alloc(void) { xt_audio_hint(); for (int i = 0; i < 32; i++) if (!xt_snd_used[i]) return i; return -1; }
+static int xt_mus_alloc(void) { xt_audio_hint(); for (int i = 0; i < 32; i++) if (!xt_mus_used[i]) return i; return -1; }
 
 static Sound* xt_get_snd(uintptr_t v) {
     if (!IS_INT(v)) return NULL;
@@ -1154,6 +1181,7 @@ void XT_UnloadSound(uintptr_t snd) {
 }
 
 void XT_PlaySound(uintptr_t snd) {
+    if (!IsAudioDeviceReady()) { xt_audio_hint(); return; }
     Sound* p = xt_get_snd(snd);
     if (p) PlaySound(*p);
 }
@@ -1876,6 +1904,7 @@ uintptr_t XT_LoadMusicStream(uintptr_t filename) {
 }
 
 void XT_PlayMusicStream(uintptr_t mus) {
+    if (!IsAudioDeviceReady()) { xt_audio_hint(); return; }
     Music* p = xt_get_mus(mus);
     if (p) PlayMusicStream(*p);
 }
@@ -2653,11 +2682,22 @@ uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal) {
    本函数只登记路径,真正的抓帧由 XT_EndDrawing 在 SwapScreenBuffer 之前完成——
    调用方写在 开始绘图/结束绘图 之间或之后都不会再拿到交换后的空帧(macOS 实测全黑)。
    同一帧内多次调用只有最后一次生效(路径被覆盖,旧路径释放)。
+   帧外调用会在 stderr 打出详细错误(不静默跳过),但仍登记给下一帧,方便动画循环里写在帧末的写法。
    返回 1=已登记,0=路径非法。 */
 uintptr_t XT_SaveScreenshot(uintptr_t pathVal) {
     if (!IS_PTR(pathVal)) return XT_FROM_INT(0);
     const char* p = xt_get_cstr(pathVal);
-    if (!p || !*p) return XT_FROM_INT(0);
+    if (!p || !*p) {
+        fprintf(stderr, "[渲染库][错误] 截图:路径为空,未登记\n");
+        return XT_FROM_INT(0);
+    }
+    if (!xt_in_draw_frame) {
+        fprintf(stderr,
+                "[渲染库][错误] 截图 调用时机不对:%s\n"
+                "  截图 必须在 `开始绘图` 与 `结束绘图` 之间调用;当前不在绘制帧内。\n"
+                "  已登记给下一帧:若程序只有这一帧就结束(不再调用 结束绘图),不会有文件产出。\n",
+                p);
+    }
     free(xt_shot_pending);
     size_t len = strlen(p);
     xt_shot_pending = (char*)malloc(len + 1);
