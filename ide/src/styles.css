@@ -852,6 +852,19 @@ body {
 #statusbar .sb-mode { color: var(--accent); }
 #statusbar .sb-mode .codicon { font-size: 13px; margin-right: 4px; vertical-align: -2px; }
 
+/* ---- 检查更新：状态栏蓝字（明暗两套都给足对比度） ---- */
+#statusbar .sb-update { color: #4da3ff; font-weight: 600; }
+body.light #statusbar .sb-update { color: #0b63b8; }
+#statusbar .sb-update[data-phase="downloading"] { color: var(--fg-2); font-weight: 400; }
+#statusbar .sb-update[data-phase="ready"] { color: var(--ok); }
+#statusbar .sb-update[data-phase="failed"] { color: var(--err); }
+#statusbar .sb-spin {
+  display: inline-block; width: 10px; height: 10px; margin-right: 5px; vertical-align: -1px;
+  border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%;
+  animation: sb-spin 0.8s linear infinite;
+}
+@keyframes sb-spin { to { transform: rotate(360deg); } }
+
 /* ============ 弹层 ============ */
 #modal-root { position: fixed; inset: 0; z-index: 900; display: none; }
 #modal-root.open { display: block; }

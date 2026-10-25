@@ -200,6 +200,7 @@ const TEMPLATE = `
   <span class="sb-item" id="sb-lsp"><span class="dot pending"></span>LSP 未连接</span>
   <span class="sb-item sb-click" id="sb-preflight" style="display:none" title="双击查看校验详情"></span>
   <span class="spacer"></span>
+  <span class="sb-item sb-click sb-update" id="sb-update" style="display:none"></span>
   <span class="sb-item sb-mode" id="sb-mode" style="display:none" title="以管理员权限运行"><i class="codicon codicon-shield"></i>管理员模式</span>
   <span class="sb-item sb-click" id="sb-encoding" title="文件编码:点击以其他编码重新打开或保存"></span>
   <span class="sb-item sb-cloud" id="sb-cloud" style="display:none" title="点击查看详情">未连接玄铁服务器</span>

@@ -131,6 +131,8 @@ export interface AppSettings {
   devMode?: boolean;
   // 已拉取的玄铁文档版本(与服务端 /api/ai/docs/version 比对;不同则启动时自动拉取)
   docsVersion?: string;
+  // 检查更新(tauri-plugin-updater):autoCheck 默认开;skipVersion = 用户右键跳过的版本
+  update?: { autoCheck: boolean; skipVersion?: string };
 }
 
 export function defaultSettings(): AppSettings {
@@ -149,5 +151,6 @@ export function defaultSettings(): AppSettings {
     zoom: 1,
     theme: 'dark',
     ui: { aiDock: false, w: 0, h: 0 },
+    update: { autoCheck: true },
   };
 }

@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
+import { initUpdater, manualCheck, resetSkip } from './update/updater';
 import '@vscode/codicons/dist/codicon.css';
 import { registerXtLanguage } from './lang/xt';
 import * as backend from './backend';
@@ -1486,6 +1487,41 @@ function settingsModal(): Promise<void> {
         body.appendChild(r);
       }
 
+      // 检查更新：改动即时保存（与侧栏眼睛按钮同风格），跳到设置弹窗自身的保存按钮之外
+      const rUpd = document.createElement('div');
+      rUpd.className = 'mrow';
+      rUpd.appendChild(document.createElement('label')).textContent = '更新';
+      const updLine = document.createElement('div');
+      updLine.className = 'rowline';
+      const cbAuto = document.createElement('input');
+      cbAuto.type = 'checkbox';
+      cbAuto.checked = getSettings().update?.autoCheck ?? true;
+      const lbAuto = document.createElement('label');
+      lbAuto.style.cssText = 'display:inline-flex;align-items:center;gap:6px;cursor:pointer';
+      lbAuto.append(cbAuto, document.createTextNode('自动检查更新'));
+      cbAuto.addEventListener('change', () => {
+        void saveSettings({
+          ...getSettings(),
+          update: { ...(getSettings().update ?? { autoCheck: true }), autoCheck: cbAuto.checked },
+        }).catch(() => undefined);
+      });
+      const btnSkip = document.createElement('button');
+      btnSkip.className = 'mbtn';
+      const skipped = getSettings().update?.skipVersion;
+      btnSkip.textContent = skipped ? `已跳过 v${skipped}（恢复）` : '检查更新';
+      btnSkip.addEventListener('click', () => {
+        if (getSettings().update?.skipVersion) {
+          void resetSkip().then(() => {
+            btnSkip.textContent = '检查更新';
+          });
+        } else {
+          void manualCheck();
+        }
+      });
+      updLine.append(lbAuto, btnSkip);
+      rUpd.appendChild(updLine);
+      body.appendChild(rUpd);
+
       // 文件树显示由侧栏眼睛按钮控制并持久化,设置弹窗不再重复
       // 外观:编辑器字号/字体、整窗缩放、主题
       const rLook = document.createElement('div');
@@ -2529,6 +2565,13 @@ async function aboutModal(): Promise<void> {
       add('当前编译器', xtcLine);
       const foot = document.createElement('div');
       foot.className = 'm-foot';
+      const chk = document.createElement('button');
+      chk.className = 'mbtn';
+      chk.textContent = '检查更新';
+      chk.addEventListener('click', () => {
+        void manualCheck();
+      });
+      foot.appendChild(chk);
       const ok = document.createElement('button');
       ok.className = 'mbtn primary';
       ok.textContent = '确定';
@@ -3020,6 +3063,16 @@ async function boot(): Promise<void> {
       if (n > 0) showToast(`铁铺更新:${n} 个铁器有新版本,列表页可查看`, 'ok');
     })();
   }
+  // 检查更新（官方 updater 插件）：默认开机约 5 秒静默检查一次，之后每 6 小时；
+  // 有未保存文件时，安装前先确认（安装会关闭 IDE）
+  initUpdater({
+    el: byId('sb-update'),
+    beforeInstall: async () => {
+      const dirty = tabs.dirtyPaths();
+      if (dirty.length === 0) return true;
+      return confirmBox('安装新版本', `还有 ${dirty.length} 个文件未保存，安装会关闭 IDE。继续安装？`);
+    },
+  });
   // 启动自动检查玄铁文档(服务端版本号比对;有更新则拉取到本地供 AI 按需阅读)
   void checkAndFetchDocs().then((r) => {
     if (r) showToast(`玄铁文档已更新(版本 ${r.version},共 ${r.count} 篇)`, 'ok');

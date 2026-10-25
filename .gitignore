@@ -114,3 +114,9 @@ INVESTIGATION_xt.md
 /docs/sessions/
 # API 参考为 tools/gen-api.mjs 的生成物,不入库(离线包会带上)
 /GUIDE/API/
+
+# 环境/密钥文件一律不入库:README 明确要求 cp .env.example .env 放 OSS/SMTP 密钥,
+# 而 .env 之前没有任何忽略规则 —— 一次 git add -A 就会把密钥推进公开仓库。
+.env
+.env.*
+!.env.example

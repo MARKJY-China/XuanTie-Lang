@@ -164,6 +164,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState {
             lsp: Mutex::new(HashMap::new()),
             next_lsp_id: AtomicU32::new(1),
@@ -317,16 +318,15 @@ fn main() {
                     }
                 }
                 // macOS:Dock 图标点击 → 窗口在则显示(隐藏保留状态),已销毁则重建
+                // RunEvent::Reopen 只在 macOS 上存在;这个 arm 本身也要 cfg 掉,否则 Windows 编译 E0599
+                #[cfg(target_os = "macos")]
                 tauri::RunEvent::Reopen { .. } => {
-                    #[cfg(target_os = "macos")]
-                    {
-                        use tauri::Manager;
-                        if app.get_webview_window("main").is_none() {
-                            let _ = rebuild_main_window(app);
-                        } else if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
+                    use tauri::Manager;
+                    if app.get_webview_window("main").is_none() {
+                        let _ = rebuild_main_window(app);
+                    } else if let Some(w) = app.get_webview_window("main") {
+                        let _ = w.show();
+                        let _ = w.set_focus();
                     }
                 }
                 _ => {}
