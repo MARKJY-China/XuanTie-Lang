@@ -223,6 +223,9 @@ fn main() {
             {
                 use tauri::Manager;
                 if let Some(w) = app.get_webview_window("main") {
+                    // 无边框:配置里 decorations=true 是给 macOS 的 Overlay 标题栏用的,
+                    // Windows 上会画出原生边框、和自绘标题栏叠成双层框 —— 只对 Windows 关掉。
+                    let _ = w.set_decorations(false);
                     shutdown_guard::install(app.handle().clone(), &w);
                 }
             }
