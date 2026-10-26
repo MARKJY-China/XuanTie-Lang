@@ -6,7 +6,7 @@
 //! 点击后经 "menu-act" 事件发给前端,由前端同一动作链执行(见 main.ts handleMenuAct)。
 //! Windows/Linux 保留自绘菜单行,本模块不参与。
 
-use tauri::menu::{AboutMetadata, Menu, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder};
+use tauri::menu::{Menu, MenuItemBuilder, PredefinedMenuItem, Submenu, SubmenuBuilder};
 use tauri::menu::MenuEvent;
 use tauri::{AppHandle, Manager, Wry};
 
@@ -33,7 +33,7 @@ fn read_recents(app: &AppHandle) -> Vec<String> {
 
 /// 第一个子菜单 = macOS 应用菜单(关于/隐藏/退出;退出用自定义项以便拦截红点逻辑)
 fn app_menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
-    let about = PredefinedMenuItem::about(app, Some("关于玄铁铸造厂"), Some(AboutMetadata::default()))?;
+    let about = MenuItemBuilder::with_id("app-about", "关于玄铁铸造厂").build(app)?;
     let services = PredefinedMenuItem::services(app, Some("服务"))?;
     let hide = PredefinedMenuItem::hide(app, Some("隐藏玄铁铸造厂"))?;
     let hide_others = PredefinedMenuItem::hide_others(app, Some("隐藏其他"))?;
@@ -149,13 +149,10 @@ fn term_menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
 fn help_menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
     let docs = MenuItemBuilder::with_id("help-docs", "官方文档 (xt.markjy.com)").build(app)?;
     let feedback = MenuItemBuilder::with_id("feedback", "反馈问题").build(app)?;
-    let about = MenuItemBuilder::with_id("help-about", "关于铸造厂…").build(app)?;
     SubmenuBuilder::new(app, "帮助")
         .item(&docs)
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&feedback)
-        .item(&PredefinedMenuItem::separator(app)?)
-        .item(&about)
         .build()
 }
 

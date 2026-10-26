@@ -2820,6 +2820,8 @@ function bindUi(): void {
         void openUrl('https://xt.markjy.com');
       } else if (act === 'help-about') {
         void aboutModal();
+      } else if (act === 'app-about') {
+        void aboutModal();
       }
   }
 

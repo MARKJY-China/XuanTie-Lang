@@ -475,6 +475,7 @@ export function initWindowControls(L: LayoutHandles): void {
       // 三大金刚,工具栏左侧让出红绿灯区域(约 78px);Windows/Linux 保留自绘。
       document.querySelector<HTMLElement>('.titlebar-ico')?.style.setProperty('display', 'none');
       document.querySelector<HTMLElement>('#win-controls')?.style.setProperty('display', 'none');
+      document.querySelector<HTMLElement>('#toolbar > .sep')?.style.setProperty('display', 'none');
       L.toolbar.style.setProperty('padding-left', '78px');
     } else {
       void win.isMaximized().then(syncMaxIcon);
