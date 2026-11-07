@@ -1,0 +1,16 @@
+# 依赖与构建产物
+node_modules/
+.vitepress/dist/
+.vitepress/cache/
+.vitepress/ai-gen/
+offline-docs/
+
+# 由仓库同步/生成的副本（单一真源在仓库根 GUIDE/ 与 assets/）
+guide/
+public/ai/
+public/assets/
+public/seal.svg
+xuantie.tmLanguage.json
+# 由仓库根 versionLog.md 同步的副本
+versionLog.md
+

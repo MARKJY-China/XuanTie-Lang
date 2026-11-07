@@ -1,0 +1,1035 @@
+/* ============================================================================
+   玄铁 XuanTie — 站点视觉系统
+   ----------------------------------------------------------------------------
+   依据《玄·折》标识规范（源文件见仓库 assets/玄铁logo-*.svg）：
+
+     色板  玄    #17120C  主色。黑中带赤，近铁器退火色。底、字、铁块皆出于此。
+           宣纸  #F4EEE2  底与反白。比纯白暖三分，衬墨色不刺眼，长文阅读也用得起。
+           朱砂  #B03A2B  全站唯一彩色，只许钤印 —— 每屏至多一处强调，滥用即贬值。
+           铁灰  #55514A  辅助文字与次要信息。玄色退一档，层级立现。
+
+     形制  横平竖直、全部直角。除标识自带的圆角铁块（SVG 内含 rx）外，界面上不出现圆角。
+           无渐变；层次不靠发光，靠三层：极淡方格（纸面）→ 半透明磨砂卡面（浮起）
+           → 不透明纸面（阅读区）。卡片一律不加投影（用户 2026-10-17 要求），
+           浮起只靠提亮 + 描边 + 模糊；只有按钮留一层 --xt-lift-sm。
+           工程图语气：等宽微标签、细线分栏、图版与图注（FIG. / 网格 / 尺寸）。
+
+   实现要点：VitePress 各组件的圆角与阴影写死在各自 scoped 样式里，所以下面
+   既映射 CSS 变量，也对具体组件做定向覆盖（必要时 !important）。
+   ============================================================================ */
+
+/* ---------- ① 品牌令牌 ---------- */
+:root {
+  /* 原始色板（恒定，不随明暗切换） */
+  --xt-xuan: #17120c;
+  --xt-paper: #f4eee2;
+  --xt-cinnabar: #b03a2b;
+  --xt-iron: #55514a;
+
+  /* 语义令牌：明 = 宣纸底 + 玄字 */
+  --xt-bg: var(--xt-paper);
+  --xt-bg-2: #ece4d5;          /* 纸面深一档：表头 / 代码底 / 引用 */
+  --xt-bg-3: #e2d9c7;          /* 再深一档：hover */
+  --xt-fg: var(--xt-xuan);
+  --xt-fg-2: var(--xt-iron);
+  --xt-fg-3: #837b6e;
+  --xt-rule: rgba(23, 18, 12, .16);
+  --xt-rule-strong: rgba(23, 18, 12, .38);
+  /* 工程图方格：只作纸面暗示，不参与阅读。明色下压到 1.8% ——
+     部分显示器会把 1px 淡线锐化成实线，和正文抢注意力（用户 2026-10-17 反馈）。 */
+  --xt-grid: rgba(23, 18, 12, .018);
+  --xt-wash: rgba(23, 18, 12, .035);   /* 淡墨洗底 */
+  /* 磨砂层：叠在方格之上，给卡片/按钮建立"浮起"的层次。
+     glass = 抬起的卡面（明色比纸更亮、深色比墨更亮，两套都是"往外浮"）；
+     scrim = 顶栏/侧栏（跟着页面底色走，只把下面的内容糊掉）。 */
+  --xt-glass: rgba(255, 252, 246, .72);
+  --xt-glass-strong: rgba(255, 253, 249, .92);
+  --xt-scrim: rgba(244, 238, 226, .86);
+  --xt-scrim-strong: rgba(244, 238, 226, .94);
+  --xt-glass-line: rgba(23, 18, 12, .1);
+  --xt-blur: 14px;
+  --xt-lift-sm: 0 3px 10px rgba(23, 18, 12, .06);
+  --xt-invert-bg: var(--xt-xuan);
+  --xt-invert-fg: var(--xt-paper);
+  --xt-invert-hover: #2b241b;
+  --xt-invert-glass: rgba(23, 18, 12, .92);
+
+  --xt-mono: ui-monospace, "Cascadia Mono", Consolas, "Sarasa Mono SC", "HarmonyOS Sans SC", monospace;
+  --xt-track: .1em;            /* 等宽微标签的字距 */
+
+  --vp-font-family-mono: var(--xt-mono);
+}
+
+.dark {
+  --xt-bg: var(--xt-xuan);
+  --xt-bg-2: #1f1913;
+  --xt-bg-3: #2a2219;
+  --xt-fg: var(--xt-paper);
+  --xt-fg-2: #b5ac9d;
+  --xt-fg-3: #8b8375;
+  --xt-rule: rgba(244, 238, 226, .18);
+  --xt-rule-strong: rgba(244, 238, 226, .42);
+  /* 深底上白线更扎眼，比明色再压一档 */
+  --xt-grid: rgba(244, 238, 226, .014);
+  --xt-wash: rgba(244, 238, 226, .05);
+  --xt-glass: rgba(244, 238, 226, .07);
+  --xt-glass-strong: rgba(244, 238, 226, .13);
+  --xt-scrim: rgba(23, 18, 12, .74);
+  --xt-scrim-strong: rgba(23, 18, 12, .9);
+  --xt-glass-line: rgba(244, 238, 226, .12);
+  --xt-lift-sm: 0 3px 10px rgba(0, 0, 0, .4);
+  --xt-invert-bg: var(--xt-paper);
+  --xt-invert-fg: var(--xt-xuan);
+  --xt-invert-hover: #e3dac8;
+  --xt-invert-glass: rgba(244, 238, 226, .92);
+}
+
+/* ---------- ② VitePress 变量映射 ---------- */
+:root {
+  --vp-c-bg: var(--xt-bg);
+  --vp-c-bg-alt: var(--xt-bg-2);
+  --vp-c-bg-soft: var(--xt-bg-2);
+  --vp-c-bg-elv: var(--xt-bg);
+
+  --vp-c-text-1: var(--xt-fg);
+  --vp-c-text-2: var(--xt-fg-2);
+  --vp-c-text-3: var(--xt-fg-3);
+
+  --vp-c-divider: var(--xt-rule);
+  --vp-c-border: var(--xt-rule-strong);
+  --vp-c-gutter: var(--xt-rule);
+
+  /* 品牌色 = 墨色：链接与按钮一律用玄，彩色只留给朱砂那“一处” */
+  --vp-c-brand-1: var(--xt-fg);
+  --vp-c-brand-2: var(--xt-fg);
+  --vp-c-brand-3: var(--xt-fg);
+  --vp-c-brand-soft: var(--xt-wash);
+
+  --vp-c-default-1: var(--xt-fg);
+  --vp-c-default-2: var(--xt-fg-2);
+  --vp-c-default-3: var(--xt-bg-3);
+  --vp-c-default-soft: var(--xt-bg-2);
+
+  --vp-c-tip-1: var(--xt-fg);
+  --vp-c-tip-soft: var(--xt-bg-2);
+  --vp-c-warning-1: var(--xt-fg-2);
+  --vp-c-warning-soft: var(--xt-bg-2);
+  --vp-c-danger-1: var(--xt-cinnabar);
+  --vp-c-danger-soft: rgba(176, 58, 43, .08);
+
+  /* 按钮：主按钮 = 玄底宣纸字，次按钮 = 描边 */
+  --vp-button-brand-bg: var(--xt-invert-bg);
+  --vp-button-brand-border: var(--xt-invert-bg);
+  --vp-button-brand-text: var(--xt-invert-fg);
+  --vp-button-brand-hover-bg: var(--xt-invert-hover);
+  --vp-button-brand-hover-border: var(--xt-invert-hover);
+  --vp-button-brand-hover-text: var(--xt-invert-fg);
+  --vp-button-brand-active-bg: var(--xt-invert-hover);
+  --vp-button-brand-active-border: var(--xt-invert-hover);
+  --vp-button-brand-active-text: var(--xt-invert-fg);
+
+  --vp-button-alt-bg: transparent;
+  --vp-button-alt-border: var(--xt-rule-strong);
+  --vp-button-alt-text: var(--xt-fg);
+  --vp-button-alt-hover-bg: var(--xt-wash);
+  --vp-button-alt-hover-border: var(--xt-fg);
+  --vp-button-alt-hover-text: var(--xt-fg);
+  --vp-button-alt-active-bg: var(--xt-bg-3);
+  --vp-button-alt-active-border: var(--xt-fg);
+  --vp-button-alt-active-text: var(--xt-fg);
+
+  --vp-code-block-bg: var(--xt-bg-2);
+  --vp-code-block-divider-color: var(--xt-rule);
+  --vp-code-line-highlight-color: rgba(176, 58, 43, .07);
+  --vp-code-line-number-color: var(--xt-fg-3);
+  --vp-code-copy-code-bg: var(--xt-bg);
+  --vp-code-copy-code-hover-bg: var(--xt-bg-3);
+  --vp-code-copy-code-active-text: var(--xt-fg);
+
+  --vp-custom-block-tip-border: var(--xt-fg);
+  --vp-custom-block-tip-text: var(--xt-fg);
+  --vp-custom-block-tip-bg: var(--xt-bg-2);
+  --vp-custom-block-info-border: var(--xt-rule-strong);
+  --vp-custom-block-info-text: var(--xt-fg);
+  --vp-custom-block-info-bg: var(--xt-bg-2);
+  --vp-custom-block-warning-border: var(--xt-iron);
+  --vp-custom-block-warning-text: var(--xt-fg);
+  --vp-custom-block-warning-bg: var(--xt-bg-2);
+  --vp-custom-block-danger-border: var(--xt-cinnabar);
+  --vp-custom-block-danger-text: var(--xt-fg);
+  --vp-custom-block-danger-bg: rgba(176, 58, 43, .06);
+
+  --vp-layout-max-width: 1280px;
+}
+
+/* ---------- ③ 形制：直角 / 细线 / 纸面 ---------- */
+
+/* 除标识自带的圆角外，界面上一律直角（印章与铁块的圆角由 SVG 图片自带，不受影响） */
+*,
+*::before,
+*::after {
+  border-radius: 0 !important;
+}
+
+html {
+  background-color: var(--xt-bg);
+}
+
+/* 纸面 + 工程图方格（设计稿的底纹，极淡，正文页也不碍读） */
+body {
+  background-color: var(--xt-bg) !important;
+  background-image:
+    linear-gradient(to right, var(--xt-grid) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--xt-grid) 1px, transparent 1px);
+  background-size: 24px 24px;
+  color: var(--xt-fg);
+}
+
+/* 让纸面方格透上来：容器不铺底色，改用墨线分层。
+   注意顶栏与移动端抽屉必须保持不透明 —— 否则侧栏/正文滚动时会从它们底下透出来。 */
+.Layout,
+.VPNavBar .content,
+.VPLocalNav,
+.VPContent,
+.VPHome,
+.VPFooter,
+.VPDoc,
+.VPDocAside,
+.VPNavScreen {
+  background-color: transparent !important;
+}
+
+/* 顶栏与侧栏做成磨砂玻璃：滚动时内容在下面柔化，层次立起来（不再是"全通透"） */
+.VPNavBar {
+  background-color: var(--xt-scrim-strong) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  backdrop-filter: blur(16px) saturate(130%);
+}
+
+/* 无阴影、无发光 */
+.VPNavBar,
+.VPSidebar,
+.VPLocalNav,
+.VPFooter,
+.VPButton,
+.VPFeature,
+.VPDocAside,
+.VPLocalSearchBox,
+.DocSearch-Button,
+div[class*='language-'],
+.custom-block,
+.pager-link {
+  box-shadow: none !important;
+}
+
+.VPHero .image-bg {
+  display: none !important;
+}
+
+a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+::selection {
+  background: var(--xt-cinnabar);
+  color: var(--xt-paper);
+}
+
+/* 等宽微标签 / 图注 / 分节序号 —— 全站通用的“工程图”语气 */
+.xt-eyebrow,
+.xt-cap {
+  font-family: var(--xt-mono);
+  font-size: 11px;
+  letter-spacing: var(--xt-track);
+  text-transform: uppercase;
+  color: var(--xt-fg-2);
+}
+
+/* 全站唯一的彩色出处：分节序号 */
+.xt-num {
+  font-family: var(--xt-mono);
+  font-size: 11px;
+  letter-spacing: var(--xt-track);
+  color: var(--xt-cinnabar);
+}
+
+.xt-rule {
+  height: 1px;
+  background: var(--xt-fg);
+  border: 0;
+  opacity: .85;
+}
+
+/* ---------- ④ 顶栏 ---------- */
+.VPNavBar {
+  border-bottom: 1px solid var(--xt-rule) !important;
+}
+
+.VPNavBar.has-sidebar .content,
+.VPNavBar .content-body {
+  border-bottom: none !important;
+}
+
+.VPNavBarTitle .title {
+  font-weight: 700 !important;
+  letter-spacing: .02em;
+}
+
+.xt-nav-mark {
+  width: 22px;
+  height: 22px;
+  margin-right: 10px;
+  flex: none;
+  color: var(--xt-fg);
+}
+
+.xt-nav-en {
+  margin-left: 8px;
+  font-family: var(--xt-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .28em;
+  color: var(--xt-fg-2);
+}
+
+.VPNavBarMenuLink,
+.VPNavBarMenuGroup .text {
+  font-size: 13.5px !important;
+  font-weight: 500 !important;
+  color: var(--xt-fg-2) !important;
+  transition: color .18s ease;
+}
+
+.VPNavBarMenuLink:hover,
+.VPNavBarMenuGroup:hover .text {
+  color: var(--xt-fg) !important;
+}
+
+/* 当前页：一条朱砂底线（与侧栏共用“一处强调”的口径） */
+.VPNavBarMenuLink.active {
+  color: var(--xt-fg) !important;
+  font-weight: 700 !important;
+  box-shadow: inset 0 -2px 0 var(--xt-cinnabar);
+}
+
+/* 明暗切换：主题默认是「滑动开关」，圆角归零后会变成一条怪异的方槽，
+   这里改成一个直角图标按钮（只有图标，没有滑块）。 */
+.VPSwitchAppearance {
+  width: 34px !important;
+  height: 34px !important;
+  border: 1px solid var(--xt-rule) !important;
+  background: transparent !important;
+  display: grid !important;
+  place-items: center !important;
+}
+
+.VPSwitchAppearance:hover {
+  border-color: var(--xt-fg) !important;
+}
+
+.VPSwitchAppearance .check,
+.dark .VPSwitchAppearance .check {
+  position: static !important;
+  width: auto !important;
+  height: auto !important;
+  transform: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  display: grid;
+  place-items: center;
+}
+
+.VPSwitchAppearance .vpi-sun,
+.VPSwitchAppearance .vpi-moon {
+  font-size: 15px;
+  color: var(--xt-fg-2);
+}
+
+.DocSearch-Button {
+  border: 1px solid var(--xt-rule) !important;
+  background: transparent !important;
+  height: 34px !important;
+  padding: 0 10px !important;
+}
+
+.DocSearch-Button:hover {
+  border-color: var(--xt-fg) !important;
+  background: transparent !important;
+}
+
+.DocSearch-Button-Placeholder {
+  font-size: 13px !important;
+  color: var(--xt-fg-2) !important;
+}
+
+.DocSearch-Button-Key {
+  border: 1px solid var(--xt-rule) !important;
+  background: transparent !important;
+  color: var(--xt-fg-2) !important;
+  font-family: var(--xt-mono) !important;
+  font-size: 10.5px !important;
+  box-shadow: none !important;
+  padding: 1px 5px !important;
+}
+
+/* ---------- ⑤ 侧栏 ---------- */
+.VPSidebar {
+  border-right: 1px solid var(--xt-rule);
+  background-color: var(--xt-scrim) !important;
+  -webkit-backdrop-filter: blur(var(--xt-blur)) saturate(120%);
+  backdrop-filter: blur(var(--xt-blur)) saturate(120%);
+}
+
+.VPSidebarItem.level-0 > .item > .text,
+.VPSidebarItem.level-0 > .item > h2,
+.VPSidebarItem.level-0 > .item > h3 {
+  font-family: var(--xt-mono) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  letter-spacing: var(--xt-track);
+  color: var(--xt-fg-3) !important;
+  text-transform: uppercase;
+}
+
+.VPSidebarItem .text {
+  font-size: 13.5px !important;
+  line-height: 1.55 !important;
+  color: var(--xt-fg-2);
+  padding: 3px 0;
+}
+
+.VPSidebarItem .link:hover .text {
+  color: var(--xt-fg);
+}
+
+.VPSidebarItem.is-active > .item .link > .text,
+.VPSidebarItem.is-active > .item .text {
+  color: var(--xt-fg) !important;
+  font-weight: 600 !important;
+}
+
+/* 侧栏当前项：朱砂竖线 */
+.VPSidebarItem.is-active > .item .indicator,
+.VPSidebarItem.is-active > .item .link > .indicator {
+  background-color: var(--xt-cinnabar) !important;
+  width: 2px !important;
+}
+
+.VPSidebarItem .indicator {
+  background-color: transparent;
+}
+
+.VPSidebarItem.level-1 .items,
+.VPSidebarItem.level-2 .items {
+  border-left: 1px solid var(--xt-rule);
+}
+
+.VPSidebarItem .caret {
+  color: var(--xt-fg-3);
+}
+
+.VPLocalNav {
+  border-bottom: 1px solid var(--xt-rule) !important;
+  background-color: var(--xt-scrim-strong) !important;
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  backdrop-filter: blur(16px) saturate(130%);
+}
+
+.VPLocalNav .menu,
+.VPLocalNav .top-link {
+  font-family: var(--xt-mono);
+  font-size: 11.5px;
+  letter-spacing: var(--xt-track);
+  color: var(--xt-fg-2);
+}
+
+/* ---------- ⑥ 正文 ---------- */
+.vp-doc {
+  font-size: 15.5px;
+  line-height: 1.85;
+}
+
+.vp-doc h1 {
+  font-size: 32px !important;
+  font-weight: 800 !important;
+  letter-spacing: -.005em;
+  line-height: 1.35;
+  margin-bottom: 20px;
+}
+
+/* 分节：一道墨线之上是新的一节（对标设计稿的分节横线） */
+.vp-doc h2 {
+  margin-top: 44px !important;
+  padding-top: 16px;
+  border-top: 1px solid var(--xt-fg);
+  font-size: 22px !important;
+  font-weight: 700 !important;
+  letter-spacing: .005em;
+}
+
+.vp-doc h3 {
+  margin-top: 32px !important;
+  font-size: 17px !important;
+  font-weight: 700 !important;
+}
+
+.vp-doc h4 {
+  font-size: 15px !important;
+}
+
+.vp-doc a {
+  color: var(--xt-fg);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--xt-rule-strong);
+  text-underline-offset: 3px;
+  transition: text-decoration-color .18s ease;
+}
+
+.vp-doc a:hover {
+  text-decoration-color: var(--xt-cinnabar);
+}
+
+.vp-doc strong {
+  font-weight: 700;
+}
+
+.vp-doc hr {
+  border: 0;
+  border-top: 1px solid var(--xt-rule);
+  margin: 32px 0;
+}
+
+.vp-doc blockquote {
+  border-left: 2px solid var(--xt-fg);
+  background: var(--xt-bg-2);
+  padding: 2px 16px;
+  color: var(--xt-fg-2);
+}
+
+.vp-doc ul,
+.vp-doc ol {
+  padding-left: 1.4em;
+}
+
+.vp-doc li::marker {
+  color: var(--xt-fg-3);
+}
+
+/* 代码 */
+div[class*='language-'] {
+  border: 1px solid var(--xt-rule) !important;
+  margin: 18px 0 !important;
+}
+
+div[class*='language-'] > span.lang {
+  top: 8px !important;
+  right: 12px !important;
+  font-family: var(--xt-mono) !important;
+  font-size: 10.5px !important;
+  letter-spacing: var(--xt-track);
+  text-transform: uppercase;
+  color: var(--xt-fg-3) !important;
+}
+
+div[class*='language-'] > button.copy {
+  border: 1px solid var(--xt-rule) !important;
+  background-color: var(--xt-bg) !important;
+}
+
+.vp-doc [class*='language-'] pre,
+.vp-doc [class*='language-'] code {
+  font-family: var(--xt-mono);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.vp-doc :not(pre) > code {
+  background: var(--xt-bg-2);
+  border: 1px solid var(--xt-rule);
+  padding: 1px 5px;
+  color: var(--xt-fg);
+  font-size: .88em;
+}
+
+/* 表格：细线 + 等宽表头 */
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
+  margin: 20px 0;
+  font-size: 14px;
+}
+
+.vp-doc th,
+.vp-doc td {
+  border: 1px solid var(--xt-rule);
+  padding: 8px 12px;
+}
+
+.vp-doc th {
+  background: var(--xt-bg-2);
+  font-family: var(--xt-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: var(--xt-track);
+  text-transform: uppercase;
+  color: var(--xt-fg-2);
+  text-align: left;
+}
+
+/* 自定义块 */
+.custom-block {
+  border: 1px solid var(--xt-rule) !important;
+  border-left-width: 2px !important;
+  padding: 12px 16px !important;
+}
+
+.custom-block .custom-block-title {
+  font-family: var(--xt-mono);
+  font-size: 11.5px;
+  letter-spacing: var(--xt-track);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+/* 大纲 / 编辑链接 / 上下篇 */
+.VPDocAsideOutline .outline-title,
+.VPDocAsideOutline .outline-marker {
+  font-family: var(--xt-mono);
+  font-size: 11px;
+  letter-spacing: var(--xt-track);
+  text-transform: uppercase;
+  color: var(--xt-fg-3);
+}
+
+.VPDocAsideOutline .outline-link {
+  font-size: 12.5px;
+  color: var(--xt-fg-2);
+}
+
+.VPDocAsideOutline .outline-link:hover,
+.VPDocAsideOutline .outline-link.active {
+  color: var(--xt-fg);
+}
+
+.VPDocFooter .edit-link-button {
+  font-family: var(--xt-mono);
+  font-size: 11.5px;
+  letter-spacing: var(--xt-track);
+  color: var(--xt-fg-2);
+}
+
+.pager-link {
+  border: 1px solid var(--xt-glass-line) !important;
+  background-color: var(--xt-glass) !important;
+  -webkit-backdrop-filter: blur(var(--xt-blur)) saturate(120%);
+  backdrop-filter: blur(var(--xt-blur)) saturate(120%);
+  padding: 12px 16px !important;
+  transition: border-color .18s ease, background-color .18s ease;
+}
+
+.pager-link:hover {
+  border-color: var(--xt-fg) !important;
+  background-color: var(--xt-glass-strong) !important;
+}
+
+.pager-link .desc {
+  font-family: var(--xt-mono);
+  font-size: 10.5px;
+  letter-spacing: var(--xt-track);
+  text-transform: uppercase;
+  color: var(--xt-fg-3);
+}
+
+.pager-link .title {
+  color: var(--xt-fg);
+  font-weight: 600;
+}
+
+/* ---------- ⑦ 首页 ---------- */
+.VPHome {
+  padding-bottom: 64px;
+}
+
+.VPHero {
+  padding: 88px 24px 40px !important;
+}
+
+.VPHero .container {
+  max-width: 1180px !important;
+}
+
+.VPHero .name,
+.VPHero .text {
+  font-weight: 800 !important;
+  letter-spacing: -.01em;
+}
+
+/* 去掉主题自带的渐变字，回到纯墨 */
+.VPHero .name .clip {
+  background: none !important;
+  -webkit-background-clip: border-box !important;
+  background-clip: border-box !important;
+  -webkit-text-fill-color: currentColor !important;
+  color: var(--xt-fg) !important;
+}
+
+.VPHero .text {
+  margin-top: 6px;
+  font-family: var(--xt-mono) !important;
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  letter-spacing: .34em !important;
+  text-transform: uppercase;
+  color: var(--xt-fg-2) !important;
+  line-height: 1.2 !important;
+}
+
+.VPHero .tagline {
+  margin-top: 20px;
+  max-width: 30em;
+  font-size: 15.5px !important;
+  line-height: 1.8 !important;
+  color: var(--xt-fg-2) !important;
+}
+
+.VPHero .actions {
+  margin-top: 28px;
+  gap: 10px;
+}
+
+.VPHero .action {
+  padding: 0;
+}
+
+.VPButton {
+  font-family: inherit !important;
+  font-size: 13.5px !important;
+  font-weight: 600 !important;
+  line-height: 40px !important;
+  padding: 0 22px !important;
+  letter-spacing: .02em;
+  -webkit-backdrop-filter: blur(var(--xt-blur)) saturate(125%);
+  backdrop-filter: blur(var(--xt-blur)) saturate(125%);
+  box-shadow: var(--xt-lift-sm);
+}
+
+/* 按钮也要"浮起来"：次按钮=磨砂描边，主按钮=92% 墨（透一点纸底，但仍是实心观感） */
+.VPButton.alt {
+  background-color: var(--xt-glass) !important;
+  border-color: var(--xt-glass-line) !important;
+}
+
+.VPButton.alt:hover {
+  background-color: var(--xt-glass-strong) !important;
+  border-color: var(--xt-fg) !important;
+}
+
+.VPButton.brand {
+  font-weight: 700 !important;
+  background-color: var(--xt-invert-glass) !important;
+  border-color: var(--xt-invert-glass) !important;
+}
+
+/* 首页 hero 不再挂图版（用户 2026-10-17 要求：右侧留白，不强调标识的设计过程） */
+.VPHero:not(.has-image) .main {
+  width: 100%;
+  max-width: 100%;
+}
+
+.VPHero:not(.has-image) .actions {
+  justify-content: flex-start;
+}
+
+/* 阅读面：正文列铺不透明纸面，方格只留在页边 ——
+   "文字与网格糊在一起"的根因是正文直接压在底纹上，这一层把它隔开。 */
+.VPDoc .content {
+  background-color: var(--xt-bg);
+}
+
+/* 特性栅格：细线分栏，去掉卡片底色与阴影 */
+.VPFeatures {
+  padding: 32px 24px 0 !important;
+}
+
+.VPFeatures .container {
+  max-width: 1180px !important;
+}
+
+/* 特性卡片：半透明磨砂，压在方格之上 —— 层次与可读性一起拿到 */
+/* 特性卡片：半透明磨砂，压在方格之上 —— 层次与可读性一起拿到。
+   注意：卡面不加投影（用户 2026-10-17 明确要求），浮起只靠"提亮 + 描边 + 模糊"。 */
+.VPFeature {
+  border: 1px solid var(--xt-glass-line) !important;
+  background-color: var(--xt-glass) !important;
+  -webkit-backdrop-filter: blur(var(--xt-blur)) saturate(125%);
+  backdrop-filter: blur(var(--xt-blur)) saturate(125%);
+  height: 100%;
+  transition: background-color .18s ease, border-color .18s ease;
+}
+
+.VPFeature:hover {
+  border-color: var(--xt-fg) !important;
+  background-color: var(--xt-glass-strong) !important;
+}
+
+.VPFeature .box {
+  padding: 22px !important;
+}
+
+/* 图标 = 玄色铁块（对齐标识的「范」形态） */
+.VPFeature .icon {
+  width: 34px !important;
+  height: 34px !important;
+  margin-bottom: 16px !important;
+  background-color: var(--xt-invert-bg) !important;
+  color: var(--xt-invert-fg) !important;
+  font-size: 16px !important;
+  font-weight: 700;
+}
+
+.VPFeature .title {
+  font-size: 15.5px !important;
+  font-weight: 700 !important;
+  line-height: 1.5 !important;
+}
+
+.VPFeature .details {
+  padding-top: 8px !important;
+  font-size: 13.5px !important;
+  line-height: 1.8 !important;
+  color: var(--xt-fg-2) !important;
+}
+
+.VPFeature .link-text-value {
+  font-family: var(--xt-mono);
+  font-size: 11.5px !important;
+  letter-spacing: .06em;
+  color: var(--xt-fg) !important;
+}
+
+/* 首页正文区（markdown 部分） */
+.VPHome .vp-doc {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+.VPFooter {
+  border-top: 1px solid var(--xt-rule) !important;
+  padding: 24px 24px 32px !important;
+}
+
+.VPFooter .message,
+.VPFooter .copyright {
+  font-family: var(--xt-mono);
+  font-size: 11.5px !important;
+  letter-spacing: .04em;
+  color: var(--xt-fg-3) !important;
+}
+
+/* 尾花：玄·印（全站唯一允许的圆角与红色，落在页脚钤记处） */
+.xt-colophon {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 14px 24px 0;
+  border-top: 1px solid var(--xt-rule);
+  font-family: var(--xt-mono);
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  color: var(--xt-fg-3);
+}
+
+.xt-colophon img {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+
+.xt-colophon .sp {
+  flex: 1;
+}
+
+/* ---------- ⑧ 下载页 ---------- */
+.dl-card {
+  border: 1px solid var(--xt-rule) !important;
+  background: transparent !important;
+  padding: 20px !important;
+}
+
+.dl-ver {
+  font-size: 17px !important;
+  font-weight: 700 !important;
+}
+
+/* 「最新」= 本页唯一强调，用朱砂实底 */
+.dl-latest {
+  background: var(--xt-cinnabar) !important;
+  color: var(--xt-paper) !important;
+  font-family: var(--xt-mono) !important;
+  font-size: 10.5px !important;
+  letter-spacing: var(--xt-track);
+  padding: 2px 8px !important;
+  text-transform: uppercase;
+}
+
+.dl-date {
+  font-family: var(--xt-mono);
+  font-size: 12px !important;
+  letter-spacing: .04em;
+}
+
+.dl-note {
+  border-left: 1px solid var(--xt-rule);
+  padding-left: 12px;
+}
+
+.dl-release {
+  border-color: var(--xt-rule) !important;
+  font-family: var(--xt-mono);
+  font-size: 11px !important;
+  letter-spacing: .06em;
+  padding: 4px 10px !important;
+}
+
+.dl-release:hover {
+  border-color: var(--xt-fg) !important;
+  background: var(--xt-wash) !important;
+}
+
+.dl-file {
+  border-color: var(--xt-rule-strong) !important;
+  background: transparent !important;
+  font-size: 13px !important;
+  padding: 9px 14px !important;
+  font-weight: 600 !important;
+}
+
+.dl-file:hover {
+  border-color: var(--xt-fg) !important;
+  background: var(--xt-invert-bg) !important;
+  color: var(--xt-invert-fg) !important;
+}
+
+.dl-file:hover .dl-file-size {
+  color: var(--xt-invert-fg) !important;
+  opacity: .8;
+}
+
+.dl-file-size {
+  font-size: 11.5px !important;
+}
+
+.dl-tip {
+  border-color: var(--xt-rule-strong) !important;
+  background: var(--xt-bg) !important;
+  padding: 10px 12px 11px !important;
+}
+
+.dl-tip::after {
+  background: var(--xt-bg) !important;
+  border-color: var(--xt-rule-strong) !important;
+}
+
+.dl-tip-title {
+  color: var(--xt-fg-2) !important;
+  letter-spacing: var(--xt-track) !important;
+}
+
+.dl-tip-list li {
+  font-size: 12.5px !important;
+  color: var(--xt-fg-2) !important;
+}
+
+.dl-tip-list li::before {
+  content: "—" !important;
+  color: var(--xt-fg-3) !important;
+}
+
+.dl-lead,
+.dl-foot {
+  color: var(--xt-fg-2) !important;
+}
+
+/* ---------- ⑨ 本地搜索面板 ---------- */
+.VPLocalSearchBox .shell {
+  border: 1px solid var(--xt-rule-strong);
+  background: var(--xt-bg);
+}
+
+.VPLocalSearchBox .search-bar {
+  border-bottom: 1px solid var(--xt-rule);
+}
+
+.VPLocalSearchBox .search-input {
+  font-family: var(--xt-mono);
+  font-size: 14px;
+}
+
+.VPLocalSearchBox .results {
+  padding: 8px;
+}
+
+.VPLocalSearchBox .result {
+  border: 1px solid transparent;
+}
+
+.VPLocalSearchBox .result.selected {
+  border-color: var(--xt-fg);
+  background: var(--xt-wash);
+}
+
+.VPLocalSearchBox .result .title {
+  font-family: var(--xt-mono);
+  font-size: 12px;
+  letter-spacing: .04em;
+  color: var(--xt-fg-2);
+}
+
+.VPLocalSearchBox .result .titles .text {
+  color: var(--xt-fg-2);
+}
+
+.VPLocalSearchBox mark {
+  background: rgba(176, 58, 43, .16);
+  color: var(--xt-fg);
+}
+
+/* ---------- ⑩ 响应式 ---------- */
+@media (min-width: 960px) {
+  /* 侧栏默认 padding-top 就是导航高度，别把它压掉，否则首节标题会钻到顶栏下面 */
+  .VPSidebar {
+    padding-top: calc(var(--vp-nav-height) + 16px) !important;
+  }
+}
+
+@media (max-width: 959px) {
+  /* 移动端侧栏是覆盖式抽屉，必须不透明 */
+  .VPSidebar {
+    background-color: var(--xt-bg) !important;
+  }
+}
+
+@media (max-width: 960px) {
+  .VPHero {
+    padding: 40px 24px 24px !important;
+  }
+}
+
+@media (max-width: 640px) {
+  .VPHero .text {
+    font-size: 15px !important;
+    letter-spacing: .24em !important;
+  }
+
+  .VPButton {
+    line-height: 38px !important;
+    padding: 0 16px !important;
+    font-size: 13px !important;
+  }
+}
