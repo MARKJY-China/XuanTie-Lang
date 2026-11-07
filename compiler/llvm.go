@@ -1286,7 +1286,16 @@ func (c *LLVMCompiler) compileFunctionStatement(s *ast.FunctionStatement) {
 		if p.DataType != "" {
 			paramType = c.mapTypeAnnotation(p.DataType)
 		}
-		if c.isScalarType(paramType) {
+		if paramType == "i1" {
+			// issue #104：布尔参数的槽位存 i1(本编译器布尔变量的既有表示)，
+			// 但实参是 tagged i64(真=4/假=2)。原来的 isScalarType 分支走 ensureRawI64，
+			// 对 4 做 ashr 1 得 2、对 2 得 1，随后 load i1 取最低位 → 传"真"恒得假。
+			// 正确做法：显式比较 ==4 得到 i1 再入槽。
+			cond := c.nextReg()
+			c.emit("  %s = icmp eq i64 %%\"%s_arg\", 4", cond, p.Name.Value)
+			c.emit("  store i1 %s, i1* %s", cond, addrReg)
+			c.symbolTable[p.Name.Value] = SymbolInfo{AddrReg: addrReg, Type: "i1"}
+		} else if c.isScalarType(paramType) {
 			// 标量参数：传入值为标记 i64，需先脱壳再存储为 raw_i64
 			unboxed := c.ensureRawI64("%\""+p.Name.Value+"_arg\"", "i64")
 			c.emit("  store i64 %s, i64* %s", unboxed, addrReg)
