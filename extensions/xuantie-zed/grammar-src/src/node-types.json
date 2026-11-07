@@ -350,6 +350,10 @@
           "named": true
         },
         {
+          "type": "if_expression",
+          "named": true
+        },
+        {
           "type": "index_expression",
           "named": true
         },
@@ -397,6 +401,106 @@
           "named": true
         }
       ]
+    }
+  },
+  {
+    "type": "external_function",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      },
+      "parameters": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "parameters",
+            "named": true
+          }
+        ]
+      },
+      "return_type": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": ",",
+            "named": false
+          },
+          {
+            "type": "[",
+            "named": false
+          },
+          {
+            "type": "]",
+            "named": false
+          },
+          {
+            "type": "identifier",
+            "named": true
+          },
+          {
+            "type": "任务",
+            "named": false
+          },
+          {
+            "type": "字",
+            "named": false
+          },
+          {
+            "type": "字典",
+            "named": false
+          },
+          {
+            "type": "字符串",
+            "named": false
+          },
+          {
+            "type": "字节",
+            "named": false
+          },
+          {
+            "type": "小数",
+            "named": false
+          },
+          {
+            "type": "布尔",
+            "named": false
+          },
+          {
+            "type": "数组",
+            "named": false
+          },
+          {
+            "type": "整",
+            "named": false
+          },
+          {
+            "type": "整数",
+            "named": false
+          },
+          {
+            "type": "空",
+            "named": false
+          },
+          {
+            "type": "结果",
+            "named": false
+          },
+          {
+            "type": "逻辑",
+            "named": false
+          }
+        ]
+      }
     }
   },
   {
@@ -540,6 +644,42 @@
           {
             "type": "逻辑",
             "named": false
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "if_expression",
+    "named": true,
+    "fields": {
+      "alternative": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "block",
+            "named": true
+          }
+        ]
+      },
+      "condition": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "expression",
+            "named": true
+          }
+        ]
+      },
+      "consequence": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "block",
+            "named": true
           }
         ]
       }
@@ -1042,6 +1182,10 @@
           "named": true
         },
         {
+          "type": "external_function",
+          "named": true
+        },
+        {
           "type": "for_statement",
           "named": true
         },
@@ -1449,6 +1593,10 @@
   },
   {
     "type": ":",
+    "named": false
+  },
+  {
+    "type": ";",
     "named": false
   },
   {

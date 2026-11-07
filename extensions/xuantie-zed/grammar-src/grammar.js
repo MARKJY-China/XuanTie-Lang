@@ -30,6 +30,7 @@ module.exports = grammar({
       $.break_statement,
       $.continue_statement,
       $.terminate_statement,
+      $.external_function,
       $.try_statement,
       $.async_statement,
       $.await_statement,
@@ -63,9 +64,18 @@ module.exports = grammar({
       optional(seq('=', field('value', $.expression))),
     ),
 
+    // ---- 外 函 名(参数): 返回类型 —— 外部声明(无函数体,FFI) ----
+    external_function: $ => seq(
+      '外',
+      '函',
+      field('name', $.identifier),
+      field('parameters', $.parameters),
+      optional(seq(':', field('return_type', $._type))),
+    ),
+
     // ---- 函 名(参数): 返回类型 { }（前可加 私/公/护/覆/弱/外 修饰；匿名函数见 anonymous_function） ----
     function_definition: $ => seq(
-      optional(choice('私', '公', '护', '覆', '弱', '外')),
+      optional(choice('私', '公', '护', '覆', '弱')),
       choice('函', '函数'),
       field('name', $.identifier),
       field('parameters', $.parameters),
@@ -87,7 +97,15 @@ module.exports = grammar({
       optional(seq(':', field('type', $._type))),
     ),
 
-    block: $ => seq('{', repeat(choice($.comment, $.statement)), '}'),
+    block: $ => seq('{', repeat(choice($.comment, $.statement, ';')), '}'),   // ; 语句分隔(单行多语句)
+
+    // ---- 若 条件 { … } 否 { … } 作为表达式(三元形态,返回分支值) ----
+    if_expression: $ => prec.right(1, seq(
+      '若',
+      field('condition', $.expression),
+      field('consequence', $.block),
+      optional(seq('否', field('alternative', $.block))),
+    )),
 
     // ---- 若 条件 { } 抑 ... 否 { } ----
     if_statement: $ => seq(
@@ -166,6 +184,7 @@ module.exports = grammar({
 
     // ---- 表达式 ----
     expression: $ => choice(
+      $.if_expression,
       $.string,
       $.number,
       $.constant,
@@ -185,8 +204,8 @@ module.exports = grammar({
 
     // ---- 字符串："..." / “...”（含 #{插值} 时整体高亮，插值节点可选迭代） ----
     string: $ => choice(
-      token(seq('"', /[^"\n]*/, '"')),
-      token(seq('“', /[^”\n]*/, '”')),
+      token(seq('"', repeat(choice(/[^"\\\n]/, seq('\\', /[^\n]/))), '"')),
+      token(seq('“', repeat(choice(/[^”\\\n]/, seq('\\', /[^\n]/))), '”')),
     ),
 
     number: $ => token(/-?\d+(\.\d+)?/),
@@ -226,6 +245,8 @@ module.exports = grammar({
     )),
 
     operator: $ => choice(
+      // 赋值(裸重赋值:设 之外的 x = v 形态)
+      '=',
       // 算术
       '+', '-', '*', '/', '%',
       // 比较
