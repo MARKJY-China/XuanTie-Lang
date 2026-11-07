@@ -175,6 +175,13 @@ func main() {
 	if isNative {
 		if targetOS == "" {
 			targetOS = runtime.GOOS
+		} else if targetOS != runtime.GOOS {
+			// issue #105：GSC 与 XTC 同一纪律——不做交叉编译。
+			// 临时目录分隔符/工具链/运行时目标文件都按宿主决定，宿主≠目标只会产出半损坏产物。
+			fmt.Printf("错误: -pt %s 与当前宿主平台 %s 不一致\n", targetOS, runtime.GOOS)
+			fmt.Println("      本编译器只做本机原生构建，不支持交叉编译。")
+			fmt.Printf("      请到 %s 机器上构建，或去掉 -pt 让编译器按宿主自动选择。\n", targetOS)
+			os.Exit(1)
 		}
 		if targetArch == "" {
 			targetArch = runtime.GOARCH
