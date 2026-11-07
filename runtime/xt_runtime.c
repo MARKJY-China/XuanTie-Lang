@@ -3567,10 +3567,19 @@ XTValue xt_execute(XTValue cmd_val) {
 
 #else
     // Linux/Unix 下 popen 表现相对稳定，同样重定向 stderr
-    char cmd_with_stderr[2048];
-    snprintf(cmd_with_stderr, sizeof(cmd_with_stderr), "%s 2>&1", cmd->data);
+    // issue #125:原实现用 char[2048] + snprintf，超长命令(长路径+长参数)被静默截断成残废命令，
+    // 执行结果不可预期且无提示。改为按实际长度分配，不再有上限；真超长由 popen/shell 自己报错。
+    size_t _cmd_len = strlen(cmd->data);
+    char* cmd_with_stderr = (char*)malloc(_cmd_len + 7);   // " 2>&1" + NUL
+    if (!cmd_with_stderr) {
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行失败: 内存不足"));
+    }
+    snprintf(cmd_with_stderr, _cmd_len + 7, "%s 2>&1", cmd->data);
     FILE* pipe = popen(cmd_with_stderr, "r");
-    if (!pipe) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行失败"));
+    if (!pipe) {
+        free(cmd_with_stderr);
+        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行失败"));
+    }
     
     char buffer[1024];
     XTString* res = xt_string_new("");
@@ -3582,6 +3591,7 @@ XTValue xt_execute(XTValue cmd_val) {
         xt_release((XTValue)buf_str);
     }
     int status = pclose(pipe);
+    free(cmd_with_stderr);   // popen/pclose 已用完命令行(issue #125)
     if (status != 0) {
         // POSIX wait 状态归一化: exit(n) 编码为 n<<8;被信号终止为 128+信号号
         // ——与 Windows 基线一致报"退出码: N",否则 darwin 报 256 而非 1(issue #30)
