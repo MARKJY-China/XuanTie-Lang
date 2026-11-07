@@ -123,7 +123,7 @@ jobs:
   # 比对,脚本会自动转入"IR 补判":s3/s4 各编同一 fixture 并用 -bl 保留中间产物,逐字节比对编译器自己
   # 生成的 IR(不含链接器注入项),IR 不一致即硬失败。
   gate-darwin:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
