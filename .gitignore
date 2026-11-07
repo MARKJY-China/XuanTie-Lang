@@ -67,6 +67,8 @@ history.md
 /Trae/
 /publicity/
 /.claude/
+# JoyCode=京东出品的魔改 VSCode IDE;.joycode/ 存其本地 AI 记忆/规则,不入库
+/.joycode/
 /assets/HarmonyOS_Sans/
 /release/*
 !/release/make_pkg.sh

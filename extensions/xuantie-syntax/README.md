@@ -5,7 +5,7 @@
 
 ## 功能特性
 
-- **实时诊断（LSP）**：打开/编辑 `.xt` 文件即时报出语法错误与警告（精确到行列），由玄铁自写的 LSP 服务器 `xt_lsp.exe` 驱动——复用 XTC 编译器同款词法/语法分析器，诊断与编译器 100% 一致。
+- **实时诊断（LSP）**：打开/编辑 `.xt` 文件即时报出语法错误与警告（精确到行列），由玄铁自写的 LSP 服务器 `xt_lsp` 驱动（Windows 下为 `xt_lsp.exe`）——复用 XTC 编译器同款词法/语法分析器，诊断与编译器 100% 一致。
 - **LSP 补全与悬停**：补全列表包含全部关键字（含用法说明）与当前文档顶层符号（函/型/设）；悬停关键字显示用法文档，悬停符号显示声明位置。
 - **语法高亮**：支持玄铁语言的所有关键字、运算符、字符串插值（#{}）及内置函数。
 - **代码片段**：支持代码片段补全，如变量、函数、循环等（此功能需要在扩展设置中开启）。
@@ -19,6 +19,7 @@
 
 ## LSP 诊断说明
 
-- 扩展激活时会自动拉起内置的 `server/xt_lsp.exe`（TCP 回环 127.0.0.1:20807），无需任何配置。
-- 若需指定其他服务器路径或端口：设置项 `xuantie.lspServerPath` / `xuantie.lspPort`。
+- 扩展激活时自动查找并拉起 LSP 服务器（默认 stdio 模式，每窗口独立进程、无端口冲突），查找顺序：设置项 `xuantie.lspServerPath` > 扩展目录 `server/xt_lsp.exe`（Windows）/ `server/xt_lsp`（macOS/Linux）> 系统 PATH（`where` / `which`）。
+- **Windows**：安装包自带 `xt_lsp.exe`，开箱即用；**macOS / Linux**：需自行构建 `xt_lsp` 放入 PATH，或用 `xuantie.lspServerPath` 指定完整路径。未找到时安全跳过 LSP，不影响高亮 / 片段 / 拼音补全。
+- 调试可切 TCP 模式：设置项 `xuantie.lspTransport`（stdio / tcp）与 `xuantie.lspPort`（默认 20807）。
 - 诊断为全量同步模式：每次编辑整文档重分析（编辑器规模的文件为毫秒级）。

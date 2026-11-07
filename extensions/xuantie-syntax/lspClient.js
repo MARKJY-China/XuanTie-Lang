@@ -52,13 +52,20 @@ class XtLspClient {
         this.logChannel.appendLine(`[${t}] ${msg}`);
     }
 
-    // 查找 xt_lsp.exe:配置项 > 扩展目录 > PATH
+    // 查找 xt_lsp:配置项 > 扩展目录 > PATH(平台感知:Windows 找 xt_lsp.exe,macOS/Linux 找 xt_lsp)
     findServer() {
         const cfg = vscode.workspace.getConfiguration('xuantie');
         const confPath = cfg.get('lspServerPath', '');
         if (confPath && fs.existsSync(confPath)) return confPath;
-        const bundled = path.join(this.context.extensionPath, 'server', 'xt_lsp.exe');
+        const isWin = process.platform === 'win32';
+        const exeName = isWin ? 'xt_lsp.exe' : 'xt_lsp';
+        const bundled = path.join(this.context.extensionPath, 'server', exeName);
         if (fs.existsSync(bundled)) return bundled;
+        try {
+            const cmd = isWin ? 'where xt_lsp.exe' : 'which xt_lsp';
+            const found = require('child_process').execSync(cmd, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] }).trim().split(/\r?\n/)[0];
+            if (found && fs.existsSync(found)) return found;
+        } catch (e) {}
         return null;
     }
 

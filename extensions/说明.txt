@@ -1,3 +1,12 @@
-第一步：请将xuantie-syntax文件夹复制到  %USERPROFILE%/.vscode/extensions  中（如果是Trae则把.vscode改为.trae）；
-第二部：重启VSCode（或其他基于VSCode开发的IDE，如Trae）；
-最后：重启之后如果扩展管理器没有报错并看到一个新的扩展“XuanTie Syntax Highlighting”则代表成功了。恭喜！
+第一步：将 xuantie-syntax 文件夹复制到 IDE 的用户扩展目录：
+  Windows VSCode：%USERPROFILE%\.vscode\extensions
+  macOS / Linux VSCode：~/.vscode/extensions
+  Trae：把上述路径中的 .vscode 改为 .trae
+  JoyCode：~/.joycode-editor/extensions
+第二步：重启 VSCode（或其他基于 VSCode 内核的 IDE，如 Trae、JoyCode）；
+最后：重启后扩展管理器无报错、并看到新扩展"XuanTie Syntax Highlighting"即安装成功。恭喜！
+
+高亮、代码片段、拼音补全开箱即用；LSP 实时诊断需 LSP 服务器——
+Windows 安装包自带 xt_lsp.exe，macOS/Linux 需自行构建 xt_lsp 放入 PATH
+或在设置项 xuantie.lspServerPath 指定路径。
+完整跨平台安装说明见仓库 docs/VSCode编辑器插件安装.md。
