@@ -112,7 +112,7 @@ macOS / Linux：运行时已完成三平台化（含 ARM64），构建方式见�
 
 玄铁的目标：让中文母语开发者拥有一门骨子里是中文、且工程上不必妥协的生产力工具。
 
-**特别感谢**：[k4m7v2pz](https://github.com/k4m7v2pz) —— 首位外部贡献者（macOS 适配与多个 issue/PR）。
+**特别感谢**：[k4m7v2pz](https://github.com/k4m7v2pz) —— 首位外部贡献者（macOS 适配与提出数十个真实存在的XTL实际使用问题和高危Bug，解决多个渲染库问题及提出高价值建议）。
 
 ---
 **项目主页**: [https://xt.markjy.com](https://xt.markjy.com)  |   **官方论坛**: [https://bbs.xt.markjy.com](https://xt.markjy.com) | **许可证**：MIT

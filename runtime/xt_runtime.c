@@ -2827,11 +2827,17 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
     XTString* path = (XTString*)path_val;
     if (!path->data) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("路径数据为空"));
 
-    XTString* content = xt_obj_to_string(content_val);
-    if (!content || !content->data) {
+    // issue #122:字节 必须原文落盘——此前统一走 xt_obj_to_string,字节 命中 default 分支,
+    // 写出的内容是占位文本「未知对象」。fwrite 本身二进制安全,只差让 字节 对象直达。
+    int is_bytes = xt_is_real_ptr(content_val) && ((XTObject*)content_val)->type_id == XT_TYPE_BYTES;
+    XTBytes* bytes = is_bytes ? (XTBytes*)content_val : NULL;
+    XTString* content = is_bytes ? NULL : xt_obj_to_string(content_val);
+    if (!is_bytes && (!content || !content->data)) {
         if (content) xt_release((XTValue)content);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内容转换失败"));
     }
+    const uint8_t* src = is_bytes ? bytes->data : (const uint8_t*)content->data;
+    size_t src_len = is_bytes ? bytes->length : (size_t)content->length;
 
     FILE* f = NULL;
 #ifdef _WIN32
@@ -2844,23 +2850,23 @@ XTValue xt_file_write(XTValue path_val, XTValue content_val) {
     f = fopen(path->data, "wb");
 #endif
     if (!f) { 
-        xt_release((XTValue)content); 
+        if (content) xt_release((XTValue)content); 
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("无法写入文件 (打开失败)")); 
     }
     // 铁律:对明确的错误宁可报错退出也不静默跳过——旧实现忽略 fwrite/fflush/fclose 的返回值,
     // 磁盘满或短写时会"成功"返回,调用方与用户都看不到内容其实没落盘。
-    size_t written = fwrite(content->data, 1, content->length, f);
+    size_t written = fwrite(src, 1, src_len, f);
     int flush_rc = fflush(f);
     int close_rc = fclose(f);
-    if (written != (size_t)content->length || flush_rc != 0 || close_rc != 0) {
+    if (written != src_len || flush_rc != 0 || close_rc != 0) {
         char msg[256];
         snprintf(msg, sizeof(msg),
                  "写文件失败: %s (写入 %llu/%d 字节, fflush=%d, fclose=%d)",
-                 path->data, (unsigned long long)written, (int)content->length, flush_rc, close_rc);
-        xt_release((XTValue)content);
+                 path->data, (unsigned long long)written, (int)src_len, flush_rc, close_rc);
+        if (content) xt_release((XTValue)content);
         return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(msg));
     }
-    xt_release((XTValue)content);
+    if (content) xt_release((XTValue)content);
     return (XTValue)xt_result_new(1, (void*)XT_TRUE, NULL);
 }
 
