@@ -3860,6 +3860,44 @@ XTValue xt_time_sleep(XTValue ms_val) {
     return XT_NULL;
 }
 
+/* issue #132:时.睡(时间, 单位?) —— 单位支持 "秒"/"毫秒"/"微秒"(缺省毫秒)。
+   下三个函数供编译器 codegen 使用:因子查询、参数类型守卫、微秒级睡眠。
+   Windows 无 usleep:按毫秒切片,亚毫秒只让出时间片(系统定时器粒度限制,文档写明)。 */
+int64_t xt_sleep_unit_factor(XTValue unit) {
+    if (!xt_is_real_ptr(unit) || ((XTObject*)unit)->type_id != XT_TYPE_STRING) {
+        fprintf(stderr, "运行时错误: 时.睡 的单位必须是字符串 \"秒\"/\"毫秒\"/\"微秒\"\n");
+        exit(1);
+    }
+    const char* s = ((XTString*)unit)->data;
+    if (!s) s = "";
+    if (strcmp(s, "秒") == 0) return 1000000;
+    if (strcmp(s, "毫秒") == 0) return 1000;
+    if (strcmp(s, "微秒") == 0) return 1;
+    fprintf(stderr, "运行时错误: 时.睡 的单位不支持: %s(可用: 秒/毫秒/微秒)\n", s);
+    exit(1);
+}
+
+void xt_sleep_bad_arg(XTValue v) {
+    (void)v;
+    fprintf(stderr, "运行时错误: 时.睡 的时间必须是整数(收到小数或对象)\n");
+    fprintf(stderr, "  提示: 小数请先换算成整数并显式写单位,如 时.睡(300, \"毫秒\")\n");
+    exit(1);
+}
+
+void xt_time_sleep_us_raw(int64_t us) {
+    if (us < 0) us = 0;
+#ifdef _WIN32
+    if (us >= 1000) Sleep((DWORD)(us / 1000));
+    else if (us > 0) Sleep(0);
+#else
+    while (us > 0) {
+        useconds_t chunk = (us > 1000000) ? 1000000 : (useconds_t)us;
+        usleep(chunk);
+        us -= (int64_t)chunk;
+    }
+#endif
+}
+
 /* ==================== 批次一:核心支持库扩充 ==================== */
 
 /* ---- 数学扩充(取符号/三角/反三角/对数/随机小数) ---- */
