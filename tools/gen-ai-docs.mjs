@@ -102,7 +102,9 @@ for (let i = 0; i < files.length; i++) {
   })
 }
 
-writeFileSync(join(OUT, 'all.txt'), parts.join('\n'), 'utf8')
+// 纯文本没有 <meta charset>：浏览器/编辑器会按系统区域猜测编码（中文 Windows → GBK）。
+// 于是 UTF-8 的 all.txt 在浏览器里显示成乱码；加 UTF-8 BOM 明确编码，跨环境稳定。
+writeFileSync(join(OUT, 'all.txt'), '\uFEFF' + parts.join('\n'), 'utf8')
 writeFileSync(join(OUT, 'index.json'), JSON.stringify(index, null, 2), 'utf8')
 
 const llms = [
@@ -115,7 +117,7 @@ const llms = [
   '- 注意：示例若与 index.json 里的「状态」冲突，以状态标注为准。',
   '',
 ]
-writeFileSync(join(OUT, 'llms.txt'), llms.join('\n'), 'utf8')
+writeFileSync(join(OUT, 'llms.txt'), '\uFEFF' + llms.join('\n'), 'utf8')
 
 const exceptions = rels.filter((r) => statusOfFile(r).状态 !== DEF)
 console.log(`AI 文档层：${files.length} 篇 → ${OUT}（日期 ${today}，版本 ${version}）`)

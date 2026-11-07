@@ -14,3 +14,7 @@ xuantie.tmLanguage.json
 # 由仓库根 versionLog.md 同步的副本
 versionLog.md
 
+
+# 部署配置（含服务器地址，不入库）
+.deploy.env
+
