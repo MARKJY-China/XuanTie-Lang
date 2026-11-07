@@ -42,6 +42,8 @@
 #endif
 
 // --- 前置内部函数声明 ---
+// issue #126:字符串取字(定义在 826 行)用到负索引诊断,而该函数定义在 1300+ 行,先声明。
+void xt_index_negative(int64_t index);
 static void print_pool_stats();
 static int xt_is_real_ptr(XTValue val);
 static const char* xt_type_label_zh(XTValue v);   // URL/字节内置的报错文案要用(定义在文件后部)
@@ -823,7 +825,7 @@ XTValue xt_string_get_char(XTValue str_val, int64_t index) {
     xt_string_guard(str_val, "字符");  // 3号加固:指针但非字符串(结果/字典等)明确报错,不再静默/段错误
     
     XTString* s = (XTString*)str_val;
-    if (index < 0) return XT_NULL;
+    if (index < 0) xt_index_negative(index);
     
     const char* p = s->data;
     int64_t current = 0;
@@ -1315,6 +1317,15 @@ void xt_member_unknown(XTValue name_val) {
 void xt_index_bad(XTValue val) {
     fprintf(stderr, "运行时错误: 对非对象值(整数/布尔/空)进行索引访问\n");
     fprintf(stderr, "  提示: 索引([])只对字典/数组/字符串有效;请确认该值不是 空 或数字,必要时先用 结果 判定保护。\n");
+    exit(1);
+}
+
+// 负索引诊断(issue #126):数组/字符串取 [-1] 原本静默返回 空,把编程错误伪装成"没取到"。
+// 负索引没有语义支持(不是倒数),按「宁可报错,也不静默」显式退出;越界正向索引仍返回 空
+// (那是可判定的运行时状态,调用方可用 长度 判定)。
+void xt_index_negative(int64_t index) {
+    fprintf(stderr, "运行时错误: 索引不能为负:%lld\n", (long long)index);
+    fprintf(stderr, "  提示: 数组/字符串下标从 0 开始;取最后一个元素请用 长度-1,负索引不是倒数语义。\n");
     exit(1);
 }
 
@@ -1905,7 +1916,8 @@ XTValue xt_array_get(XTValue arr_val, XTValue index_val) {
     xt_require_array(arr_val, "取元素");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
-    if (index < 0 || (size_t)index >= arr->length) return XT_NULL;
+    if (index < 0) xt_index_negative(index);
+    if ((size_t)index >= arr->length) return XT_NULL;
     return (XTValue)arr->elements[index];
 }
 
@@ -1928,7 +1940,8 @@ void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value) {
     xt_require_array(arr_val, "改元素");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
-    if (index < 0 || (size_t)index >= arr->length) return;
+    if (index < 0) xt_index_negative(index);
+    if ((size_t)index >= arr->length) return;
     
     xt_release((XTValue)arr->elements[index]); // 释放旧引用
     arr->elements[index] = (void*)value;
@@ -1943,7 +1956,8 @@ void xt_array_remove(XTValue arr_val, XTValue index_val) {
     xt_require_array(arr_val, "删");
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
-    if (index < 0 || (size_t)index >= arr->length) return;
+    if (index < 0) xt_index_negative(index);
+    if ((size_t)index >= arr->length) return;
     xt_release((XTValue)arr->elements[index]);
     for (size_t i = (size_t)index; i < arr->length - 1; i++) {
         arr->elements[i] = arr->elements[i+1];
