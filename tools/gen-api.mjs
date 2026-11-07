@@ -280,6 +280,56 @@ function renderBuiltins() {
   return out.join('\n')
 }
 
+
+// ── 语言内建模块：从 关键字/*.md 的表格解析「模块.成员」调用（如 时.睡）──
+function parseBuiltinModules() {
+  const dir = join(ROOT, 'GUIDE', '关键字')
+  const mods = new Map()
+  if (!existsSync(dir)) return mods
+  for (const name of readdirSync(dir)) {
+    if (!name.endsWith('.md')) continue
+    const file = join(dir, name)
+    const lines = readFileSync(file, 'utf8').split(/\r?\n/)
+    let cur = null
+    for (const line of lines) {
+      const t = line.trim()
+      const m = t.match(/^\|\s*`([^`]+)`\s*\|\s*([^|]*)\|\s*([^|]*)\|\s*$/)
+      if (!m) continue
+      const call = m[1].trim()
+      if (!/^[\u4e00-\u9fa5A-Za-z_][\u4e00-\u9fa5A-Za-z0-9_]*\.[\u4e00-\u9fa5A-Za-z0-9_]/.test(call)) continue
+      const dot = call.indexOf('.')
+      const mod = call.slice(0, dot)
+      const rest = call.slice(dot + 1)
+      const member = rest.split('(')[0].trim()
+      if (!member) continue
+      if (!existsSync(join(dir, mod + '.md'))) continue // 模块名必须有同名关键字文档（滤掉 b/h 之类占位符）
+      if (!mods.has(mod)) mods.set(mod, { title: mod, doc: '关键字/' + mod, items: [] })
+      const ret = m[2].trim().replace(/\|/g, '')
+      const desc = m[3].trim()
+      mods.get(mod).items.push({ call, member, ret, desc })
+    }
+    // 模块文档名通常与模块名一致；不一致时以文件名为准（如 UI）
+    if (mods.has(cur)) mods.get(cur).doc = '关键字/' + name.replace(/\.md$/, '')
+  }
+  return mods
+}
+
+function renderBuiltinModule(title, doc, items) {
+  const out = []
+  out.push(`# ${title} API 参考`)
+  out.push('')
+  out.push(`> 语言内建模块 ｜ 来源：\`GUIDE/${doc}.md\` 共 ${items.length} 个调用 ｜ 原生编译，无需 \`引\``)
+  out.push('')
+  out.push('## 函数')
+  out.push('')
+  out.push('| 调用 | 返回 | 说明 |')
+  out.push('|---|---|---|')
+  for (const it of items) out.push(`| \`${it.call}\` | ${esc(it.ret) || '—'} | ${esc(it.desc) || '—'} |`)
+  out.push('')
+  out.push(`详见 [关键字·${title}](../${doc})。`)
+  return out.join('\n')
+}
+
 const aliasOf = (n) => ({ 渲染: 'R', UI: 'UI', HTTP: 'HTTP', SQLite: 'DB', 数组: '数组' }[n] || 'X')
 
 const libRoot = join(ROOT, 'lib')
@@ -306,6 +356,16 @@ for (const libName of libs) {
   console.log(`生成 ${libName}.md（${items.length} 条）`)
 }
 
+const builtinMods = parseBuiltinModules()
+for (const [title, info] of builtinMods) {
+  if (!info.items.length) continue
+  const file = '内建-' + title + '.md'
+  writeFileSync(join(OUT, file), renderBuiltinModule(title, info.doc, info.items), 'utf8')
+  index.builtins = index.builtins || []
+  index.builtins.push({ name: title, title, doc: info.doc, calls: info.items.length, file: file.replace(/\.md$/, '') })
+  console.log(`生成 ${file}（${info.items.length} 条）`)
+}
+
 writeFileSync(join(OUT, '语言内建.md'), renderBuiltins(), 'utf8')
 console.log('生成 语言内建.md')
 
@@ -319,6 +379,16 @@ readme.push('')
 readme.push('## 语言内建')
 readme.push('')
 readme.push('流程控制、线程与并发、异常处理、输入输出、网络、文件、数学、类型转换等语言自带关键词：见 [语言内建 API](./语言内建)。')
+readme.push('')
+readme.push('## 语言内建模块 API')
+readme.push('')
+readme.push('语言自带的命名空间模块（如 时/数学/文件/系统）——不写 \`引\`，直接用，逐模块列出可调用成员。')
+readme.push('')
+readme.push('| 模块 | 调用数 | 详见 |')
+readme.push('|---|---|---|')
+for (const b of index.builtins || []) {
+  readme.push(`| [${b.title}](./${b.file}) | ${b.calls} | [关键字·${b.title}](../${b.doc}) |`)
+}
 readme.push('')
 readme.push('## 库 API')
 readme.push('')
