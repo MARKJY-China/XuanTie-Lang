@@ -19,6 +19,52 @@
 #include <glob.h>   // POSIX:运行时 glob 探测系统字体路径(如 AssetsV2 动态 asset 目录)
 #endif
 
+#if defined(__APPLE__)
+// === macOS 非 ASCII 路径启动自愈(issue #83) ===
+// 产物路径含非 ASCII(中文名二进制 / 中文名 .app)时,GLFW/CFBundle 初始化对可执行
+// 路径做 bundle 查找,链上出现无效 CFString → SIGTRAP(裸二进制,exit 133)或 SIGSEGV(.app)。
+// 自愈:检测自身路径含非 ASCII 字节 → 复制到 ASCII 缓存路径(带源路径哈希唯一名,防并发
+// 覆盖) → 改写 argv[0] 后 execv 重执行;第二次运行为纯 ASCII 路径,自动跳过本逻辑,无循环。
+#include <stdio.h>
+#include <unistd.h>
+#include <mach-o/dyld.h>
+#include <crt_externs.h>
+#include <sys/stat.h>
+
+static void xt_83_selfheal(void) {
+    char self_path[4096];
+    uint32_t sz = (uint32_t)sizeof(self_path);
+    if (_NSGetExecutablePath(self_path, &sz) != 0) return;
+    int non_ascii = 0;
+    for (const char *p = self_path; *p; p++) {
+        if ((unsigned char)*p > 127) { non_ascii = 1; break; }
+    }
+    if (!non_ascii) return;  /* 纯 ASCII:常态路径,零开销 */
+    /* FNV-1a:目标名带源路径哈希,不同产物并发自愈互不覆盖 */
+    unsigned long long h = 1469598103934665603ULL;
+    for (const char *p = self_path; *p; p++) { h ^= (unsigned char)*p; h *= 1099511628211ULL; }
+    mkdir("/tmp/xt-83-selfheal", 0755);
+    char dst[256];
+    snprintf(dst, sizeof(dst), "/tmp/xt-83-selfheal/healed_%016llx", h);
+    FILE *in = fopen(self_path, "rb");
+    if (!in) return;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return; }
+    char buf[65536];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        if (fwrite(buf, 1, n, out) != n) { fclose(in); fclose(out); return; }
+    }
+    fclose(in);
+    fclose(out);
+    chmod(dst, 0755);
+    char **argv = *_NSGetArgv();
+    argv[0] = dst;
+    execv(dst, argv);
+    _exit(127);  /* execv 失败:继续运行必撞 GLFW 崩溃,显式退出而非带病启动 */
+}
+#endif
+
 // === XuanTie 运行时类型（精简版，避免依赖完整 xt_runtime.h） ===
 // 标记值操作
 #define XT_TAG_INT     0x1ULL
@@ -210,6 +256,9 @@ static char* xt_shot_pending = NULL;
 static int   xt_in_draw_frame = 0;
 
 void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
+#if defined(__APPLE__)
+    xt_83_selfheal();  /* issue #83:非 ASCII 路径自愈,必须在 GLFW 初始化之前 */
+#endif
     // MSAA 4x:圆角矩形/斜边的 GPU 级抗锯齿(raylib 的 DrawRectangleRounded 是三角形扇
     // 拼合,不开多重采样时边缘台阶感严重)。须在 InitWindow 前设置;取不到多样本
     // 帧缓冲时 GLFW 自动降级,不影响功能。
