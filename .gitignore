@@ -122,3 +122,5 @@ INVESTIGATION_xt.md
 .env
 .env.*
 !.env.example
+# AI 文档层生成物(gen-ai-docs 输出)
+/dist/
