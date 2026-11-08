@@ -200,6 +200,27 @@ export class XtLspClient {
     this.changeTimers.set(uri, timer);
   }
 
+  // 立即冲刷防抖中的全文改动(补全/悬停前调用)。
+  // 根因:didChange 防抖 300ms,而补全在敲下「.」的瞬间就发出 —— LSP 文档缓存里还没有这个点,
+  // 于是「数学.」判不成命名空间上下文,退化成通用关键字补全;等防抖到期后重敲才正常。
+  flushChange(path: string): void {
+    const uri = pathToUri(path);
+    const latest = this.changeText.get(uri);
+    if (latest === undefined) return;
+    const timer = this.changeTimers.get(uri);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.changeTimers.delete(uri);
+    }
+    const version = (this.versions.get(uri) ?? 0) + 1;
+    this.versions.set(uri, version);
+    this.notify('textDocument/didChange', {
+      textDocument: { uri, version },
+      contentChanges: [{ text: latest }],
+      _fsPath: path,
+    });
+  }
+
   didSave(path: string): void {
     const uri = pathToUri(path);
     const version = (this.versions.get(uri) ?? 0) + 1;
