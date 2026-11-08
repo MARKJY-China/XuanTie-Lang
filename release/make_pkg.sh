@@ -35,8 +35,20 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LLVM_DIR=${LLVM_DIR:-/d/LLVM}
+# Windows 随包工具链:默认 TDM-GCC 10.3(posix 线程 / msvcrt,历史基线)。
+# 想换 MSYS2 ucrt64 只需两个 env:
+#   TDM_DIR=/d/MSYS2/ucrt64 TDM_VER=15.2.0 bash release/make_pkg.sh
+# ⚠ 2026-11-08 实测(换盘重建时做的对照):MSYS2 的 binutils 2.45 **打不开非 ASCII 路径**
+#   —— `ar t 'I:/…/lib/渲染/libraylib.a'` 直接报 No such file or directory(cmd/PowerShell/
+#   Git Bash 三种调用都一样),而 TDM 的 ar 正常。本仓库 lib/渲染/ 与用户工程路径都可能是中文,
+#   一旦切过去,发行包会在中文路径下链不上 → 暂不切默认值,等 binutils 修或目录改 ASCII。
+# 另:本机 Rust 侧已用 ucrt64(GCC 15.2)验证过可正常链接;C 侧不跟。
 TDM_DIR=${TDM_DIR:-/c/TDM-GCC-64}
-TDM_VER=${TDM_VER:-10.3.0}  # 可 env 注入(CI 的 MinGW 版本目录与开发机 TDM 不同)
+if [ -z "${TDM_VER:-}" ]; then
+  # 版本目录从实际安装反推(开发机 TDM 10.3、CI 的 mingw 16.x 各不同),取不到再回默认
+  TDM_VER=$(ls "$TDM_DIR/lib/gcc/x86_64-w64-mingw32" 2>/dev/null | head -1)
+  [ -n "$TDM_VER" ] || TDM_VER=10.3.0
+fi
 
 # LLVM 根反推:env/默认之外,再从 PATH 上的 clang 反推(CI runner 的 LLVM 不在 /d 也不在
 # C:\Program Files\LLVM——首跑实测;从 command -v 反推是唯一可靠姿势)。取第一个含 bin/clang.exe 者。
