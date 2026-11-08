@@ -52,6 +52,11 @@ npm run tauri dev     # 开发(先起 vite,再起 Tauri 窗口)
 npm run build:app     # 发行包(NSIS 安装包 + updater 签名)
 ```
 
+Windows 上还有一键脚本 **`build.cmd`**(双击或在 cmd/PowerShell 里跑):它会把
+`D:\MSYS2\ucrt64\bin` 前置到 PATH(可用 `MSYS2_UCRT64` 改)、自动找
+`%USERPROFILE%\.tauri\xuantie-foundry.key` 当签名私钥,然后调 `npm run build:app`——
+省掉"PATH 顺序"和"忘了设签名变量"这两个坑。
+
 仅构建前端做类型检查:`npm run build`(tsc --noEmit + vite build)。
 
 **发行必须带 `custom-protocol`**(`build:app` 已经带):它是"把前端资源打进 exe"的开关。
