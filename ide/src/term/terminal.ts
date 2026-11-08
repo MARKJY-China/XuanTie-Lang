@@ -4,7 +4,10 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { readText as readClipboard } from '@tauri-apps/plugin-clipboard-manager';
 import * as backend from '../backend';
+import { copyText } from '../util';
+import { CONTEXT_SEP, showContextMenu, showToast, type ContextMenuEntry } from '../ui/dialogs';
 
 interface TermSession {
   id: string;
@@ -148,6 +151,68 @@ export class TerminalPane {
       if (s && s.alive) {
         backend.ptyWrite(id, d).catch(() => undefined);
       }
+    });
+
+    // ---- 复制 / 粘贴 ----
+    // 终端里 Ctrl+C 默认是"把 ^C 发给进程",所以只有存在选区时才当复制用(与 VS Code 一致);
+    // Ctrl+Shift+C 无条件复制,Ctrl+V / Ctrl+Shift+V 粘贴,右键出菜单。
+    const canPaste = (): boolean => target === 'term';
+    const copySelection = (): boolean => {
+      const sel = term.getSelection();
+      if (!sel) return false;
+      void copyText(sel).then((ok) => {
+        if (!ok) showToast('复制失败:剪贴板不可用', 'err');
+      });
+      return true;
+    };
+    const paste = async (): Promise<void> => {
+      if (!canPaste()) return;
+      const s = this.sessions.get(id);
+      if (!s || !s.alive) {
+        showToast('会话已结束,无法粘贴', 'err');
+        return;
+      }
+      try {
+        const text = await readClipboard();
+        if (text) await backend.ptyWrite(id, text);
+      } catch (err) {
+        showToast(`读取剪贴板失败: ${String(err)}`, 'err');
+      }
+    };
+
+    term.attachCustomKeyEventHandler((e) => {
+      if (e.type !== 'keydown') return true;
+      const ctrl = e.ctrlKey || e.metaKey;
+      if (!ctrl) return true;
+      if (e.code === 'KeyC') {
+        if (e.shiftKey || term.hasSelection()) {
+          e.preventDefault();
+          copySelection();
+          return false;
+        }
+        return true; // 无选区:交给终端发 ^C
+      }
+      if (e.code === 'KeyV') {
+        if (!canPaste()) return true;
+        e.preventDefault();
+        void paste();
+        return false;
+      }
+      return true;
+    });
+
+    // 右键菜单:全局 contextmenu 拦截器会跳过"已 preventDefault"的事件(main.ts bindUi)
+    view.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const hasSel = term.hasSelection();
+      const items: ContextMenuEntry[] = [
+        { label: '复制', disabled: !hasSel, action: () => copySelection() },
+      ];
+      if (canPaste()) items.push({ label: '粘贴', action: () => void paste() });
+      items.push(CONTEXT_SEP, { label: '全选', action: () => term.selectAll() });
+      items.push({ label: '清屏', action: () => term.clear() });
+      showContextMenu(e.clientX, e.clientY, items);
     });
 
     return { id, title, term, fit, view, tabEl, alive: false, isMain, host: target };

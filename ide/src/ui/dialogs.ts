@@ -87,6 +87,8 @@ export interface ContextMenuItem {
   checked?: boolean;
   /** 分组标题:小灰字、不可点(菜单内分区用) */
   header?: boolean;
+  /** 灰显不可点(如终端无选区时的「复制」) */
+  disabled?: boolean;
   action?: () => void;
 }
 
@@ -99,7 +101,7 @@ function renderMenuEntry(menu: HTMLElement, item: ContextMenuItem): void {
     menu.appendChild(el('div', 'ctx-header', item.label));
     return;
   }
-  const row = el('div', 'ctx-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : ''));
+  const row = el('div', 'ctx-item' + (item.danger ? ' danger' : '') + (item.checked ? ' checked' : '') + (item.disabled ? ' disabled' : ''));
   const label = document.createElement('span');
   label.textContent = item.label;
   row.appendChild(label);
@@ -109,6 +111,7 @@ function renderMenuEntry(menu: HTMLElement, item: ContextMenuItem): void {
     row.appendChild(ic);
   }
   row.addEventListener('click', () => {
+    if (item.disabled) return;
     closeContextMenu();
     item.action?.();
   });

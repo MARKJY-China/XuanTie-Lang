@@ -1001,6 +1001,8 @@ body.light #statusbar .sb-update { color: #0b63b8; }
 .ctx-item { padding: 6px 14px; border-radius: 4px; cursor: pointer; }
 .ctx-item:hover { background: var(--bg-active); }
 .ctx-item.danger { color: var(--err); }
+.ctx-item.disabled { opacity: 0.45; cursor: default; }
+.ctx-item.disabled:hover { background: transparent; }
 .ctx-sep { height: 1px; background: var(--border); margin: 4px 6px; }
 .ctx-header {
   padding: 6px 12px 2px;
