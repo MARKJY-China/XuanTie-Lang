@@ -1,0 +1,10 @@
+compile_ok=True
+exit=0
+真
+假
+真
+假
+真
+真
+真
+假

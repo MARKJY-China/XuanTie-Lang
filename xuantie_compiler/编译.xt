@@ -1319,6 +1319,8 @@
         此.写出("declare i64 @\"xt_string_trim_start\"(i64)")
         此.写出("declare i64 @\"xt_string_trim_end\"(i64)")
         此.写出("declare i32 @\"xt_string_contains\"(%XTString*, %XTString*)")
+        此.写出("declare i32 @\"xt_string_starts_with\"(%XTString*, %XTString*)")
+        此.写出("declare i32 @\"xt_string_ends_with\"(%XTString*, %XTString*)")
         此.写出("declare i64 @\"xt_string_get_char\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_get_byte\"(i64, i64)")
         此.写出("declare i64 @\"xt_string_byte_length\"(i64)")
@@ -6890,6 +6892,32 @@
                 此.写出("  " & res & " = call i64 @xt_json_deserialize(%XTString* " & objPtr & ")")
                 此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
                 设 _r = [res, "i64"]
+                返 _r
+            }
+
+            若 成员名 == "以开头" 或 成员名 == "以结尾" {
+                设 翻译左 = 此.编译表达式(左节点)
+                设 对象Xt = 此.确保I64(翻译左[0], 翻译左[1])
+                此.写成员对象守卫(对象Xt, 成员名)
+                设 翻译参 = 此.编译表达式(节点.调用参数[0])
+                设 参Xt = 此.确保I64(翻译参[0], 翻译参[1])
+                设 对象Ptr = 此.取新寄存器()
+                此.写出("  " & 对象Ptr & " = inttoptr i64 " & 对象Xt & " to %XTString*")
+                设 参Ptr = 此.取新寄存器()
+                此.写出("  " & 参Ptr & " = inttoptr i64 " & 参Xt & " to %XTString*")
+                设 _前缀 = 假
+                若 成员名 == "以开头" { _前缀 = 真 }
+                设 _函数 = "@\"xt_string_ends_with\""
+                若 _前缀 { _函数 = "@\"xt_string_starts_with\"" }
+                设 _原 = 此.取新寄存器()
+                此.写出("  " & _原 & " = call i32 " & _函数 & "(%XTString* " & 对象Ptr & ", %XTString* " & 参Ptr & ")")
+                设 _条件 = 此.取新寄存器()
+                此.写出("  " & _条件 & " = icmp ne i32 " & _原 & ", 0")
+                设 _布尔 = 此.取新寄存器()
+                此.写出("  " & _布尔 & " = select i1 " & _条件 & ", i64 4, i64 2")
+                此.写出("  call void @xt_release(i64 " & 对象Xt & ")")
+                此.写出("  call void @xt_release(i64 " & 参Xt & ")")
+                设 _r = [_布尔, "i64"]
                 返 _r
             }
 

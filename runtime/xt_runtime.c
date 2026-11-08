@@ -2280,6 +2280,25 @@ int xt_string_contains(XTString* s, XTString* sub) {
     return strstr(s->data, sub->data) != NULL;
 }
 
+// issue #114:前后缀判断(字节级比较;UTF-8 下与字符级等价,因为前缀/后缀是完整字节序列)
+int xt_string_starts_with(XTString* s, XTString* p) {
+    if (!s || !p) return 0;
+    xt_string_guard((XTValue)s, "以开头");
+    xt_string_guard((XTValue)p, "以开头 参数");
+    if (p->length > s->length) return 0;
+    if (p->length == 0) return 1;
+    return memcmp(s->data, p->data, p->length) == 0;
+}
+
+int xt_string_ends_with(XTString* s, XTString* p) {
+    if (!s || !p) return 0;
+    xt_string_guard((XTValue)s, "以结尾");
+    xt_string_guard((XTValue)p, "以结尾 参数");
+    if (p->length > s->length) return 0;
+    if (p->length == 0) return 1;
+    return memcmp(s->data + (s->length - p->length), p->data, p->length) == 0;
+}
+
 /**
  * @brief 字符串拼接核心逻辑
  */
