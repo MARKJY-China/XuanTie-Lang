@@ -39,6 +39,10 @@ const RETURN_RE = /^返回\s*[:：]?\s*([^\s—–-]+)?\s*(?:[—–-]\s*(.*))?$
 const FUNC_PUB_RE = /^公\s+函\s+([^\s(（]+)\s*[(（]([^)）]*)[)）]/
 const FUNC_BARE_RE = /^函\s+([^\s(（]+)\s*[(（]([^)）]*)[)）]/
 const CONST_PUB_RE = /^公\s+(?:设|常)\s+([^\s=]+)\s*=\s*(.*)$/
+// 类与类方法：`型 名称<T> {` 顶格声明；类体内缩进的 `函 名(...)` / `公 函 名(...)` 是方法。
+// 方法签名渲染成 `别名.类名.方法(...)`，同一个类归入以小节名（类名）命名的分组。
+const CLASS_RE = /^(\s*)型\s+([^\s{<（(]+)/
+const METHOD_RE = /^(\s+)(?:公\s+)?函\s+([^\s(（<]+)\s*(?:<[^>]*>)?\s*[(（]([^)）]*)[)）]/
 
 function walkXt(dir) {
   const out = []
@@ -133,8 +137,38 @@ function parseLib(libDir) {
     const rel = file.slice(ROOT.length + 1).replace(/\\/g, '/')
     const lines = readFileSync(file, 'utf8').split(/\r?\n/)
     const hasPub = lines.some((l) => FUNC_PUB_RE.test(l))
+    let cls = null
     for (let i = 0; i < lines.length; i++) {
       const t = lines[i]
+      // 类声明：先记一条 type 条目（类说明），后续类体内缩进函数按方法收集
+      const cm = t.match(CLASS_RE)
+      if (cm) {
+        const clsName = cm[2]
+        cls = { name: clsName, indent: cm[1].length }
+        const doc = parseDoc(lines, i)
+        items.push({
+          kind: 'type', name: clsName, paragraphs: doc.paragraphs, params: [], ret: null,
+          section: clsName, file: rel, line: i + 1,
+        })
+        continue
+      }
+      // 顶格右花括号结束类体（方法体/嵌套块都比类体更深，不会顶格）
+      if (cls && /^\s*\}\s*$/.test(t) && t.match(/^\s*/)[0].length <= cls.indent) {
+        cls = null
+        continue
+      }
+      if (cls) {
+        const mm = t.match(METHOD_RE)
+        if (mm) {
+          const doc = parseDoc(lines, i)
+          items.push({
+            kind: 'func', name: mm[2], owner: cls.name, paramsText: mm[3].trim(),
+            paragraphs: doc.paragraphs, params: doc.params, ret: doc.ret,
+            section: cls.name, file: rel, line: i + 1,
+          })
+          continue
+        }
+      }
       const m = (hasPub ? t.match(FUNC_PUB_RE) : null) || (!hasPub ? t.match(FUNC_BARE_RE) : null)
       if (m) {
         const doc = parseDoc(lines, i)
@@ -161,7 +195,8 @@ function parseLib(libDir) {
 
 function sigOf(it, alias) {
   if (it.kind !== 'func') return `${alias}.${it.name}`
-  return `${alias}.${it.name}(${it.paramsText})`
+  const owner = it.owner ? it.owner + '.' : ''
+  return `${alias}.${owner}${it.name}(${it.paramsText})`
 }
 
 function paramNamesOf(it) {
@@ -217,14 +252,29 @@ function renderLib(libName, version, items, alias) {
   const bySection = new Map()
   for (const it of items) {
     const s = it.section || '其他'
-    if (!bySection.has(s)) bySection.set(s, { funcs: [], consts: [] })
-    bySection.get(s)[it.kind === 'func' ? 'funcs' : 'consts'].push(it)
+    if (!bySection.has(s)) bySection.set(s, { types: [], funcs: [], consts: [] })
+    const g = bySection.get(s)
+    if (it.kind === 'type') g.types.push(it)
+    else if (it.kind === 'func') g.funcs.push(it)
+    else g.consts.push(it)
   }
   for (const [rawSection, g] of bySection) {
     // 小库没有小节标题：统一显示为「公开函数」，不出现「其他」
     const section = rawSection === '其他' ? '公开函数' : rawSection
     out.push(`## ${section}`)
     out.push('')
+    for (const it of g.types) {
+      out.push(`### 型 \`${alias}.${it.name}\``)
+      out.push('')
+      if (it.paragraphs.length) {
+        for (const p of it.paragraphs) { out.push(p); out.push('') }
+      } else {
+        out.push('（源码中该类上方无注释）')
+        out.push('')
+      }
+      out.push(`实例化：\`造 ${alias}.${it.name}(...)\``)
+      out.push('')
+    }
     for (const it of g.funcs) out.push(...renderFunc(it, alias))
     if (g.consts.length) {
       out.push('**常量 / 变量**')
@@ -330,7 +380,7 @@ function renderBuiltinModule(title, doc, items) {
   return out.join('\n')
 }
 
-const aliasOf = (n) => ({ 渲染: 'R', UI: 'UI', HTTP: 'HTTP', SQLite: 'DB', 数组: '数组' }[n] || 'X')
+const aliasOf = (n) => ({ 渲染: 'R', UI: 'UI', HTTP: 'HTTP', SQLite: 'DB', 数组: '数组', 文本: 'T', 路径: 'P', 结构: 'S' }[n] || 'X')
 
 const libRoot = join(ROOT, 'lib')
 const libs = readdirSync(libRoot)

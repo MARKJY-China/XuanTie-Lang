@@ -33,6 +33,9 @@ const ROOT_FILES = [
   '10_运算符重载编程指南.md',
   '11_多线程开发深度教程.md',
   '12_UI库编程指南.md',
+  '13_文本库编程指南.md',
+  '14_路径库编程指南.md',
+  '15_数据结构库编程指南.md',
   '离线文档.md',
   '种子编译器实现笔记.md',
   '自举编译器实现笔记.md',
@@ -72,9 +75,17 @@ function rewriteFences(md) {
   return md.replace(/^```text\s*$/gm, '```xuantie')
 }
 
+// Vue 会把 markdown 里的 {{ … }} 当作插值表达式编译（构建直接报 SyntaxError）。
+// 文档里 `{{` / `}}` 是在讲转义语法，属于字面量：换成带 v-pre 的 <code> 让 Vue 跳过。
+function escapeVueInterp(md) {
+  return md
+    .replace(/`\{\{`/g, '<code v-pre>{{</code>')
+    .replace(/`\}\}`/g, '<code v-pre>}}</code>')
+}
+
 function writeDoc(dest, md) {
   mkdirSync(dirname(dest), { recursive: true })
-  writeFileSync(dest, rewriteFences(rewriteLinks(md, join(ROOT, 'GUIDE'))), 'utf8')
+  writeFileSync(dest, escapeVueInterp(rewriteFences(rewriteLinks(md, join(ROOT, 'GUIDE')))), 'utf8')
 }
 
 function main() {

@@ -1,0 +1,10 @@
+compile_ok=True
+exit=0
+PASS 库内类方法造另一类
+PASS 库内工厂造类
+PASS 库外造库内类
+PASS 字段函数字面量实参
+PASS 字段函数变量实参
+PASS 字段函数直调
+PASS 字段函数中转
+缺陷回归 全绿

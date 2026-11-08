@@ -1,0 +1,12 @@
+[包]
+名称 = "结构"
+版本 = "1.0.1"
+仓库 = "https://gitcode.com/MARKJY/XuanTieDataStructures"
+作者 = "问号盒"
+
+[描述]
+简介 = "XuanTieDataStructures｜玄铁数据结构库 — 栈/队列/双端队列/链表/二叉堆/二叉搜索树/集合/LRU缓存,纯玄铁类实现"
+许可 = "MIT"
+
+[依赖]
+#无
