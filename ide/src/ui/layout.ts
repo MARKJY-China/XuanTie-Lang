@@ -444,7 +444,9 @@ export function initWindowControls(L: LayoutHandles): void {
     L.toolbar.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       const t = e.target as HTMLElement;
-      const onInteractive = !!t.closest('button, .menubar, a, input, select, textarea');
+      // 注意:.dropdown 必须算交互区——它是 div 而不是 button,漏掉会被当成标题栏拖动区,
+      // 于是 mousedown 触发窗口拖拽、click 永不发生(表现为"菜单能开、点项没反应")。
+      const onInteractive = !!t.closest('button, .menubar, a, input, select, textarea, .dropdown, .dd-item');
       const now = Date.now();
       if (now - lastDownAt < 350) {
         lastDownAt = 0;
