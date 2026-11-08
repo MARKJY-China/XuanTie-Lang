@@ -997,6 +997,9 @@ body.light #statusbar .sb-update { color: #0b63b8; }
   border: 1px solid var(--accent-dim); border-radius: 8px; padding: 1px 8px;
   margin-left: auto;
 }
+/* 行内「可更新」是按钮:点它单独升级该包 */
+.pkg-upd.act { cursor: pointer; user-select: none; }
+.pkg-upd.act:hover { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
 .pkg-empty { color: var(--fg-dim); font-size: 12.5px; padding: 4px 8px; }
 
 #ctx-root { position: fixed; inset: 0; z-index: 950; display: none; }

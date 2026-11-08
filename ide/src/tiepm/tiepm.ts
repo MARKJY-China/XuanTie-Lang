@@ -8,16 +8,20 @@ export class Tiepm {
     private getWorkspace: () => string,
   ) {}
 
-  private async exec(args: string[], label: string): Promise<void> {
+  private async exec(
+    args: string[],
+    label: string,
+    onExit?: (exitCode: number) => void,
+  ): Promise<void> {
     const tiepm = await resolveTiepm();
     if (!tiepm) {
       throw new Error('未找到 tiepm:请在设置里配置 tiepm.exe 路径,或把它加入 PATH');
     }
-    await this.term.runCommand(label, this.getWorkspace(), tiepm, args);
+    await this.term.runCommand(label, this.getWorkspace(), tiepm, args, onExit);
   }
 
-  install(name: string): Promise<void> {
-    return this.exec(['az', name], `铁铺 · 安装 ${name}`);
+  install(name: string, onExit?: (exitCode: number) => void): Promise<void> {
+    return this.exec(['az', name], `铁铺 · 安装 ${name}`, onExit);
   }
 
   search(keyword: string): Promise<void> {

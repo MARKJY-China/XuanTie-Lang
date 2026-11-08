@@ -2407,18 +2407,19 @@ async function fetchLatestVersions(): Promise<Record<string, string>> {
   return latest;
 }
 
-async function checkTiepmUpdates(tiepm: string): Promise<number> {
+/** 比对本地已装版本与远程索引,返回「可更新:包名 → 最新版」;同时给列表行打橙色标记 */
+async function checkTiepmUpdates(tiepm: string): Promise<Record<string, string>> {
   const [pkgs, latest] = await Promise.all([backend.tiepmPackages(tiepm), fetchLatestVersions()]);
-  let count = 0;
+  const updates: Record<string, string> = {};
   for (const p of pkgs) {
     if (p.builtin || p.version === '?') continue;
     const up = latest[p.name];
     if (up && cmpVer(up, p.version) > 0) {
-      count++;
+      updates[p.name] = up;
       markPkgUpdate(p.name, up);
     }
   }
-  return count;
+  return updates;
 }
 
 function tiepmListModal(): Promise<unknown> {
@@ -2433,18 +2434,66 @@ function tiepmListModal(): Promise<unknown> {
       content.style.flexDirection = 'column';
       content.style.gap = '10px';
 
-      const load = (): void => {
-        status.textContent = '正在读取…';
+      // 可更新的铁器:包名 → 最新版。检查完填入,行内橙色标记与「更新铁器」按钮都读它。
+      let updatable: Record<string, string> = {};
+      // 逐个更新期间锁住按钮与刷新,避免重复触发、也避免中途换掉列表
+      let busy = false;
+
+      const btnCheck = document.createElement('button');
+      btnCheck.className = 'mbtn';
+      btnCheck.textContent = '检查更新';
+      btnCheck.title = '检查铁铺远程索引中的新版本';
+      const btnRefresh = document.createElement('button');
+      btnRefresh.className = 'mbtn';
+      btnRefresh.textContent = '刷新';
+      const btnClose = document.createElement('button');
+      btnClose.className = 'mbtn primary';
+      btnClose.textContent = '关闭';
+      btnClose.addEventListener('click', () => close());
+
+      const setStatus = (text: string): void => {
+        status.className = 'pkg-empty';
         status.style.display = '';
+        status.textContent = text;
+      };
+
+      // 有可更新项 → 按钮变「更新铁器」(橙色主按钮);全部最新 → 退回「检查更新」
+      const syncCheckButton = (): void => {
+        btnCheck.disabled = busy;
+        btnRefresh.disabled = busy;
+        if (busy) {
+          btnCheck.textContent = '更新中…';
+          btnCheck.classList.add('primary');
+          btnCheck.title = '正在逐个升级,请稍候';
+          return;
+        }
+        const n = Object.keys(updatable).length;
+        if (n > 0) {
+          btnCheck.textContent = '更新铁器';
+          btnCheck.classList.add('primary');
+          btnCheck.title = `把 ${n} 个可更新的铁器逐个升级到最新版`;
+          btnClose.classList.remove('primary');
+        } else {
+          btnCheck.textContent = '检查更新';
+          btnCheck.classList.remove('primary');
+          btnCheck.title = '检查铁铺远程索引中的新版本';
+          btnClose.classList.add('primary');
+        }
+      };
+
+      const load = (): void => {
+        updatable = {};
+        syncCheckButton();
+        setStatus('正在读取…');
         content.innerHTML = '';
         resolveTiepm()
-          .then((tiepm) => {
-            if (!tiepm) {
-              status.textContent = '未找到 tiepm:请在设置里配置,或把它加入 PATH';
+          .then((tiepmPath) => {
+            if (!tiepmPath) {
+              setStatus('未找到 tiepm:请在设置里配置,或把它加入 PATH');
               return;
             }
             backend
-              .tiepmPackages(tiepm)
+              .tiepmPackages(tiepmPath)
               .then((pkgs) => {
                 status.style.display = 'none';
                 const installed = pkgs.filter((p) => !p.builtin);
@@ -2482,44 +2531,118 @@ function tiepmListModal(): Promise<unknown> {
                 section('随玄铁内置', builtin, '未检测到内置库目录');
               })
               .catch((err: unknown) => {
-                status.textContent = String(err);
+                setStatus(String(err));
               });
           })
           .catch((err: unknown) => {
-            status.textContent = String(err);
+            setStatus(String(err));
           });
       };
 
-      const foot = document.createElement('div');
-      foot.className = 'm-foot';
-      const btnCheck = document.createElement('button');
-      btnCheck.className = 'mbtn';
-      btnCheck.textContent = '检查更新';
+      // 升一个包:tiepm az <名> 就是覆盖安装,退出码 0 视为成功
+      const installOne = (name: string): Promise<boolean> =>
+        new Promise<boolean>((resolve) => {
+          let settled = false;
+          const done = (v: boolean): void => {
+            if (settled) return;
+            settled = true;
+            resolve(v);
+          };
+          tiepm
+            .install(name, (code) => done(code === 0))
+            .then(() => {
+              // 兜底:进程没起来时 onExit 永远不会来(比如 exe 不可用),别让更新队列卡死
+              setTimeout(() => {
+                if (!term.isRunning()) done(false);
+              }, 400);
+            })
+            .catch(() => done(false));
+        });
+
+      // 成功后把行内版本号就地改成新版并摘掉橙色标记(不必整页重读)
+      const markInstalled = (name: string, latest: string): void => {
+        const row = content.querySelector(`.pkg-row[data-pkg="${CSS.escape(name)}"]`);
+        if (!row) return;
+        const ver = row.querySelector('.pkg-ver');
+        if (ver) ver.textContent = `v${latest}`;
+        row.querySelector('.pkg-upd')?.remove();
+      };
+
+      // 逐个更新(全部或单个都走这里),每步进度写进状态行,安装输出进「终端」
+      const updateMany = async (names: string[]): Promise<void> => {
+        if (busy || names.length === 0) return;
+        busy = true;
+        syncCheckButton();
+        // 安装过程走「终端」:把底部面板切出来,关掉弹窗就能看到实时输出
+        setBottomVisible(true);
+        setBottomTab('term');
+        let ok = 0;
+        const failed: string[] = [];
+        for (let i = 0; i < names.length; i++) {
+          const name = names[i];
+          const latest = updatable[name] ?? '';
+          setStatus(
+            `正在更新 ${name}${latest ? ` → v${latest}` : ''}(${i + 1}/${names.length}),安装输出见「终端」…`,
+          );
+          const done = await installOne(name);
+          if (done) {
+            ok++;
+            delete updatable[name];
+            markInstalled(name, latest);
+          } else {
+            failed.push(name);
+          }
+          syncCheckButton();
+        }
+        busy = false;
+        syncCheckButton();
+        if (failed.length === 0) {
+          setStatus(`更新完成:${ok} 个铁器已升级到最新版`);
+        } else {
+          setStatus(
+            `更新完成:${ok} 个成功,${failed.length} 个失败(${failed.join('、')});可再点「更新铁器」重试`,
+          );
+        }
+      };
+
+      // 行内橙色「可更新」本身就是按钮:点它只升这一个
+      content.addEventListener('click', (e) => {
+        const chip = (e.target as HTMLElement | null)?.closest('.pkg-upd') as HTMLElement | null;
+        if (!chip || busy || chip.dataset.act !== 'update-one') return;
+        const name = chip.dataset.name;
+        if (name) void updateMany([name]);
+      });
+
       btnCheck.addEventListener('click', () => {
-        status.className = 'pkg-empty';
-        status.style.display = '';
-        status.textContent = '正在检查更新(读取远程索引)…';
+        if (busy) return;
+        const names = Object.keys(updatable);
+        if (names.length > 0) {
+          void updateMany(names);
+          return;
+        }
+        setStatus('正在检查更新(读取远程索引)…');
         void resolveTiepm()
-          .then((tiepm) => {
-            if (!tiepm) throw new Error('未找到 tiepm:请在设置里配置,或加入 PATH');
-            return checkTiepmUpdates(tiepm);
+          .then((tiepmPath) => {
+            if (!tiepmPath) throw new Error('未找到 tiepm:请在设置里配置,或加入 PATH');
+            return checkTiepmUpdates(tiepmPath);
           })
-          .then((n) => {
-            status.textContent =
-              n > 0 ? `检查完成:${n} 个铁器可更新(见行内橙色标记)` : '检查完成:全部已是最新';
+          .then((updates) => {
+            updatable = updates;
+            syncCheckButton();
+            const n = Object.keys(updates).length;
+            setStatus(
+              n > 0
+                ? `检查完成:${n} 个铁器可更新 —— 点「更新铁器」全部升级,或点行内橙色标记单独升级`
+                : '检查完成:全部已是最新',
+            );
           })
           .catch((err: unknown) => {
-            status.textContent = `检查失败: ${String(err)}`;
+            setStatus(`检查失败: ${String(err)}`);
           });
       });
-      const btnRefresh = document.createElement('button');
-      btnRefresh.className = 'mbtn';
-      btnRefresh.textContent = '刷新';
       btnRefresh.addEventListener('click', load);
-      const btnClose = document.createElement('button');
-      btnClose.className = 'mbtn primary';
-      btnClose.textContent = '关闭';
-      btnClose.addEventListener('click', () => close());
+      const foot = document.createElement('div');
+      foot.className = 'm-foot';
       foot.append(btnCheck, btnRefresh, btnClose);
       body.append(status, content, foot);
       load();
@@ -2542,14 +2665,16 @@ async function tiepmCleanAction(): Promise<void> {
   }
 }
 
-// 标记某包可更新:在对应行追加橙色「可更新 → v最新版」徽标
+// 标记某包可更新:在对应行追加橙色「可更新 → v最新版」徽标(徽标可点,只升这一个)
 function markPkgUpdate(name: string, latest: string): void {
   const row = document.querySelector(`#modal-root .pkg-row[data-pkg="${CSS.escape(name)}"]`);
   if (!row || row.querySelector('.pkg-upd')) return;
   const chip = document.createElement('span');
-  chip.className = 'pkg-upd';
+  chip.className = 'pkg-upd act';
   chip.textContent = `可更新 → v${latest}`;
-  chip.title = `用「铁铺 → 安装包…」输入 ${name} 即可升级`;
+  chip.title = `点击把 ${name} 升级到 v${latest}`;
+  chip.dataset.act = 'update-one';
+  chip.dataset.name = name;
   row.appendChild(chip);
 }
 
@@ -3099,7 +3224,9 @@ async function boot(): Promise<void> {
     void (async () => {
       const tiepm = await resolveTiepm();
       if (!tiepm) return;
-      const n = await checkTiepmUpdates(tiepm).catch(() => -1);
+      const n = await checkTiepmUpdates(tiepm)
+        .then((updates) => Object.keys(updates).length)
+        .catch(() => -1);
       if (n > 0) showToast(`铁铺更新:${n} 个铁器有新版本,列表页可查看`, 'ok');
     })();
   }
