@@ -2900,29 +2900,32 @@ function bindUi(): void {
   L.btnAccount.addEventListener('click', () => void accountModal());
   // 账号状态变化后面板无需重建:getAccount 每次发送时实时读取设置
 
-  for (const item of Array.from(byId('menu-tiepm').querySelectorAll('.dd-item'))) {
-    item.addEventListener('click', () => {
-      const act = (item as HTMLElement).dataset.act ?? '';
-      const run = (p: Promise<void>): void => {
-        setBottomVisible(true);
-        setBottomTab('term');
-        p.catch((err: unknown) => showToast(String(err), 'err'));
-      };
-      if (act === 'install') {
-        void promptText('铁铺 · 安装包', '包名').then((name) => {
-          if (name) run(tiepm.install(name));
-        });
-      } else if (act === 'search') {
-        void promptText('铁铺 · 搜索', '关键词').then((kw) => {
-          if (kw) run(tiepm.search(kw));
-        });
-      } else if (act === 'list') {
-        void tiepmListModal();
-      } else if (act === 'clean') {
-        void tiepmCleanAction();
-      }
-    });
-  }
+  // 铁铺下拉:用事件委托而不是逐个 .dd-item 绑定。
+  // 逐个绑定的写法有个隐患:bindUi 前面任何一行抛错,这里就整段没绑上,表现为"点菜单没反应"。
+  const tiepmMenu = byId('menu-tiepm');
+  tiepmMenu.addEventListener('click', (e) => {
+    const el = (e.target as HTMLElement | null)?.closest('.dd-item') as HTMLElement | null;
+    if (!el || !tiepmMenu.contains(el)) return;
+    const act = el.dataset.act ?? '';
+    const run = (p: Promise<void>): void => {
+      setBottomVisible(true);
+      setBottomTab('term');
+      p.catch((err: unknown) => showToast(String(err), 'err'));
+    };
+    if (act === 'install') {
+      void promptText('铁铺 · 安装包', '包名').then((name) => {
+        if (name) run(tiepm.install(name));
+      });
+    } else if (act === 'search') {
+      void promptText('铁铺 · 搜索', '关键词').then((kw) => {
+        if (kw) run(tiepm.search(kw));
+      });
+    } else if (act === 'list') {
+      void tiepmListModal();
+    } else if (act === 'clean') {
+      void tiepmCleanAction();
+    }
+  });
 
   window.addEventListener('keydown', (e) => {
     // 设计器模式下 Monaco 不可见,撤销/重做转发到编辑器(设计器每次落点都是一步可撤销编辑)
@@ -3127,5 +3130,12 @@ async function boot(): Promise<void> {
   }
 }
 
-bindUi();
+// bindUi 任何一行抛错都会让"后面的绑定"静默失效(表现为按钮/菜单点了没反应),
+// 所以显式兜住并留痕,而不是让异常死在 Promise 之外。
+try {
+  bindUi();
+} catch (err) {
+  console.error('[铸造厂] 界面绑定失败(部分按钮/菜单将无反应):', err);
+  showToast(`界面初始化失败: ${String(err)}`, 'err');
+}
 void boot();
