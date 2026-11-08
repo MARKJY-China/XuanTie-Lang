@@ -62,6 +62,12 @@ npm run build:app     # 发行包(NSIS 安装包 + updater 签名)
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD=`(空),产出 `*_setup.exe` **与同名 `.sig`**,
 两个都要上传(签名填进社区后台「铸造厂 → 版本与更新」)。私钥丢了 = 自动更新永久失效。
 
+**报 `cannot find -lgcc_eh` 怎么办**:这是链接时挑到了 TDM-GCC(10.3 缺该库),不是代码问题。
+两个原因各占一半——(1) 终端是改 PATH 之前开的,开个新终端再跑;
+(2) PATH 里 `C:\TDM-GCC-64\bin` 排在 `D:\MSYS2\ucrt64\bin` 前面,调换顺序或把 TDM 从 PATH 移除
+(打包脚本 `release/make_pkg.sh` 用绝对路径找 TDM,不依赖 PATH)。急用时的兜底:
+`RUSTFLAGS="-C link-self-contained=yes" npm run build:app`(改用 rust-lld 自带 libgcc_eh)。
+
 ## 工具链配置
 
 「⚙ 设置」里可指定三个 exe(留空则按 PATH 自动探测,顺序:设置 → PATH → 工作区约定位置):

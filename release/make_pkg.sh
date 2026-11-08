@@ -402,7 +402,9 @@ DIRTY=$(git -C "$ROOT" status --porcelain 2>/dev/null | head -1 || true)
 DDC_P=$(MD5 "$ROOT/build/xtc_s${PREV_N}.exe" 2>/dev/null || echo "(缺)")
 DDC_T=$(MD5 "$ROOT/build/xtc_s${TOP_N}.exe" 2>/dev/null || echo "(缺)")
 CLANG_V=$(clang --version 2>/dev/null | head -1 || echo "(未知)")
-GCC_V=$(gcc --version 2>/dev/null | head -1 || echo "(未知)")
+# 用随包工具链的 gcc 自报版本(而非 PATH 上的 gcc):PATH 上可能排着另一个发行版(如 MSYS2 ucrt64),
+# 会把清单写成与实际内嵌工具链不符的版本。
+GCC_V=$("$TDM_DIR/bin/gcc.exe" --version 2>/dev/null | head -1 || gcc --version 2>/dev/null | head -1 || echo "(未知)")
 {
   echo "玄铁发行包构建清单 (MANIFEST)"
   echo "平台: $PLATFORM ($UNAME_S $(uname -m))"
