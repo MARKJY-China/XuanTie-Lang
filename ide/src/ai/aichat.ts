@@ -600,10 +600,23 @@ export class AiChatPanel {
   // 全量重绘(初始化/历史恢复/回退后)
   private renderAll(): void {
     this.els.msgs.innerHTML = '';
-    const hint = document.createElement('div');
-    hint.className = 'ai-msg bot';
-    hint.textContent = '你好,我是玄铁铸造厂的 AI 助手。有什么可以帮你?';
-    this.els.msgs.appendChild(hint);
+    // 空态用品牌头(大字 + 副标题)代替旧的一行"你好,我是…"助手气泡;
+    // 有消息后不再占地方,直接进对话流
+    if (this.msgs.length === 0) {
+      const hero = document.createElement('div');
+      hero.className = 'ai-hero';
+      const brand = document.createElement('div');
+      brand.className = 'ai-hero-brand';
+      brand.textContent = 'FoundryCode';
+      const tagline = document.createElement('div');
+      tagline.className = 'ai-hero-tagline';
+      tagline.textContent = '玄铁熔炉,一念成器';
+      const sub = document.createElement('div');
+      sub.className = 'ai-hero-sub';
+      sub.textContent = '铸造厂的 AI 助手:问玄铁语法、查库用法、读工程、改代码。';
+      hero.append(brand, tagline, sub);
+      this.els.msgs.appendChild(hero);
+    }
     for (let i = 0; i < this.msgs.length; i++) {
       this.els.msgs.appendChild(this.buildWrap(this.msgs[i], i));
     }

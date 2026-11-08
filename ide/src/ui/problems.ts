@@ -43,6 +43,15 @@ export class ProblemsPanel {
     return n;
   }
 
+  /** 错误级(severity=1)条数:角标据此决定红/黄(全是 warning 用黄) */
+  errorCount(): number {
+    let n = 0;
+    for (const diags of this.data.values()) {
+      for (const d of diags) if (d.severity === 1) n++;
+    }
+    return n;
+  }
+
   private render(): void {
     this.host.innerHTML = '';
     const rows: ProblemRow[] = [];

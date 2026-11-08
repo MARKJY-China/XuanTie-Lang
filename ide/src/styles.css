@@ -181,6 +181,25 @@ body {
 }
 .ai-title { font-weight: 600; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; color: var(--accent); }
 .ai-title .codicon { font-size: 14px; }
+
+/* 空态品牌头:大字品牌 + 副标题(版式参考 JoyCode,配色沿用铸造厂强调色) */
+.ai-hero { padding: 28px 2px 8px; }
+.ai-hero-brand {
+  font-size: 30px; font-weight: 700; line-height: 1.15; letter-spacing: 0.3px;
+  color: var(--fg);
+}
+.ai-hero-brand::first-letter { color: var(--accent); }
+.ai-hero-tagline {
+  margin-top: 12px; font-size: 19px; font-weight: 500;
+  letter-spacing: 1px; color: var(--fg-dim);
+}
+.ai-hero-sub {
+  margin-top: 14px; font-size: 12.5px; line-height: 1.75;
+  color: var(--fg-dim); opacity: 0.75;
+}
+/* 输入卡片:圆角放大一级,和品牌头同一套气质(组件布局不动) */
+#ai-input-box { border-radius: 12px; }
+#ai-input { min-height: 62px; }
 #ai-head .spacer { flex: 1; }
 
 /* 消息列表:统一节奏(滚动条样式见下方 #ai-dock 统一滚动条) */
@@ -776,6 +795,7 @@ body {
   vertical-align: 1px;
 }
 .btab .badge.count { background: #c4382e; color: #fff; }
+.btab .badge.count.warn { background: var(--warn); color: #1a1a1a; }
 .btab .badge.dot { min-width: 9px; width: 9px; height: 9px; padding: 0; border-radius: 50%; }
 .btab .badge.dot.run {
   background: var(--warn);
@@ -818,6 +838,11 @@ body {
 #build-host { flex: 1; min-height: 0; position: relative; padding: 2px 4px; display: none; }
 #build-host.active { display: block; }
 .build-view { position: absolute; inset: 2px 4px; }
+
+/* 「输出」栏:程序运行结果(与「构建」同构的单视图) */
+#output-host { flex: 1; min-height: 0; position: relative; padding: 2px 4px; display: none; }
+#output-host.active { display: block; }
+.output-view { position: absolute; inset: 2px 4px; }
 
 #problems-host { flex: 1; min-height: 0; overflow: auto; display: none; padding: 4px 0; }
 #problems-host.active { display: block; }

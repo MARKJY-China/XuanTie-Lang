@@ -22,12 +22,14 @@ export interface LayoutHandles {
   bottomPanel: HTMLElement;
   bottomSplit: HTMLElement;
   btabTerm: HTMLElement;
+  btabOutput: HTMLElement;
   btabBuild: HTMLElement;
   btabProblems: HTMLElement;
   badgeBuild: HTMLElement;
   badgeProblems: HTMLElement;
   termSessionBar: HTMLElement;
   termHost: HTMLElement;
+  outputHost: HTMLElement;
   buildHost: HTMLElement;
   problemsHost: HTMLElement;
   aiDock: HTMLElement;
@@ -138,12 +140,14 @@ const TEMPLATE = `
     <div id="bottom-panel">
       <div id="bottom-tabs">
         <button class="btab active" id="btab-term"><i class="codicon codicon-terminal"></i>终端</button>
+        <button class="btab" id="btab-output"><i class="codicon codicon-output"></i>输出</button>
         <button class="btab" id="btab-build"><i class="codicon codicon-tools"></i>构建<i class="badge" id="badge-build" style="display:none"></i></button>
         <button class="btab" id="btab-problems"><i class="codicon codicon-warning"></i>问题<i class="badge count" id="badge-problems" style="display:none"></i></button>
         <div class="spacer"></div>
         <div id="term-session-bar"></div>
       </div>
       <div id="term-host"></div>
+      <div id="output-host"></div>
       <div id="build-host"></div>
       <div id="problems-host"></div>
     </div>
@@ -151,7 +155,7 @@ const TEMPLATE = `
   <div id="ai-split"></div>
   <div id="ai-dock">
     <div id="ai-head">
-      <span class="ai-title"><i class="codicon codicon-hubot"></i>智器对话</span>
+      <span class="ai-title"><i class="codicon codicon-hubot"></i>FoundryCode</span>
       <span class="spacer"></span>
       <button class="ibtn" id="btn-ai-outline" title="对话大纲"><i class="codicon codicon-list-unordered"></i></button>
       <button class="ibtn" id="btn-ai-history" title="会话历史(当前工程)"><i class="codicon codicon-history"></i></button>
@@ -240,12 +244,14 @@ export function buildLayout(root: HTMLElement): LayoutHandles {
     bottomPanel: must(root, 'bottom-panel'),
     bottomSplit: must(root, 'bottom-split'),
     btabTerm: must(root, 'btab-term'),
+    btabOutput: must(root, 'btab-output'),
     btabBuild: must(root, 'btab-build'),
     btabProblems: must(root, 'btab-problems'),
     badgeBuild: must(root, 'badge-build'),
     badgeProblems: must(root, 'badge-problems'),
     termSessionBar: must(root, 'term-session-bar'),
     termHost: must(root, 'term-host'),
+    outputHost: must(root, 'output-host'),
     buildHost: must(root, 'build-host'),
     problemsHost: must(root, 'problems-host'),
     aiDock: must(root, 'ai-dock'),

@@ -24,7 +24,7 @@ export class Runner {
     const cwd = this.getWorkspace() || dirname(path);
     const pao = await backend.toolPaoSupport(xtc).catch(() => false);
     if (pao) {
-      await this.term.runCommand(`运行 · ${basename(path)}`, cwd, xtc, ['pao', path]);
+      await this.term.runCommand(`运行 · ${basename(path)}`, cwd, xtc, ['pao', path], undefined, 'output');
       return;
     }
     const cache = await backend.runCacheDir();
@@ -32,10 +32,13 @@ export class Runner {
     const cmd =
       `& ${psQuote(xtc)} tie ${psQuote(path)} -sc ${psQuote(out)}` +
       `; if ($LASTEXITCODE -eq 0) { & ${psQuote(out)} }`;
-    await this.term.runCommand(`运行 · ${basename(path)}(tie+运行)`, cwd, 'powershell.exe', [
-      '-NoLogo',
-      '-Command',
-      cmd,
-    ]);
+    await this.term.runCommand(
+      `运行 · ${basename(path)}(tie+运行)`,
+      cwd,
+      'powershell.exe',
+      ['-NoLogo', '-Command', cmd],
+      undefined,
+      'output',
+    );
   }
 }

@@ -169,7 +169,7 @@ const tabs = new TabManager(
   },
   (p) => confirmBox('关闭未保存', `${basename(p)} 有未保存的更改,放弃并关闭?`),
 );
-const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost);
+const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outputHost);
 // 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
 term.onRunState = (running) => setRunButton(running);
 const runner = new Runner(term, () => workspace);
@@ -1089,7 +1089,8 @@ function renderProblemsBadge(): void {
     return;
   }
   b.style.display = 'inline-flex';
-  b.className = 'badge count';
+  // 全是警告用黄底,含错误才用红底(用户要求:警告级不刺眼)
+  b.className = 'badge count' + (problems.errorCount() > 0 ? '' : ' warn');
   b.textContent = n > 9 ? '9+' : String(n);
 }
 
@@ -1118,11 +1119,13 @@ function updateLspStatus(s: LspStatus, detail: string): void {
   sbLsp.title = detail;
 }
 
-function setBottomTab(which: 'term' | 'build' | 'problems'): void {
+function setBottomTab(which: 'term' | 'output' | 'build' | 'problems'): void {
   L.btabTerm.classList.toggle('active', which === 'term');
+  L.btabOutput.classList.toggle('active', which === 'output');
   L.btabBuild.classList.toggle('active', which === 'build');
   L.btabProblems.classList.toggle('active', which === 'problems');
   L.termHost.style.display = which === 'term' ? 'block' : 'none';
+  L.outputHost.classList.toggle('active', which === 'output');
   L.buildHost.classList.toggle('active', which === 'build');
   L.problemsHost.classList.toggle('active', which === 'problems');
 }
@@ -1769,7 +1772,9 @@ async function runActive(): Promise<void> {
   try {
     await tabs.saveAll();
     setBottomVisible(true);
-    setBottomTab('term');
+    // 程序运行结果进「输出」栏,不和普通终端混(用户明确要求)
+    setBottomTab('output');
+    term.fitOutput();
     await runner.runFile(p);
   } catch (err) {
     showToast(String(err), 'err');
@@ -2874,6 +2879,10 @@ function bindUi(): void {
   });
   byId('btn-settings').addEventListener('click', () => void settingsModal());
   L.btabTerm.addEventListener('click', () => setBottomTab('term'));
+  L.btabOutput.addEventListener('click', () => {
+    setBottomTab('output');
+    term.fitOutput();
+  });
   byId('sb-cloud').addEventListener('click', () => {
     void showCloudIssueModal();
   });

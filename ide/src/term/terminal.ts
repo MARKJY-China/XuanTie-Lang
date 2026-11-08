@@ -18,7 +18,7 @@ interface TermSession {
   tabEl: HTMLElement | null; // 构建视图固定在「构建」Tab,无会话标签
   alive: boolean;
   isMain: boolean;
-  host: 'term' | 'build';
+  host: 'term' | 'build' | 'output';
   // 进程退出回调(编译等动作借此感知完成时机)
   onExit?: (exitCode: number) => void;
 }
@@ -40,7 +40,7 @@ const TERM_OPTIONS = {
 export type SpawnOpts = {
   isMain?: boolean;
   onExit?: (exitCode: number) => void;
-  target?: 'term' | 'build';
+  target?: 'term' | 'build' | 'output';
 };
 
 export class TerminalPane {
@@ -55,6 +55,7 @@ export class TerminalPane {
     private host: HTMLElement,
     private tabBar: HTMLElement,
     private buildHost: HTMLElement,
+    private outputHost: HTMLElement,
   ) {
     this.resizeObs = new ResizeObserver(() => this.queueFit());
     this.resizeObs.observe(host);
@@ -116,10 +117,12 @@ export class TerminalPane {
     s.term.write(data);
   }
 
-  private buildSession(id: string, title: string, target: 'term' | 'build', isMain: boolean): TermSession {
+  private buildSession(id: string, title: string, target: 'term' | 'build' | 'output', isMain: boolean): TermSession {
     const view = document.createElement('div');
-    view.className = target === 'build' ? 'build-view' : 'term-view';
-    (target === 'build' ? this.buildHost : this.host).appendChild(view);
+    view.className = target === 'term' ? 'term-view' : target === 'build' ? 'build-view' : 'output-view';
+    (target === 'term' ? this.host : target === 'build' ? this.buildHost : this.outputHost).appendChild(view);
+    // 「输出」是单视图(每次运行清场重来),不参与 term 会话的显示/隐藏切换,建好即常显
+    if (target === 'output') view.classList.add('active');
 
     let tabEl: HTMLElement | null = null;
     if (target === 'term') {
@@ -262,7 +265,8 @@ export class TerminalPane {
       this.writeSession(s, `\r\n\x1b[31m启动失败: ${String(err)}\x1b[0m\r\n`);
     }
     if (target === 'term') this.fitActive();
-    else this.fitBuild();
+    else if (target === 'build') this.fitBuild();
+    else this.fitOutput();
   }
 
   async ensureMain(cwd: string): Promise<void> {
@@ -302,13 +306,31 @@ export class TerminalPane {
   /** 运行状态变化回调,由 main.ts 挂到顶部按钮 */
   onRunState: ((running: boolean) => void) | null = null;
 
-  async runCommand(title: string, cwd: string, program: string, args: string[], onExit?: (exitCode: number) => void): Promise<void> {
+  /**
+   * 跑一条命令。target='output' 时进「输出」Tab 的固定单视图(程序运行结果,每次清场);
+   * 默认 'term' 用于铁铺等交互命令,仍是终端会话标签。
+   */
+  async runCommand(
+    title: string,
+    cwd: string,
+    program: string,
+    args: string[],
+    onExit?: (exitCode: number) => void,
+    target: 'term' | 'output' = 'term',
+  ): Promise<void> {
     this.pruneDeadRuns();
-    const id = `run-${++this.seq}`;
+    let id: string;
+    if (target === 'output') {
+      await this.resetOutputSession();
+      id = 'output';
+    } else {
+      id = `run-${++this.seq}`;
+    }
     this.runId = id;
     this.onRunState?.(true);
     try {
       await this.spawn(id, title, cwd, program, args, {
+        target,
         onExit: (code) => {
           if (this.runId === id) this.clearRunState();
           onExit?.(code);
@@ -320,6 +342,7 @@ export class TerminalPane {
       if (this.runId === id) this.clearRunState();
       throw err;
     }
+    if (target === 'output') this.fitOutput();
   }
 
   private clearRunState(): void {
@@ -346,6 +369,38 @@ export class TerminalPane {
       old.term.dispose();
       old.view.remove();
       this.sessions.delete('build');
+    }
+  }
+
+  // 「输出」Tab:程序运行结果的固定单视图,每次运行清场重来(与「构建」同构)
+  private async resetOutputSession(): Promise<void> {
+    const old = this.sessions.get('output');
+    if (old) {
+      try {
+        await backend.ptyKill('output');
+      } catch {
+        // 已退出属正常
+      }
+      for (const u of this.unlisten.get('output') ?? []) u();
+      this.unlisten.delete('output');
+      old.term.dispose();
+      old.view.remove();
+      this.sessions.delete('output');
+    }
+  }
+
+  fitOutput(): void {
+    const s = this.sessions.get('output');
+    if (!s) return;
+    try {
+      s.fit.fit();
+    } catch {
+      // 视图尚未布局时忽略
+    }
+    if (s.alive) {
+      backend
+        .ptyResize(s.id, Math.max(20, s.term.cols), Math.max(4, s.term.rows))
+        .catch(() => undefined);
     }
   }
 
@@ -379,8 +434,9 @@ export class TerminalPane {
     if (id !== null && !this.sessions.has(id)) return;
     this.activeId = id;
     for (const [sid, s] of this.sessions) {
-      const on = s.host === 'term' && sid === id;
-      s.view.classList.toggle('active', on);
+      // 只切换终端会话的显隐;「构建」「输出」是各自 Tab 的固定单视图,不参与这里
+      if (s.host !== 'term') continue;
+      s.view.classList.toggle('active', sid === id);
       if (s.tabEl) s.tabEl.classList.toggle('active', sid === id);
     }
     window.setTimeout(() => this.fitActive(), 0);
