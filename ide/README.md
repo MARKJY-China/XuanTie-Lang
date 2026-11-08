@@ -55,7 +55,12 @@ npm run build:app     # 发行包(NSIS 安装包 + updater 签名)
 Windows 上还有一键脚本 **`build.cmd`**(双击或在 cmd/PowerShell 里跑):它会把
 `D:\MSYS2\ucrt64\bin` 前置到 PATH(可用 `MSYS2_UCRT64` 改)、自动找
 `%USERPROFILE%\.tauri\xuantie-foundry.key` 当签名私钥,然后调 `npm run build:app`——
-省掉"PATH 顺序"和"忘了设签名变量"这两个坑。
+省掉"PATH 顺序"和"忘了设签名变量"这两个坑。加 `-DryRun` 可以只看它打算用什么、不构建。
+
+**签名密码**:现有私钥是**空密码**。Windows 存不了"空值"环境变量(`set X=` 是删除),
+所以 `build.cmd` 构建时把 stdin 重定向到 `nul`,让 CLI 走"按空密码处理"而不是弹
+`Password:` 卡住等人回车。若你以后给私钥设了密码,就别用 `build.cmd`,直接
+`npm run build:app` 手动输入。
 
 仅构建前端做类型检查:`npm run build`(tsc --noEmit + vite build)。
 
