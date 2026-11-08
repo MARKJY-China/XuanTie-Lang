@@ -191,6 +191,58 @@ interface OpenDoc {
     return true;
   }
 
+  /**
+   * 磁盘改名成功后调用:缓冲区内容与"未保存"状态原样保留,只换路径/标签名/模型 URI。
+   *
+   * 为什么不走 close()+openFile():close 遇到脏文档会弹"是否保存",而改名根本不该动内容。
+   * 为什么必须重建 model:Monaco 的 model URI 不可变,而 LSP 侧按 `model.uri` 反推路径
+   * (lsp/features.ts),继续用旧 model 会让诊断/跳转指向旧文件名。
+   */
+  renamePath(from: string, to: string): boolean {
+    const doc = this.docs.get(from);
+    if (!doc || this.docs.has(to)) return false;
+    const text = doc.model.getValue();
+    const wasActive = this.activePath === from;
+    const view = wasActive ? this.editor.saveViewState() : null;
+
+    const oldModel = doc.model;
+    const uri = monaco.Uri.file(to);
+    // 同名旧模型(极少见,例如上一次改名残留)直接用;否则新建同内容模型
+    const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(text, 'xuantie', uri);
+    if (model.getValue() !== text) model.setValue(text);
+
+    doc.model = model;
+    doc.path = to;
+    this.docs.delete(from);
+    this.docs.set(to, doc);
+    const idx = this.order.indexOf(from);
+    if (idx >= 0) this.order[idx] = to;
+    const enc = this.encodings.get(from);
+    if (enc !== undefined) {
+      this.encodings.set(to, enc);
+      this.encodings.delete(from);
+    }
+    // 先把编辑器切到新模型再 dispose 旧模型(避免编辑器还指着被销毁的模型)
+    if (wasActive) {
+      this.activePath = to;
+      this.editor.setModel(model);
+      if (view) this.editor.restoreViewState(view);
+    }
+    oldModel.dispose();
+    // 标签元素里的点击/关闭回调闭包捕获了旧路径,必须重建元素而不是只改文字
+    const fresh = this.buildTab(to);
+    fresh.classList.toggle('active', wasActive);
+    doc.tabEl.replaceWith(fresh);
+    doc.tabEl = fresh;
+    this.refreshDirty(doc);
+
+    // LSP:旧路径 didClose、新路径 didOpen(送的是当前缓冲区,含未保存修改)
+    this.hooks.onDidClose(from);
+    this.hooks.onDidOpen(to, text);
+    if (wasActive) this.hooks.onActivate(to);
+    return true;
+  }
+
   private refreshDirty(doc: OpenDoc): void {
     const dirty = doc.model.getValue() !== doc.savedText;
     doc.tabEl.classList.toggle('dirty', dirty);

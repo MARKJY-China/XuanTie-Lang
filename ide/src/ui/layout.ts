@@ -88,7 +88,6 @@ const TEMPLATE = `
   </div>
   <div class="spacer"></div>
   <button class="tbtn primary" id="btn-run" title="编译并运行当前文件 (F5)"><i class="codicon codicon-play"></i>运行</button>
-  <button class="tbtn" id="btn-stop" title="停止运行会话"><i class="codicon codicon-debug-stop"></i>停止</button>
   <div class="menu-anchor" id="tiepm-anchor">
     <button class="tbtn" id="btn-tiepm"><i class="codicon codicon-package"></i>铁铺<i class="codicon codicon-chevron-down caret"></i></button>
     <div class="dropdown" id="menu-tiepm">

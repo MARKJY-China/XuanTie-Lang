@@ -103,6 +103,9 @@ body {
 .tbtn:disabled:hover { background: transparent; }
 .tbtn.primary { border-color: var(--accent-dim); color: var(--accent); font-weight: 600; }
 .tbtn.primary:hover { background: rgba(232, 132, 44, 0.12); }
+/* 运行中:同一个按钮切成「停止」,用错误色一眼区分(不是另一个按钮) */
+.tbtn.stop { border-color: var(--err); color: var(--err); font-weight: 600; }
+.tbtn.stop:hover { background: rgba(232, 76, 76, 0.12); }
 
 /* ============ 主区 ============ */
 #main-row { flex: 1 1 0; display: flex; min-height: 0; }

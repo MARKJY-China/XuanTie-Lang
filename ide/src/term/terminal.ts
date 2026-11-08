@@ -232,10 +232,39 @@ export class TerminalPane {
     }
   }
 
+  /** 运行会话 id(一键运行时创建;顶部「运行」按钮据此切成「停止」) */
+  private runId: string | null = null;
+  /** 运行状态变化回调,由 main.ts 挂到顶部按钮 */
+  onRunState: ((running: boolean) => void) | null = null;
+
   async runCommand(title: string, cwd: string, program: string, args: string[], onExit?: (exitCode: number) => void): Promise<void> {
     this.pruneDeadRuns();
     const id = `run-${++this.seq}`;
-    await this.spawn(id, title, cwd, program, args, { onExit });
+    this.runId = id;
+    this.onRunState?.(true);
+    try {
+      await this.spawn(id, title, cwd, program, args, {
+        onExit: (code) => {
+          if (this.runId === id) this.clearRunState();
+          onExit?.(code);
+        },
+      });
+      // spawn 内部把启动失败写进会话、不抛错;这里兜住"没跑起来"的情况,别让按钮卡在「停止」
+      if (this.runId === id && !this.isRunning()) this.clearRunState();
+    } catch (err) {
+      if (this.runId === id) this.clearRunState();
+      throw err;
+    }
+  }
+
+  private clearRunState(): void {
+    this.runId = null;
+    this.onRunState?.(false);
+  }
+
+  /** 是否有正在运行的会话(顶部按钮两态判断) */
+  isRunning(): boolean {
+    return this.runId !== null && (this.sessions.get(this.runId)?.alive ?? false);
   }
 
   // 「构建」Tab:固定单视图,每次编译清场重来(上一次构建会话无论死活先清掉)
@@ -271,12 +300,13 @@ export class TerminalPane {
   }
 
   stopRun(): boolean {
-    let victim: TermSession | null = null;
-    for (const s of this.sessions.values()) {
-      if (!s.isMain && s.alive) victim = s;
+    const id = this.runId;
+    if (!id || !this.sessions.has(id)) {
+      this.clearRunState();
+      return false;
     }
-    if (!victim) return false;
-    void this.closeSession(victim.id);
+    this.clearRunState();
+    void this.closeSession(id);
     return true;
   }
 
@@ -306,6 +336,8 @@ export class TerminalPane {
     s.view.remove();
     if (s.tabEl) s.tabEl.remove();
     this.sessions.delete(id);
+    // 运行会话被直接关掉(关标签/进程退出)时也要把按钮切回「运行」
+    if (this.runId === id) this.clearRunState();
     if (this.activeId === id) {
       const nextTerm = [...this.sessions.values()].find((x) => x.host === 'term');
       this.activate(nextTerm ? nextTerm.id : null);

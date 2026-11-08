@@ -170,6 +170,8 @@ const tabs = new TabManager(
   (p) => confirmBox('关闭未保存', `${basename(p)} 有未保存的更改,放弃并关闭?`),
 );
 const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost);
+// 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
+term.onRunState = (running) => setRunButton(running);
 const runner = new Runner(term, () => workspace);
 const tiepm = new Tiepm(term, () => workspace);
 
@@ -1337,9 +1339,18 @@ async function renameNode(node: FileNode): Promise<void> {
       showToast('目标名已存在', 'err');
       return;
     }
-    if (tabs.isOpen(from) && !(await tabs.close(from))) return;
+    // 先改磁盘,再迁移标签页 —— 不再 close() 已打开的文件(那会弹"是否保存"并丢缓冲区)。
+    // 目录改名时,其下已打开的文件路径一起跟着换。
     await backend.fsRename(from, to);
+    const sep = from.includes('\\') ? '\\' : '/';
+    const moves: Array<[string, string]> = [];
+    for (const p of tabs.getAllPaths()) {
+      if (p === from) moves.push([p, to]);
+      else if (p.startsWith(from + sep)) moves.push([p, to + sep + p.slice(from.length + 1)]);
+    }
+    for (const [oldPath, newPath] of moves) tabs.renamePath(oldPath, newPath);
     await reloadTree();
+    if (moves.length > 0) showToast(`已改名:${newName}`, 'ok');
   } catch (err) {
     showToast(`重命名失败: ${String(err)}`, 'err');
   }
@@ -1720,7 +1731,27 @@ function settingsModal(): Promise<void> {
   });
 }
 
+/** 顶部「运行」按钮两态:空闲=运行(强调色),运行中=停止(错误色)。由终端会话状态驱动。 */
+function setRunButton(running: boolean): void {
+  const btn = byId('btn-run');
+  btn.classList.toggle('primary', !running);
+  btn.classList.toggle('stop', running);
+  btn.innerHTML = running
+    ? '<i class="codicon codicon-debug-stop"></i>停止'
+    : '<i class="codicon codicon-play"></i>运行';
+  btn.title = running ? '停止运行会话' : '编译并运行当前文件 (F5)';
+}
+
 // ---- 运行 / 保存 ----
+/** 顶部按钮与 F5 共用:空闲→运行,运行中→停止 */
+function toggleRun(): void {
+  if (term.isRunning()) {
+    if (!term.stopRun()) showToast('没有正在运行的会话');
+    return;
+  }
+  void runActive();
+}
+
 async function runActive(): Promise<void> {
   const p = tabs.getActivePath();
   if (!p) {
@@ -2831,10 +2862,7 @@ function bindUi(): void {
 
   byId('wl-open').addEventListener('click', openFolder);
   byId('wl-new').addEventListener('click', () => void newProjectModal());
-  byId('btn-run').addEventListener('click', () => void runActive());
-  byId('btn-stop').addEventListener('click', () => {
-    if (!term.stopRun()) showToast('没有正在运行的会话');
-  });
+  byId('btn-run').addEventListener('click', () => toggleRun());
   L.btnRefreshTree.addEventListener('click', () => void reloadTree());
   L.btnEye.addEventListener('click', () => {
     const cur = getSettings().treeDisplay ?? defaultSettings().treeDisplay;
@@ -2922,7 +2950,7 @@ function bindUi(): void {
       setBottomVisible(L.bottomPanel.classList.contains('hidden'));
     } else if (e.code === 'F5') {
       e.preventDefault();
-      void runActive();
+      toggleRun();
     }
   });
 
