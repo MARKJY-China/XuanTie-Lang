@@ -38,19 +38,29 @@ xtc / tiepm / xt_lsp 均可用)。
 
 ## 构建
 
-前置:Node ≥ 18、Rust(MSVC 工具链)、WebView2 Runtime(Win10/11 一般自带)。
+前置:
+
+- Node ≥ 18;WebView2 Runtime(Win10/11 一般自带)。
+- Rust:Windows 上 **不需要 Visual Studio / MSVC**。用 `stable-x86_64-pc-windows-gnu`
+  (`rustup default stable-x86_64-pc-windows-gnu`),链接器用 **MSYS2 的 ucrt64 GCC**
+  (`D:\MSYS2\ucrt64\bin` 进 PATH 即可;实测 GCC 15.2 链接通过)。Linux / macOS 用系统 gcc / clang。
 
 ```bash
 cd ide
 npm install
 npm run tauri dev     # 开发(先起 vite,再起 Tauri 窗口)
-npm run tauri build   # 发行包(NSIS 安装包)
+npm run build:app     # 发行包(NSIS 安装包 + updater 签名)
 ```
 
 仅构建前端做类型检查:`npm run build`(tsc --noEmit + vite build)。
 
-注意:裸 `cargo build --release`(不带 custom-protocol)产出的是开发壳——WebView 会去连
-localhost:5173 白屏,禁止当发行物分发;`npx tauri build` 自动带 custom-protocol 并内嵌前端。
+**发行必须带 `custom-protocol`**(`build:app` 已经带):它是"把前端资源打进 exe"的开关。
+漏掉的产物是**开发壳**——窗口里 WebView 去连 `localhost:5173`,显示浏览器的
+`ERR_CONNECTION_REFUSED` 错误页。裸 `cargo build --release` 同理,禁止当发行物分发。
+
+签名(updater 用):打包前设 `TAURI_SIGNING_PRIVATE_KEY=<私钥路径>` 与
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD=`(空),产出 `*_setup.exe` **与同名 `.sig`**,
+两个都要上传(签名填进社区后台「铸造厂 → 版本与更新」)。私钥丢了 = 自动更新永久失效。
 
 ## 工具链配置
 

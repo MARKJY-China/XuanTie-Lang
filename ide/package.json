@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test:designer": "esbuild src/ui/designer/designer.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/designer-test.mjs && node node_modules/.tmp/designer-test.mjs",
+    "build:app": "tauri build --features custom-protocol",
     "tauri": "tauri"
   },
   "dependencies": {
