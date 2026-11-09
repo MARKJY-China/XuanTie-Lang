@@ -14,12 +14,14 @@ issue #118：文档站 `/ai/all.txt` 曾与实现漂移近一个月——AI 按�
 ## 用法
 
 ```bash
-# 1) 先生成 API 参考（可选，GUIDE/API 不存在时 AI 层会少这部分）
+# 1) 先生成 API 参考（GUIDE/API 是产物、被 .gitignore 排除，不进库；全新 clone 里没有这个目录）
 node tools/gen-api.mjs
 
 # 2) 生成 AI 文档层（默认输出 dist/ai-docs/）
 node tools/gen-ai-docs.mjs
 ```
+
+**跳过第 1 步不会报错，只是静默少一整块**：`GUIDE/API/` 为空时第 2 步照样成功，产物页头、状态标注全都正常，唯独 all.txt 少了 API 参考那 14 篇（按本批实测：175 篇 / 585 KB → 161 篇 / 432 KB，少 153 KB），站点上也没有任何提示。部署站点前务必先跑第 1 步。
 
 产物：
 
@@ -51,3 +53,5 @@ node tools/gen-ai-docs.mjs
 ## 发布纪律（建议）
 
 发版时按顺序执行：`gen-api` → `gen-ai-docs` → 部署站点。all.txt 的页头日期应与本次发版日期一致；若站点上的 all.txt 日期落后于发行包，说明该次发布漏了这一步。
+
+页头版本号同理：它的唯一来源是 `xuantie_compiler/玄铁.xt` 的 `版本号` 常量。若线上 all.txt 的**日期是新的、版本号却低于当前源码**，说明生成发生在升版提交之前（用了旧 checkout 或没 pull），此时日期对得上也不代表文档对得上——按版本号判，不按日期判。
