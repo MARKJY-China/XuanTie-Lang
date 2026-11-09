@@ -3,7 +3,7 @@
 ; 构建: iscc xuantie_setup.iss
 
 #define MyAppName "玄铁 (XuanTie)"
-#define MyAppVersion "1.0-rc.3"
+#define MyAppVersion "1.0-rc.4"
 
 [Setup]
 AppName={#MyAppName}
@@ -13,7 +13,7 @@ AppPublisherURL=https://github.com/MARKJY-China/XuanTie-Lang
 DefaultDirName={autopf}\XuanTie
 PrivilegesRequired=lowest
 OutputDir=.
-OutputBaseFilename=xuantie_v1.0-rc.3_setup
+OutputBaseFilename=xuantie_v1.0-rc.4_setup
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

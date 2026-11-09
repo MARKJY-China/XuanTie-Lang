@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_WIN="$(cygpath -w "$ROOT")"   # PowerShell 只认 Windows 形式路径(G:\...)
 ISCC=$ROOT/temp/innosetup/ISCC.exe
-VER=v1.0-rc.3
+VER=v1.0-rc.4
 
 [ -f "$ISCC" ] || { echo "错误: 未找到 $ISCC(Inno Setup 便携版)"; exit 1; }
 
@@ -38,3 +38,5 @@ done
 echo "═══ 发布物 ═══"
 ls -la "$ROOT/release/xuantie_${VER}_setup.exe" "$ROOT/release/xuantie_${VER}_windows_amd64.zip"
 echo "完成。验证建议: setup /VERYSILENT /CURRENTUSER /DIR=<临时目录> → 冒烟编译 → unins000 /VERYSILENT"
+
+
