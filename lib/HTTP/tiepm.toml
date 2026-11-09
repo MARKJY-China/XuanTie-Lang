@@ -1,10 +1,14 @@
 [包]
 名称 = "HTTP"
-版本 = "1.0.1"
+版本 = "1.1.0"
 仓库 = "https://gitcode.com/MARKJY/XuanTieHTTP"
 作者 = "问号盒"
 
 [描述]
-简介 = "玄铁 HTTP/1.1 服务端库 — 纯玄铁实现,基于 听/连 原语;每连接一请求一响应"
+简介 = "玄铁 HTTP/1.1 库 — 纯玄铁服务端 + 原生桥客户端流式(HTTPS/TLS、chunked、SSE 增量读)"
 
 [依赖]
+
+[原生]
+# HTTP流桥.o 提供客户端 TLS 流式读(编译: clang -target x86_64-w64-windows-gnu -O2 -c HTTP流桥.c)
+对象 = ["HTTP流桥.o"]
