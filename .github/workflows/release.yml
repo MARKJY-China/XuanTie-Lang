@@ -32,7 +32,7 @@ jobs:
           - os: ubuntu-latest
             plat: linux
             slug: linux_x86_64
-          - os: macos-14
+          - os: macos-15
             plat: darwin
             slug: darwin_arm64
     runs-on: ${{ matrix.os }}
