@@ -46,6 +46,9 @@ typedef int xt_sock_t;
 // 前向声明
 static int resolve_host(const char* host, struct sockaddr_in* addr);
 static xt_sock_t create_connection(const char* host, int port);
+static const char* xt_proxy_from_env(int use_tls);
+static int xt_parse_proxy_addr(const char* s, char* host, size_t cap, int* port);
+static int xt_proxy_tunnel(xt_sock_t sock, const char* host, int port, char* err, size_t errcap);
 static int xt_region_icontains(const char* hay, size_t haylen, const char* needle);
 static char* xt_http_decode_chunked(const char* src, size_t len, size_t* outlen);
 // ============================================================
@@ -239,12 +242,33 @@ static char* http_fetch_raw(const char* url, int connect_ms, int io_ms,
     } else { size_t l = strlen(p); if (l >= 256) l = 255; memcpy(host, p, l); }
     if (slash) path = slash;
 
-    xt_sock_t sock = create_connection_timeout(host, port, connect_ms);
-    if (sock == XT_INVALID_SOCK) {
-        char* e = (char*)malloc(256);
-        snprintf(e, 256, "无法连接到 %s:%d", host, port);
-        *err_out = e;
-        return NULL;
+    // 代理:单参 求 无选项可用,只走环境变量(https→HTTPS_PROXY,http→HTTP_PROXY,兜底 ALL_PROXY)
+    const char* proxy = xt_proxy_from_env(use_tls);
+    xt_sock_t sock;
+    if (proxy) {
+        char phost[256];
+        int pport = 0;
+        if (!xt_parse_proxy_addr(proxy, phost, sizeof(phost), &pport)) {
+            char* e = (char*)malloc(320);
+            snprintf(e, 320, "代理地址无效(仅支持 host:port 或 http://host:port，不支持认证): %s", proxy);
+            *err_out = e;
+            return NULL;
+        }
+        sock = create_connection_timeout(phost, pport, connect_ms);
+        if (sock == XT_INVALID_SOCK) {
+            char* e = (char*)malloc(320);
+            snprintf(e, 320, "无法连接到代理 %s:%d", phost, pport);
+            *err_out = e;
+            return NULL;
+        }
+    } else {
+        sock = create_connection_timeout(host, port, connect_ms);
+        if (sock == XT_INVALID_SOCK) {
+            char* e = (char*)malloc(256);
+            snprintf(e, 256, "无法连接到 %s:%d", host, port);
+            *err_out = e;
+            return NULL;
+        }
     }
 
     // 收发超时(每次 recv/send 的静默上限;分块到达则每块重置)
@@ -260,6 +284,19 @@ static char* http_fetch_raw(const char* url, int connect_ms, int io_ms,
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 #endif
+    }
+
+    // 代理隧道(CONNECT)必须在 TLS 之前
+    if (proxy) {
+        char terr[320];
+        if (xt_proxy_tunnel(sock, host, port, terr, sizeof(terr)) != 0) {
+            xt_sock_close(sock);
+            size_t tl = strlen(terr);
+            char* e = (char*)malloc(tl + 1);
+            if (e) memcpy(e, terr, tl + 1);
+            *err_out = e;
+            return NULL;
+        }
     }
 
     // HTTPS:先建立 TLS 会话(Schannel,系统原生,零外部依赖)
@@ -454,6 +491,82 @@ static int64_t xt_opt_int(XTValue opts, const char* key, int64_t dflt) {
     return dflt;
 }
 
+// ============================================================
+// HTTP 代理(HTTP CONNECT 隧道)
+// 选项 "代理" 优先;否则按目标协议读环境变量:
+//   https 目标 → HTTPS_PROXY/https_proxy → ALL_PROXY/all_proxy
+//   http  目标 → HTTP_PROXY/http_proxy   → ALL_PROXY/all_proxy
+// 只支持明文 HTTP 代理(host:port / http://host:port);不支持代理自身 TLS、
+// 代理认证(407)与 SOCKS5——这三类明确报错,不静默直连。
+// ============================================================
+static const char* xt_env_first_of(const char* a, const char* b) {
+    const char* v = getenv(a);
+    if (v && v[0]) return v;
+    v = getenv(b);
+    if (v && v[0]) return v;
+    return NULL;
+}
+
+static const char* xt_proxy_from_env(int use_tls) {
+    const char* v = use_tls
+        ? xt_env_first_of("HTTPS_PROXY", "https_proxy")
+        : xt_env_first_of("HTTP_PROXY", "http_proxy");
+    if (v) return v;
+    return xt_env_first_of("ALL_PROXY", "all_proxy");
+}
+
+// 解析代理串 → host/port;失败返回 0
+static int xt_parse_proxy_addr(const char* s, char* host, size_t cap, int* port) {
+    if (!s || !s[0]) return 0;
+    const char* p = s;
+    if (strncmp(p, "http://", 7) == 0) p += 7;
+    else if (strncmp(p, "https://", 8) == 0) return 0;   // 代理自身 TLS 不支持
+    else if (strstr(p, "://")) return 0;
+    if (strchr(p, '@')) return 0;                         // 代理认证不支持
+    const char* colon = strchr(p, ':');
+    if (!colon) return 0;
+    size_t hl = (size_t)(colon - p);
+    if (hl == 0 || hl >= cap) return 0;
+    memcpy(host, p, hl);
+    host[hl] = '\0';
+    *port = atoi(colon + 1);
+    if (*port <= 0 || *port > 65535) return 0;
+    return 1;
+}
+
+// 在已连接的 socket 上建立 CONNECT 隧道;成功 0,失败 -1 并填 err
+static int xt_proxy_tunnel(xt_sock_t sock, const char* host, int port, char* err, size_t errcap) {
+    char req[600];
+    int n = snprintf(req, sizeof(req),
+                     "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", host, port, host, port);
+    if (n <= 0 || n >= (int)sizeof(req)) { snprintf(err, errcap, "代理请求过长"); return -1; }
+    int off = 0;
+    while (off < n) {
+        int w = send(sock, req + off, n - off, 0);
+        if (w <= 0) { snprintf(err, errcap, "向代理发送 CONNECT 失败"); return -1; }
+        off += w;
+    }
+    char buf[8192];
+    int len = 0;
+    for (;;) {
+        if (len >= (int)sizeof(buf) - 1) { snprintf(err, errcap, "代理响应头过长"); return -1; }
+        int r = recv(sock, buf + len, (int)sizeof(buf) - 1 - len, 0);
+        if (r <= 0) { snprintf(err, errcap, "代理未返回 CONNECT 响应"); return -1; }
+        len += r;
+        buf[len] = '\0';
+        if (strstr(buf, "\r\n\r\n")) break;
+    }
+    int status = 0;
+    const char* sp = strchr(buf, ' ');
+    if (sp) status = atoi(sp + 1);
+    if (status != 200) {
+        if (status == 407) snprintf(err, errcap, "代理需要认证(407)，当前不支持");
+        else snprintf(err, errcap, "代理拒绝 CONNECT(状态 %d)", status);
+        return -1;
+    }
+    return 0;
+}
+
 // 在限定区域内大小写不敏感地找子串
 static int xt_region_icontains(const char* hay, size_t haylen, const char* needle) {
     size_t nl = strlen(needle);
@@ -539,10 +652,32 @@ XTValue xt_http_request_ex(XTValue url_val, XTValue opts_val) {
     } else { size_t l = strlen(p); if (l >= 256) l = 255; memcpy(host, p, l); }
     if (slash) path = slash;
 
-    xt_sock_t sock = create_connection(host, port);
-    if (sock == XT_INVALID_SOCK) {
-        char e[256]; snprintf(e, sizeof(e), "无法连接到 %s:%d", host, port);
-        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(e));
+    // 代理:选项 "代理" 优先,其次环境变量(https 目标读 HTTPS_PROXY,http 目标读 HTTP_PROXY)
+    const char* proxy_opt = xt_opt_str(opts_val, "代理", NULL);
+    const char* proxy = (proxy_opt && proxy_opt[0]) ? proxy_opt : NULL;
+    if (!proxy) proxy = xt_proxy_from_env(use_tls);
+
+    xt_sock_t sock;
+    if (proxy) {
+        char phost[256];
+        int pport = 0;
+        if (!xt_parse_proxy_addr(proxy, phost, sizeof(phost), &pport)) {
+            char e[320];
+            snprintf(e, sizeof(e), "代理地址无效(仅支持 host:port 或 http://host:port，不支持认证): %s", proxy);
+            return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(e));
+        }
+        sock = create_connection(phost, pport);
+        if (sock == XT_INVALID_SOCK) {
+            char e[320];
+            snprintf(e, sizeof(e), "无法连接到代理 %s:%d", phost, pport);
+            return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(e));
+        }
+    } else {
+        sock = create_connection(host, port);
+        if (sock == XT_INVALID_SOCK) {
+            char e[256]; snprintf(e, sizeof(e), "无法连接到 %s:%d", host, port);
+            return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(e));
+        }
     }
 
     // 收发超时(连接超时暂不支持)
@@ -557,6 +692,15 @@ XTValue xt_http_request_ex(XTValue url_val, XTValue opts_val) {
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 #endif
+    }
+
+    // 代理隧道(CONNECT)必须在 TLS 之前
+    if (proxy) {
+        char terr[320];
+        if (xt_proxy_tunnel(sock, host, port, terr, sizeof(terr)) != 0) {
+            xt_sock_close(sock);
+            return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(terr));
+        }
     }
 
     void* tls = NULL;

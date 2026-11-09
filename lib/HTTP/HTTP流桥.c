@@ -515,6 +515,78 @@ static int parse_url(const char* url, char* host, size_t hostcap, int* port, con
     return 1;
 }
 
+// ============================================================
+// HTTP 代理(HTTP CONNECT 隧道)
+// 选项 "代理" 优先;否则按目标协议读环境变量(HTTPS_PROXY/HTTP_PROXY/ALL_PROXY)。
+// 只支持明文 HTTP 代理;代理自身 TLS、407 认证、SOCKS5 明确报错,不静默直连。
+// ============================================================
+static const char* env_first_of(const char* a, const char* b) {
+    const char* v = getenv(a);
+    if (v && v[0]) return v;
+    v = getenv(b);
+    if (v && v[0]) return v;
+    return NULL;
+}
+
+static const char* proxy_from_env(int use_tls) {
+    const char* v = use_tls
+        ? env_first_of("HTTPS_PROXY", "https_proxy")
+        : env_first_of("HTTP_PROXY", "http_proxy");
+    if (v) return v;
+    return env_first_of("ALL_PROXY", "all_proxy");
+}
+
+static int parse_proxy_addr(const char* s, char* host, size_t cap, int* port) {
+    if (!s || !s[0]) return 0;
+    const char* p = s;
+    if (strncmp(p, "http://", 7) == 0) p += 7;
+    else if (strncmp(p, "https://", 8) == 0) return 0;   // 代理自身 TLS 不支持
+    else if (strstr(p, "://")) return 0;
+    if (strchr(p, '@')) return 0;                         // 代理认证不支持
+    const char* colon = strchr(p, ':');
+    if (!colon) return 0;
+    size_t hl = (size_t)(colon - p);
+    if (hl == 0 || hl >= cap) return 0;
+    memcpy(host, p, hl);
+    host[hl] = '\0';
+    *port = atoi(colon + 1);
+    if (*port <= 0 || *port > 65535) return 0;
+    return 1;
+}
+
+// 在已连接的裸 socket 上建立 CONNECT 隧道(必须早于 TLS 握手)
+static int proxy_tunnel_raw(http_stream* st, const char* host, int port, char* err, size_t errcap) {
+    char req[600];
+    int n = snprintf(req, sizeof(req),
+                     "CONNECT %s:%d HTTP/1.1\r\nHost: %s:%d\r\n\r\n", host, port, host, port);
+    if (n <= 0 || n >= (int)sizeof(req)) { snprintf(err, errcap, "代理请求过长"); return -1; }
+    int off = 0;
+    while (off < n) {
+        int w = send(st->sock, req + off, n - off, 0);
+        if (w <= 0) { snprintf(err, errcap, "向代理发送 CONNECT 失败"); return -1; }
+        off += w;
+    }
+    char buf[8192];
+    int len = 0;
+    for (;;) {
+        if (len >= (int)sizeof(buf) - 1) { snprintf(err, errcap, "代理响应头过长"); return -1; }
+        int r = recv(st->sock, buf + len, (int)sizeof(buf) - 1 - len, 0);
+        if (r <= 0) { snprintf(err, errcap, "代理未返回 CONNECT 响应"); return -1; }
+        len += r;
+        buf[len] = '\0';
+        if (strstr(buf, "\r\n\r\n")) break;
+    }
+    int status = 0;
+    const char* sp = strchr(buf, ' ');
+    if (sp) status = atoi(sp + 1);
+    if (status != 200) {
+        if (status == 407) snprintf(err, errcap, "代理需要认证(407)，当前不支持");
+        else snprintf(err, errcap, "代理拒绝 CONNECT(状态 %d)", status);
+        return -1;
+    }
+    return 0;
+}
+
 // 用户头字典 → 逐行追加;记录是否已自带 Content-Length / Connection
 static int append_user_headers(char** req, size_t* len, size_t* cap, uintptr_t headers, int* has_cl, int* has_conn) {
     if (headers == 0 || IS_INT(headers)) return 1;
@@ -575,8 +647,24 @@ uintptr_t xt_http_stream_open(uintptr_t url_v, uintptr_t opts) {
         return make_err("网址格式不正确(仅支持 http/https)");
     }
 
-    XTSocket* so = (XTSocket*)xt_net_connect(host, port);
-    if (!so) return make_err("无法连接服务器(域名解析或 TCP 连接失败)");
+    // 代理:选项 "代理" 优先,其次环境变量(https→HTTPS_PROXY,http→HTTP_PROXY,兜底 ALL_PROXY)
+    XTString* proxy_s = opt_str(opts, "代理");
+    const char* proxy = (proxy_s && proxy_s->length > 0) ? proxy_s->data : NULL;
+    if (!proxy) proxy = proxy_from_env(use_tls);
+
+    XTSocket* so;
+    if (proxy) {
+        char phost[256];
+        int pport = 0;
+        if (!parse_proxy_addr(proxy, phost, sizeof(phost), &pport)) {
+            return make_err("代理地址无效(仅支持 host:port 或 http://host:port，不支持认证)");
+        }
+        so = (XTSocket*)xt_net_connect(phost, pport);
+        if (!so) return make_err("无法连接代理(域名解析或 TCP 连接失败)");
+    } else {
+        so = (XTSocket*)xt_net_connect(host, port);
+        if (!so) return make_err("无法连接服务器(域名解析或 TCP 连接失败)");
+    }
 
     http_stream* st = (http_stream*)calloc(1, sizeof(http_stream));
     if (!st) { xt_release((uintptr_t)so); return make_err("内存不足"); }
@@ -586,6 +674,15 @@ uintptr_t xt_http_stream_open(uintptr_t url_v, uintptr_t opts) {
     st->content_len = -1;
     st->chunked = 0;
     st->ch_state = CH_SIZE;
+
+    // 代理隧道(CONNECT)必须在 TLS 之前
+    if (proxy) {
+        char terr[320];
+        if (proxy_tunnel_raw(st, host, port, terr, sizeof(terr)) != 0) {
+            stream_free(st);
+            return make_err(terr);
+        }
+    }
 
     if (use_tls) {
         void* tls = NULL;
