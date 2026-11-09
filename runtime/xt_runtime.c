@@ -5297,6 +5297,81 @@ XTString* xt_json_serialize(XTValue val) {
     }
 }
 
+// issue #116:化(值, "缩进") —— 缩进美化输出(对照 serde_json to_string_pretty)。
+// 标量复用紧凑序列化;容器逐层换行 + 每层两空格缩进。
+static XTString* xt_json_indent_unit(int depth) {
+    XTString* s = xt_string_new("");
+    for (int i = 0; i < depth * 2; i++) {
+        XTString* t = xt_string_concat(s, xt_string_new(" "));
+        xt_release((XTValue)s); s = t;
+    }
+    return s;
+}
+
+static XTString* xt_json_serialize_indent(XTValue val, int depth) {
+    if (!XT_IS_REAL_PTR(val)) return xt_json_serialize(val);
+    int tid = ((XTObject*)val)->type_id;
+    if (tid != XT_TYPE_ARRAY && tid != XT_TYPE_DICT) return xt_json_serialize(val);
+    int isArr = tid == XT_TYPE_ARRAY;
+    int count = 0;
+    if (isArr) {
+        count = (int)((XTArray*)val)->length;
+    } else {
+        XTDict* d = (XTDict*)val;
+        for (size_t i = 0; i < d->capacity; i++)
+            for (XTDictEntry* e = d->buckets[i]; e; e = e->next) count++;
+    }
+    if (count == 0) return xt_string_new(isArr ? "[]" : "{}");
+
+    XTString* res = xt_string_new(isArr ? "[" : "{");
+    res = xt_string_concat(res, xt_string_new("\n"));
+    int idx = 0;
+    if (isArr) {
+        XTArray* arr = (XTArray*)val;
+        for (size_t i = 0; i < arr->length; i++, idx++) {
+            XTString* ind = xt_json_indent_unit(depth + 1);
+            XTString* item = xt_json_serialize_indent((XTValue)arr->elements[i], depth + 1);
+            res = xt_string_concat(res, ind);
+            res = xt_string_concat(res, item);
+            res = xt_string_concat(res, xt_string_new(idx + 1 < count ? ",\n" : "\n"));
+            xt_release((XTValue)ind); xt_release((XTValue)item);
+        }
+    } else {
+        XTDict* d = (XTDict*)val;
+        for (size_t i = 0; i < d->capacity; i++) {
+            for (XTDictEntry* e = d->buckets[i]; e; e = e->next, idx++) {
+                XTString* ind = xt_json_indent_unit(depth + 1);
+                XTString* key = xt_json_serialize(e->key);
+                XTString* vs = xt_json_serialize_indent(e->value, depth + 1);
+                res = xt_string_concat(res, ind);
+                res = xt_string_concat(res, key);
+                res = xt_string_concat(res, xt_string_new(": "));
+                res = xt_string_concat(res, vs);
+                res = xt_string_concat(res, xt_string_new(idx + 1 < count ? ",\n" : "\n"));
+                xt_release((XTValue)ind); xt_release((XTValue)key); xt_release((XTValue)vs);
+            }
+        }
+    }
+    XTString* closeInd = xt_json_indent_unit(depth);
+    res = xt_string_concat(res, closeInd);
+    xt_release((XTValue)closeInd);
+    res = xt_string_concat(res, xt_string_new(isArr ? "]" : "}"));
+    return res;
+}
+
+XTString* xt_json_serialize_pretty(XTValue val) { return xt_json_serialize_indent(val, 0); }
+
+XTValue xt_json_serialize_with(XTValue val, XTValue opt) {
+    if (opt == XT_NULL) return (XTValue)xt_json_serialize(val);
+    if (xt_is_real_ptr(opt) && ((XTObject*)opt)->type_id == XT_TYPE_STRING) {
+        XTString* os = (XTString*)opt;
+        if (os->data && strcmp(os->data, "缩进") == 0) return (XTValue)xt_json_serialize_pretty(val);
+    }
+    fprintf(stderr, "运行时错误: 化 的第二个参数只支持字符串 \"缩进\"\n");
+    exit(1);
+}
+
+
 /**
  * @brief 递归下降 JSON 反序列化器 (支持对象/数组/嵌套)
  */

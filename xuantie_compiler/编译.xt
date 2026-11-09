@@ -1388,6 +1388,7 @@
         此.写出("declare i64 @\"xt_utf8_invalid_offset\"(i64)")
         此.写出("declare i8* @\"xt_float_new\"(double)")
         此.写出("declare %XTString* @\"xt_json_serialize\"(i64)")
+        此.写出("declare i64 @\"xt_json_serialize_with\"(i64, i64)")
         此.写出("declare i64 @\"xt_json_deserialize\"(%XTString*)")
         此.写出("declare void @\"xt_init_args\"(i32, i8**)")
         此.写出("declare void @\"xt_weak_init\"(i64*, i64)")
@@ -4288,6 +4289,16 @@
     函 编译序列化(节点) {
         设 翻译目标 = 此.编译表达式(节点.目标)
         设 目标Xt = 此.确保I64(翻译目标[0], 翻译目标[1])
+        若 节点.序列化选项 != 空 {
+            设 翻译选项 = 此.编译表达式(节点.序列化选项)
+            设 选项Xt = 此.确保I64(翻译选项[0], 翻译选项[1])
+            设 resI = 此.取新寄存器()
+            此.写出("  " & resI & " = call i64 @xt_json_serialize_with(i64 " & 目标Xt & ", i64 " & 选项Xt & ")")
+            此.写出("  call void @xt_release(i64 " & 目标Xt & ")")
+            此.写出("  call void @xt_release(i64 " & 选项Xt & ")")
+            设 _rr = [resI, "i64"]
+            返 _rr
+        }
         设 res = 此.取新寄存器()
         此.写出("  " & res & " = call %XTString* @xt_json_serialize(i64 " & 目标Xt & ")")
         设 resI64 = 此.取新寄存器()
@@ -5990,6 +6001,20 @@
                     }
                 }
                 // issue #132:非异步路径同样走微秒换算,支持 时.睡(时间, 单位?)。
+                // issue #116:化(值, "缩进") —— 第二参为 "缩进" 时走美化输出
+                若 完整名 == "化" 且 节点.调用参数.长度 >= 2 {
+                    设 _ja = 此.编译表达式(节点.调用参数[0])
+                    设 _jv = 此.确保I64(_ja[0], _ja[1])
+                    设 _jo = 此.编译表达式(节点.调用参数[1])
+                    设 _jopt = 此.确保I64(_jo[0], _jo[1])
+                    设 _jr = 此.取新寄存器()
+                    此.写出("  " & _jr & " = call i64 @xt_json_serialize_with(i64 " & _jv & ", i64 " & _jopt & ")")
+                    此.写出("  call void @xt_release(i64 " & _jv & ")")
+                    此.写出("  call void @xt_release(i64 " & _jopt & ")")
+                    设 _jres = [_jr, "i64"]
+                    返 _jres
+                }
+
                 若 完整名 == "时.睡" 且 非 此.在异步状态机中 {
                     设 _synUs = 此.编译睡眠微秒(节点)
                     此.写出("  call void @xt_time_sleep_us_raw(i64 " & _synUs & ")")
