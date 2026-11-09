@@ -1,0 +1,7 @@
+compile_ok=True
+exit=0
+--- 182_HTTP客户端流式 开始 ---
+PASS 增量: 首块 <T>, 全量 <T>
+PASS 句柄未显式关闭仍正常
+182 PASS
+--- 182_HTTP客户端流式 结束 ---
