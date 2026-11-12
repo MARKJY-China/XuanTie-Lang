@@ -106,7 +106,7 @@ jobs:
           echo "链顶编译器: $XTC"
           if [ "${{ matrix.plat }}" = "windows" ]; then
             # Windows 分支产物名(与 make_pkg 的查找路径一致)
-            "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
+          "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
           else
             "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm
             "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp
@@ -249,7 +249,7 @@ jobs:
           done
           XTC="./build/xtc_s$TOP_N.exe"
           echo "链顶编译器: $XTC"
-          "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
+          "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe -jg arm64
           ls -la tiepm/tiepm.exe
 
       - name: 组装发行包(arm64, Linux)
@@ -371,6 +371,21 @@ jobs:
       - name: 列出全部产物
         run: find artifacts -type f | sort
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: 上传到雨云 ROS 并生成 latest.json(tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          ROS_ENDPOINT: ${{ secrets.ROS_ENDPOINT }}
+          ROS_BUCKET: ${{ secrets.ROS_BUCKET }}
+          ROS_ACCESS_KEY: ${{ secrets.ROS_ACCESS_KEY }}
+          ROS_SECRET_KEY: ${{ secrets.ROS_SECRET_KEY }}
+          ROS_PUBLIC_BASE: ${{ secrets.ROS_PUBLIC_BASE }}
+        run: |
+          node tools/publish-ros.mjs --dir artifacts --version "$GITHUB_REF_NAME"
+
       - name: 创建 Release 并上传(tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -379,6 +394,7 @@ jobs:
             artifacts/lang-*/*.tar.gz
             artifacts/lang-*/MANIFEST_*.txt
             artifacts/foundry-windows/*.exe
+            latest.json
           generate_release_notes: true
 
       - name: 手动触发预演(不建 Release)
