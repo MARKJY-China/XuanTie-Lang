@@ -106,4 +106,22 @@ writeFileSync(join(OUT, 'index.html'), html.join('\n'), 'utf8')
 // ⑤ 三个机器可读产物直接沿用生成器的（all.txt 页头已带日期/版本/状态）
 for (const f of ['all.txt', 'index.json', 'llms.txt']) copyFileSync(join(GEN, f), join(OUT, f))
 
+// ⑥ 站点根 /llms.txt：llms.txt 规范要求放在站点根，爬虫只探根路径，/ai/llms.txt 探不到
+//    （实测：https://<域名>/llms.txt 404，/ai/llms.txt 200）。这里生成一份短指针，
+//    与 /ai/ 层同源（日期/版本都从 index.json 取），避免手写后过期。
+const rootLlms = [
+  '# 玄铁（XuanTie）',
+  '',
+  `> 生成日期：${index.generated}｜对应编译器版本：${index.version}`,
+  `> 中文编程语言，MIT 开源。默认状态口径「${index.defaultStatus}」，例外登记在各篇标题下。`,
+  '',
+  '## 文档',
+  '',
+  '- 全部文档（纯文本，推荐给 AI 抓取）：/ai/all.txt',
+  '- 机器可读索引（每篇路径/状态/字节数）：/ai/index.json',
+  '- 分层入口（按目录分组）：/ai/',
+  '',
+].join('\n')
+writeFileSync(join(SITE, 'public', 'llms.txt'), '\uFEFF' + rootLlms, 'utf8')
+
 console.log(`build-ai-docs: ${index.files.length} 篇 → ${OUT}（${index.generated} / ${index.version}）`)
