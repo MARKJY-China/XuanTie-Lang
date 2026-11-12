@@ -268,6 +268,8 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: CLANGARM64
+          # 显式指定主镜像:默认会落到 ftp2.osuosl.org,CI 多次因该镜像过慢导致 pacman 事务失败
+          mirror: https://mirror.msys2.org/
           update: false
           path-type: inherit
           # 关包缓存:该 action 的缓存保存环节会调 paccache(实测在 arm64 runner 上缺工具,

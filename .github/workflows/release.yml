@@ -177,6 +177,8 @@ jobs:
         if: matrix.plat == 'windows'
         with:
           msystem: CLANGARM64
+          # 显式指定主镜像:默认会落到 ftp2.osuosl.org,CI 多次因该镜像过慢导致 pacman 事务失败
+          mirror: https://mirror.msys2.org/
           update: false
           path-type: inherit
           cache: false
