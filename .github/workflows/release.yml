@@ -139,6 +139,152 @@ jobs:
           path: out/
           if-no-files-found: error
 
+  lang_arm64:
+    # arm64 发行包:Linux arm64 用系统 clang/gcc;Windows arm64 用 MSYS2 CLANGARM64,
+    # 且不内嵌工具链(PKG_SKIP_TOOLS=1)——win-arm64 需自备 clang,渲染 raylib arm64 上游未提供。
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            plat: linux
+            slug: linux_arm64
+          - os: windows-11-arm
+            plat: windows
+            slug: windows_arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      XT_ARCH: arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 准备 Linux 工具链(clang + gcc)
+        if: matrix.plat == 'linux'
+        shell: bash
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq clang gcc
+          clang --version | head -1
+          gcc --version | head -1
+
+      - uses: msys2/setup-msys2@v2
+        if: matrix.plat == 'windows'
+        with:
+          msystem: CLANGARM64
+          update: false
+          path-type: inherit
+          cache: false
+          install: >-
+            mingw-w64-clang-aarch64-clang
+            mingw-w64-clang-aarch64-gcc-compat
+
+      - name: 工具链自检与别名兜底(CLANGARM64)
+        if: matrix.plat == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -e
+          export PATH="/clangarm64/bin:$PATH"
+          BIN=/clangarm64/bin
+          if [ ! -f "$BIN/ld.exe" ] && [ -f "$BIN/ld.lld.exe" ]; then
+            cp "$BIN/ld.lld.exe" "$BIN/ld.exe"; echo "已备 ld.exe → ld.lld.exe"
+          fi
+          if [ ! -f "$BIN/gcc.exe" ] && [ -f "$BIN/aarch64-w64-mingw32-gcc.exe" ]; then
+            cp "$BIN/aarch64-w64-mingw32-gcc.exe" "$BIN/gcc.exe"; echo "已备 gcc.exe 别名"
+          fi
+          clang --version | head -2
+          gcc --version | head -2
+
+      - name: 构建种子编译器 GSC
+        shell: bash
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(arm64;XT_ARCH=arm64 显式指定)
+        if: matrix.plat == 'linux'
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: 自举链 + DDC 门禁(win-arm64;CLANGARM64)
+        if: matrix.plat == 'windows'
+        shell: msys2 {0}
+        run: |
+          export PATH="/clangarm64/bin:$PATH"
+          bash tools/bootstrap_check.sh
+
+      - name: 构建 tiepm 与 xt_lsp(arm64, Linux)
+        if: matrix.plat == 'linux'
+        shell: bash
+        run: |
+          set -e
+          TOP_N=0
+          for f in build/xtc_s*.exe; do
+            [ -f "$f" ] || continue
+            n=${f##*/xtc_s}; n=${n%.exe}
+            case "$n" in ''|*[!0-9]*) continue ;; esac
+            [ "$n" -gt "$TOP_N" ] && TOP_N=$n
+          done
+          XTC="./build/xtc_s$TOP_N.exe"
+          echo "链顶编译器: $XTC"
+          "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm
+          "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp
+          ls -la tiepm/tiepm lsp/xt_lsp
+
+      - name: 构建 tiepm(win-arm64;CLANGARM64)
+        if: matrix.plat == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -e
+          export PATH="/clangarm64/bin:$PATH"
+          TOP_N=0
+          for f in build/xtc_s*.exe; do
+            [ -f "$f" ] || continue
+            n=${f##*/xtc_s}; n=${n%.exe}
+            case "$n" in ''|*[!0-9]*) continue ;; esac
+            [ "$n" -gt "$TOP_N" ] && TOP_N=$n
+          done
+          XTC="./build/xtc_s$TOP_N.exe"
+          echo "链顶编译器: $XTC"
+          "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
+          ls -la tiepm/tiepm.exe
+
+      - name: 组装发行包(arm64, Linux)
+        if: matrix.plat == 'linux'
+        shell: bash
+        run: |
+          set -e
+          bash release/make_pkg.sh
+
+      - name: 组装发行包(win-arm64;不内嵌工具链)
+        if: matrix.plat == 'windows'
+        shell: msys2 {0}
+        run: |
+          set -e
+          export PATH="/clangarm64/bin:$PATH"
+          export PKG_SKIP_TOOLS=1
+          bash release/make_pkg.sh
+
+      - name: 打压缩包 + 收拢产物
+        shell: bash
+        run: |
+          set -e
+          mkdir -p out
+          cd temp/pkg_test
+          tar -czf "../../out/xuantie_${GITHUB_REF_NAME:-快照}_${{ matrix.slug }}.tar.gz" XuanTie
+          cd ../..
+          cp temp/pkg_test/XuanTie/MANIFEST.txt "out/MANIFEST_${{ matrix.slug }}.txt"
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lang-arm64-${{ matrix.slug }}
+          path: out/
+          if-no-files-found: error
+
   foundry:
     # 铸造厂 IDE(Windows):Tauri 构建出 NSIS 安装包
     # 注:Linux/macOS 铸造厂构建需要先完成平台门控清理(Windows 专属 API 的前端分支等),
@@ -191,7 +337,7 @@ jobs:
 
   publish:
     # 汇总 + 发布纪律硬校验 + 建 Release(tag 触发时)
-    needs: [lang, foundry]
+    needs: [lang, lang_arm64, foundry]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -74,8 +74,8 @@ PKG=$ROOT/temp/pkg_test/XuanTie
 MD5()   { if command -v md5sum >/dev/null 2>&1; then md5sum "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
 FSIZE() { stat -c%s "$1" 2>/dev/null || stat -f%z "$1"; }
 
-# Windows 工具链前置检查(非 Windows 不需要)
-if [ "$PLATFORM" = "windows" ]; then
+# Windows 工具链前置检查(非 Windows 不需要;PKG_SKIP_TOOLS=1 时跳过——arm64 包不内嵌工具链)
+if [ "$PLATFORM" = "windows" ] && [ "${PKG_SKIP_TOOLS:-0}" != "1" ]; then
   [ -f "$LLVM_DIR/bin/clang.exe" ] || { echo "错误: 未找到 clang($LLVM_DIR),请设 LLVM_DIR 环境变量指向 LLVM 根目录"; exit 1; }
   [ -f "$TDM_DIR/bin/gcc.exe" ]    || { echo "错误: 未找到 gcc($TDM_DIR),请设 TDM_DIR 环境变量指向 TDM-GCC 根目录"; exit 1; }
 fi
@@ -123,11 +123,15 @@ mkdir -p $PKG/{runtime,lib,GUIDE,examples}
 if [ "$PLATFORM" = "windows" ]; then
   cp "$XTC_SRC" $PKG/xtc.exe
   cp $ROOT/tiepm/tiepm.exe $PKG/
-  # 插件:取目录内版本最高的一份(按版本号排序,非字典序);缺失即报错
-  VSIX=$(ls -1 $ROOT/extensions/xuantie-syntax/xuantie-*.vsix 2>/dev/null | sort -V | tail -1)
-  [ -n "$VSIX" ] || { echo "错误: 未找到 extensions/xuantie-syntax/xuantie-*.vsix,请先在插件目录执行 build.ps1"; exit 1; }
-  cp "$VSIX" $PKG/
-  echo "插件随包: $(basename "$VSIX")"
+  if [ "${PKG_SKIP_TOOLS:-0}" = "1" ]; then
+    echo "跳过 VSCode 插件(arm64 包不带 x64 插件里的 LSP 二进制)"
+  else
+    # 插件:取目录内版本最高的一份(按版本号排序,非字典序);缺失即报错
+    VSIX=$(ls -1 $ROOT/extensions/xuantie-syntax/xuantie-*.vsix 2>/dev/null | sort -V | tail -1)
+    [ -n "$VSIX" ] || { echo "错误: 未找到 extensions/xuantie-syntax/xuantie-*.vsix,请先在插件目录执行 build.ps1"; exit 1; }
+    cp "$VSIX" $PKG/
+    echo "插件随包: $(basename "$VSIX")"
+  fi
 else
   # 非 Windows:裸可执行名(CI 已构建 tiepm 与 xt_lsp,见 release.yml)
   cp "$XTC_SRC" $PKG/xtc
@@ -137,8 +141,8 @@ else
   if [ -f "$ROOT/lsp/xt_lsp" ]; then cp "$ROOT/lsp/xt_lsp" $PKG/xt_lsp; echo "xt_lsp 随包"; fi
 fi
 
-# ── 2. 自带极简工具链(仅 Windows:发行机无 C 工具链时的最小集)──
-if [ "$PLATFORM" = "windows" ]; then
+# ── 2. 自带极简工具链(仅 Windows x64:发行机无 C 工具链时的最小集;arm64 跳过)──
+if [ "$PLATFORM" = "windows" ] && [ "${PKG_SKIP_TOOLS:-0}" != "1" ]; then
   # 引号硬规矩:LLVM 根实测可含空格(CI 的 "C:/Program Files/LLVM"),漏引号会被词分割成
   # "C:/Program" + "Files/LLVM/..."(第四轮 CI 实测教训)——本块路径一律加引号
   mkdir -p "$PKG/tools/clang/bin" "$PKG/tools/clang/lib/clang"
@@ -353,7 +357,7 @@ fi
 # 一个最小程序:链接到底引用了哪些库、DLL 依赖是否齐全,全部由真实链接暴露。
 # (第五轮 CI 教训:MinGW 发行版之间文件清单会漂移,静态清单永远追不上;动态链接 --外链
 #  在当前版本被编译器显式拒绝,故链接面只有默认静态一路,自检即覆盖全部可达面。)
-if [ "$PLATFORM" = "windows" ]; then
+if [ "$PLATFORM" = "windows" ] && [ "${PKG_SKIP_TOOLS:-0}" != "1" ]; then
   SMOKE="$ROOT/temp/pkg_test/_smoke"
   rm -rf "$SMOKE"; mkdir -p "$SMOKE"
   printf '示("工具链自检通过")\n' > "$SMOKE/_smoke.xt"
