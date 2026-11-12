@@ -22,6 +22,7 @@ import {
 } from './settings';
 import { XtLspClient, type LspStatus } from './lsp/client';
 import { attachLspFeatures } from './lsp/features';
+import { initImeAutoSwitch } from './ime';
 import { buildLayout, initMenus, initSplitters, initWindowControls } from './ui/layout';
 import { TabManager } from './ui/tabs';
 import { FileTree } from './ui/filetree';
@@ -971,6 +972,9 @@ attachLspFeatures(lsp, editor, {
   },
 });
 
+// 中文输入法自动切换(字符串内中文 / 代码区英文)
+initImeAutoSwitch(editor);
+
 // ---- 云连接状态(未连接:状态栏红字 + AI dock 遮罩) ----
 type CloudState = 'unknown' | 'ok' | 'offline';
 let cloudState: CloudState = 'unknown';
@@ -1603,6 +1607,20 @@ function settingsModal(): Promise<void> {
       check.append(cb, txt);
       rAuto.appendChild(check);
       body.appendChild(rAuto);
+
+      // 中文输入法自动切换(默认开)
+      const rIme = document.createElement('div');
+      rIme.className = 'mrow';
+      const imeCheck = document.createElement('label');
+      imeCheck.className = 'checkline';
+      const imeCb = document.createElement('input');
+      imeCb.type = 'checkbox';
+      imeCb.checked = s.imeAutoSwitch !== false;
+      const imeTxt = document.createElement('span');
+      imeTxt.textContent = '中文输入法自动切换(字符串内中文 / 代码区英文,字符串内敲冒号切中文)';
+      imeCheck.append(imeCb, imeTxt);
+      rIme.appendChild(imeCheck);
+      body.appendChild(rIme);
       // 玄铁文档(启动自动比对服务端版本,有更新则拉取;此处可手动触发)
       const rDocs = document.createElement('div');
       rDocs.className = 'mrow';
@@ -1686,6 +1704,7 @@ function settingsModal(): Promise<void> {
           tiepm: inputs.get('tiepm')?.value.trim() ?? '',
           buildDir: inputs.get('buildDir')?.value.trim() ?? '',
           autoCheckTiepmUpdates: cb.checked,
+          imeAutoSwitch: imeCb.checked,
           devMode: devCb.checked,
           editor: { fontSize: Math.max(10, Math.min(28, Number(fSize.value) || 14)), fontFamily: fFont.value.trim() },
           zoom: Number(zSel.sel.value) || 1,
@@ -1702,6 +1721,7 @@ function settingsModal(): Promise<void> {
       | {
           lsp?: string; xtc?: string; tiepm?: string; buildDir?: string;
           autoCheckTiepmUpdates?: boolean;
+          imeAutoSwitch?: boolean;
           devMode?: boolean;
           editor?: { fontSize: number; fontFamily: string };
           zoom?: number;
@@ -1717,6 +1737,7 @@ function settingsModal(): Promise<void> {
         tiepmPath: r.tiepm ?? '',
         buildDir: r.buildDir ?? '',
         autoCheckTiepmUpdates: r.autoCheckTiepmUpdates ?? false,
+        imeAutoSwitch: r.imeAutoSwitch ?? true,
         devMode: r.devMode ?? false,
         editor: r.editor ?? getSettings().editor,
         zoom: r.zoom ?? getSettings().zoom,

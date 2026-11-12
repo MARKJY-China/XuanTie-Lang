@@ -105,6 +105,8 @@ export interface AppSettings {
   buildDir: string;
   // 启动时自动检查铁器更新(对比 已装版本 vs 远程索引最新版)
   autoCheckTiepmUpdates: boolean;
+  // 中文输入法自动切换(字符串内中文/代码区英文;字符串内英文模式敲冒号切中文;默认开)
+  imeAutoSwitch: boolean;
   // 智器对话:active = '官方' 或自定义提供商名;thinking = off/low/high
   // agentMode:Agent 审批模式 confirm(变更前确认,默认)/auto-edit(自动编辑)/full-control(完全控制)
   // cmdWhitelist:run_command 免审批白名单(命令行首 token 完全匹配,可选字段,老设置缺省为空)
@@ -145,6 +147,7 @@ export function defaultSettings(): AppSettings {
     treeDisplay: 'dim',
     buildDir: '',
     autoCheckTiepmUpdates: false,
+    imeAutoSwitch: true,
     ai: { providers: [], active: '官方', thinking: 'off' },
     account: { baseUrl: 'https://bbs.xt.markjy.com', cookie: '', username: '', loginAt: 0 },
     editor: { fontSize: 14, fontFamily: '' },

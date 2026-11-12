@@ -8,6 +8,7 @@ mod docs;
 mod fsops;
 mod exec;
 mod http;
+mod ime;
 mod lsp;
 mod menubar;
 mod preflight;
@@ -301,6 +302,7 @@ fn main() {
             mac_maximized,
             menubar::menu_sync_recent,
             set_unsaved,
+            ime::ime_set_mode,
         ])
         .build(tauri::generate_context!())
         .expect("玄铁铸造厂启动失败")

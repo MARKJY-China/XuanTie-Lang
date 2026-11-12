@@ -29,7 +29,7 @@ objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_Ime"] }
 
 # 发行构建必须启用(内嵌前端资源):cargo build --release --features custom-protocol
 # 不带它编出的 release 是"开发壳"(去连 localhost:5173),禁止分发
