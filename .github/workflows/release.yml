@@ -161,10 +161,19 @@ jobs:
           workspaces: ide/src-tauri
 
       - name: 构建铸造厂(npx tauri build)
+        shell: bash
         working-directory: ide
         run: |
           npm ci
-          npx tauri build
+          # CI 没有签名私钥:tauri.conf 的 createUpdaterArtifacts=true 会强制要求
+          # TAURI_SIGNING_PRIVATE_KEY,缺了就整体失败。按有无私钥二选一:
+          # 有则照常签名;无则临时关闭 updater 产物(安装器仍可构建,只是不带更新签名)。
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo '未配置 TAURI_SIGNING_PRIVATE_KEY:本次安装器不带自动更新签名'
+            npx tauri build --config '{"bundle":{"createUpdaterArtifacts":false}}'
+          else
+            npx tauri build
+          fi
 
       - name: 收拢产物
         shell: bash
