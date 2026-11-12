@@ -86,7 +86,7 @@ export function attachLspFeatures(
 
   disposables.push(
     monaco.languages.registerCompletionItemProvider(XT_LANGUAGE_ID, {
-      triggerCharacters: ['.'],
+      triggerCharacters: ['.', '@'],
       async provideCompletionItems(model, position) {
         if (!client.connected) return { suggestions: [] };
         // 先冲刷防抖中的改动,保证 LSP 能看到刚输入的「.」(否则 数学. 退化成关键字补全)
