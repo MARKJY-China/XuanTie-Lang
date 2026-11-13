@@ -675,5 +675,26 @@ t('字对齐(库 v1.5.4):解析/生成往返,枚举归一,规范序按"组末尾
   ok(CANONICAL_KEYS.indexOf('字对齐') > CANONICAL_KEYS.indexOf('裁剪'), '新键追加在视觉组末尾(不插乱既有顺序)');
 });
 
+t('字叉对齐(库 v1.5.7):解析/生成往返,枚举归一,规范序排在 字对齐 之后', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.列([',
+    '        UI.文本("垂直居中", {"宽": 300, "高": 80, "字叉对齐": UI.对齐中}),',
+    '        UI.文本("贴底", {"宽": 200, "高": 40, "字叉对齐": UI.对齐末})',
+    '    ], {"宽": 500, "高": 200})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  const v = root.children[0].options.find((o) => o.key === '字叉对齐')?.value;
+  eq(v?.t, 'libConst', '字叉对齐 解析为库常量');
+  const rt = roundTrip(root);
+  eq(rt.text.includes('"字叉对齐": UI.对齐中'), true, '生成器原样回写');
+  eq(specOf('字叉对齐').kind, 'enum', '属性面板按枚举编辑');
+  eq(specOf('字叉对齐').enums?.length, 3, '三档:始/中/末');
+  ok(CANONICAL_KEYS.indexOf('字叉对齐') > CANONICAL_KEYS.indexOf('字对齐'), '追加在 字对齐 之后(不插乱既有顺序)');
+});
+
 console.log('\n设计器自检: 通过 ' + pass + ' / 失败 ' + fail);
 if (fail > 0) process.exitCode = 1;

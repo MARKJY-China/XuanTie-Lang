@@ -50,6 +50,17 @@ function textNode(host: HTMLElement, text: string, node: DesignNode, center: boo
       host.style.textAlign = css;
       s.style.width = '100%';
     }
+    // 字叉对齐(库 v1.5.7):文本在自身盒内的垂直落点;同样仅 文本 控件
+    const valign = optVal(node, '字叉对齐');
+    const vkey = valign && valign.t === 'libConst' ? valign.name : valign && valign.t === 'str' ? valign.v : '';
+    const vcss =
+      vkey === 'UI.对齐中' || vkey === '中' ? 'center' : vkey === 'UI.对齐末' || vkey === '末' ? 'flex-end' : '';
+    if (vcss) {
+      host.style.display = 'flex';
+      host.style.flexDirection = 'column';
+      host.style.justifyContent = vcss;
+      s.style.width = '100%';
+    }
   }
   host.appendChild(s);
 }
