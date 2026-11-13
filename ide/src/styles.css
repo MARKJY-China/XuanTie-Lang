@@ -991,7 +991,11 @@ body.light #statusbar .sb-update { color: #0b63b8; }
   background: var(--bg-deep); border: 1px solid var(--border);
   border-radius: 8px; padding: 1px 8px;
 }
-.pkg-builtin .pkg-ver { color: var(--accent); border-color: var(--accent-dim); }
+.pkg-badge { font-size: 10.5px; color: #8fb573; border: 1px solid #3f4a35; border-radius: 8px; padding: 0 6px; margin-left: 2px; }
+.pkg-del { visibility: hidden; background: transparent; border: 0; color: #d9534f; cursor: pointer; font-size: 13px; line-height: 1; padding: 0 4px; }
+.pkg-row:hover .pkg-del { visibility: visible; }
+.pkg-del:hover { color: #ff6b6b; }
+.pkg-used .pkg-name { color: var(--fg); }
 .pkg-upd {
   font-size: 11.5px; color: var(--accent);
   border: 1px solid var(--accent-dim); border-radius: 8px; padding: 1px 8px;

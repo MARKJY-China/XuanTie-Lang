@@ -233,6 +233,22 @@ pub async fn tiepm_packages(tiepm_path: String) -> Result<Vec<TiepmPkg>, String>
     Ok(out)
 }
 
+/// 删除外置安装的铁器(仅 ~/.tiepm/已安装/<名>;内置库随发行包,不可删)
+#[tauri::command]
+pub async fn tiepm_remove(name: String) -> Result<(), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err("包名非法".into());
+    }
+    let home = user_tiepm_home().ok_or("无法获取用户目录(USERPROFILE)")?;
+    let dir = home.join("已安装").join(&name);
+    if !dir.is_dir() {
+        return Err(format!("未安装该铁器: {}", name));
+    }
+    std::fs::remove_dir_all(&dir).map_err(|e| format!("删除失败: {}", e))?;
+    Ok(())
+}
+
 // 清理铁铺缓存目录(比 tiepm 的 del /q 更彻底:文件与子目录一并清),返回摘要文案
 #[tauri::command]
 pub async fn tiepm_clean() -> Result<String, String> {

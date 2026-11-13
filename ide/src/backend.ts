@@ -88,6 +88,10 @@ export function onPtyExit(session: string, cb: () => void): Promise<UnlistenFn> 
 }
 
 // ---- 工具定位 / 设置 / 工程模板 ----
+export function tiepmRemove(name: string): Promise<void> {
+  return invoke('tiepm_remove', { name });
+}
+
 export function imeSetMode(chinese: boolean): Promise<boolean> {
   return invoke('ime_set_mode', { chinese });
 }

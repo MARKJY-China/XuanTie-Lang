@@ -2519,6 +2519,23 @@ function tiepmListModal(): Promise<unknown> {
                 status.style.display = 'none';
                 const installed = pkgs.filter((p) => !p.builtin);
                 const builtin = pkgs.filter((p) => p.builtin);
+                // 同名库按版本优先:版本高者生效;版本相同(或版本未知)→ 外置安装版优先。
+                // 这里只做列表标注,真正的解析在编译器(同一规则)。
+                const inUse = new Map<string, backend.TiepmPkg>();
+                const byName = new Map<string, backend.TiepmPkg[]>();
+                for (const p of pkgs) byName.set(p.name, [...(byName.get(p.name) ?? []), p]);
+                for (const [name, list] of byName) {
+                  if (list.length === 1) {
+                    inUse.set(name, list[0]);
+                    continue;
+                  }
+                  const inst = list.find((p) => !p.builtin);
+                  const built = list.find((p) => p.builtin);
+                  if (inst && built) {
+                    const v = inst.version === '?' || built.version === '?' ? 0 : cmpVer(inst.version, built.version);
+                    inUse.set(name, v >= 0 ? inst : built);
+                  }
+                }
                 const section = (label: string, list: backend.TiepmPkg[], emptyText: string): void => {
                   const head = document.createElement('div');
                   head.className = 'pkg-section';
@@ -2535,7 +2552,9 @@ function tiepmListModal(): Promise<unknown> {
                   listEl.className = 'pkg-list';
                   for (const p of list) {
                     const row = document.createElement('div');
-                    row.className = 'pkg-row' + (p.builtin ? ' pkg-builtin' : '');
+                    row.className = 'pkg-row';
+                    const used = inUse.get(p.name) === p;
+                    if (used) row.classList.add('pkg-used');
                     if (!p.builtin) row.dataset.pkg = p.name;
                     const nm = document.createElement('span');
                     nm.className = 'pkg-name';
@@ -2543,7 +2562,39 @@ function tiepmListModal(): Promise<unknown> {
                     const ver = document.createElement('span');
                     ver.className = 'pkg-ver';
                     ver.textContent = p.version === '?' ? '版本未知' : `v${p.version}`;
-                    row.append(nm, ver);
+                    row.append(nm);
+                  if (used) {
+                    const badge = document.createElement('span');
+                    badge.className = 'pkg-badge';
+                    badge.textContent = '使用中';
+                    row.append(badge);
+                  }
+                  row.append(ver);
+                  if (!p.builtin) {
+                    const del = document.createElement('button');
+                    del.type = 'button';
+                    del.className = 'pkg-del';
+                    del.textContent = '✕';
+                    del.title = '删除该铁器(需二次确认)';
+                    del.addEventListener('click', (ev) => {
+                      ev.stopPropagation();
+                      void (async () => {
+                        const ok = await confirmBox(
+                          '删除铁器',
+                          `确定删除「${p.name}」?将移除目录 ~/.tiepm/已安装/${p.name},不可恢复。`,
+                        );
+                        if (!ok) return;
+                        try {
+                          await backend.tiepmRemove(p.name);
+                          showToast(`已删除 ${p.name}`, 'ok');
+                          load();
+                        } catch (err) {
+                          showToast(String(err), 'err');
+                        }
+                      })();
+                    });
+                    row.append(del);
+                  }
                     listEl.appendChild(row);
                   }
                   content.appendChild(listEl);
@@ -2668,7 +2719,7 @@ function tiepmListModal(): Promise<unknown> {
       body.append(status, content, foot);
       load();
     },
-    '外置包安装于 %USERPROFILE%\\.tiepm;内置库随发行包自带,同名包安装版优先',
+    '同名库按版本生效:版本高者优先,版本相同用外置安装版;悬停「✕」可删除外置铁器',
   );
 }
 

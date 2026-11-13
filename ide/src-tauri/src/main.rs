@@ -282,6 +282,7 @@ fn main() {
             tools::is_elevated,
             tools::relaunch_as_admin,
             tools::tiepm_packages,
+            tools::tiepm_remove,
             tools::tiepm_clean,
             http::http_json,
             http::http_stream,
