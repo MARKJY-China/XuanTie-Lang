@@ -18,6 +18,8 @@
 #   python tools/regress.py --only 67          # 只跑文件名含 67 的测试
 #   python tools/regress.py --skip 96_,97_,98_ # 跳过文件名含这些前缀的测试(弹窗类,CI 必跳)
 #   python tools/regress.py --xtc build/xtc_s4.exe   # 指定编译器(自举各级对照用)
+#   python tools/regress.py --skip-memory     # 跳过内存泄漏预检(默认跑,约 1.5s)
+#   python tools/regress.py --memory-ui       # 预检追加 UI 布局热路径(约 60s:需编译整个 UI 库,默认关)
 import os, re, subprocess, sys, time
 
 # CI runner 的 stdout 默认编码不是 UTF-8(Windows runner 为 cp1252/en-US):
@@ -224,6 +226,8 @@ def main():
     record = "--record" in sys.argv
     only = None
     skip = []
+    skip_memory = "--skip-memory" in sys.argv
+    memory_ui = "--memory-ui" in sys.argv
     global XTC
     for i, a in enumerate(sys.argv):
         if a == "--only" and i + 1 < len(sys.argv):
@@ -235,6 +239,28 @@ def main():
     if not os.path.exists(XTC):
         print("编译器不存在: %s(先自举或用 --xtc 指定)" % XTC)
         return 2
+    bad = 0
+    # 内存泄漏预检(约 1.5s):编译器成员守卫的 XTString 泄漏曾让仿微信 demo 每秒涨 250MB。
+    # 不做 UI 渲染长时间测试:同一根因用 500 万次 含? 微基准即可在 1.5s 内钉死;
+    # --memory-ui 再追加 UI 布局热路径(约 60s:需编译整个 UI 库,默认关)。
+    if not skip_memory and not record:
+        t0 = time.time()
+        cmd = [sys.executable, os.path.join(ROOT, "tools", "check_memory_leak.py"), "--xtc", XTC]
+        if memory_ui:
+            cmd.append("--ui")
+        try:
+            mr = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=180)
+            mem_ok = mr.returncode == 0
+            mem_tail = (mr.stdout or mr.stderr or "").strip().splitlines()
+            note = mem_tail[-1] if mem_tail else ""
+        except Exception as e:
+            mem_ok = False
+            note = "预检异常: %s" % e
+        print("[%-32s] %-36s %s (%.1fs)" % (
+            "PASS" if mem_ok else "FAIL", "内存泄漏预检(含?守卫)", note, time.time() - t0))
+        if not mem_ok:
+            bad += 1
     xts = sorted(f for f in os.listdir(TESTDIR)
                  if re.match(r"^\d+_.*\.xt$", f) and (only is None or only in f)
                  and not any(s in f for s in skip))
@@ -242,7 +268,6 @@ def main():
         print("无匹配测试"); return 2
     print("编译器: %s" % XTC)
     print("模式: %s | 测试数: %d | 跳过: %s" % ("录制基线" if record else "回归比对", len(xts), ",".join(skip) or "无"))
-    bad = 0
     for xt in xts:
         t0 = time.time()
         verdict, name, note = one_test(xt, record)
