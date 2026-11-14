@@ -1,4 +1,4 @@
-// 渲染.xt — 玄铁渲染库 v1.3.7
+// 渲染.xt — 玄铁渲染库 v1.3.8
 // 基于 raylib，通过 C 桥接层提供 2D/3D 图形渲染能力
 //
 // 用法:
@@ -119,6 +119,8 @@
 外 函 XT_UnloadFont(fontPtr: 整): 空
 外 函 XT_DrawTextEx(fontPtr: 整, text: 字, x: 整, y: 整, fontSize: 整, spacing: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_MeasureTextEx(fontPtr: 整, text: 字, fontSize: 整, spacing: 整): 整
+外 函 XT_FontHasGlyph(fontPtr: 整, codepoint: 整): 整
+外 函 XT_CharCodepoint(text: 字, index: 整): 整
 
 // ============================================================
 // 纹理与图像
@@ -131,6 +133,7 @@
 外 函 XT_TextureH(texPtr: 整): 整
 外 函 XT_DrawTextureQuad(texPtr: 整, x: 整, y: 整, w: 整, h: 整, tr: 整, tg: 整, tb: 整, ta: 整): 空
 外 函 XT_LoadTextureSVG(filename: 字, w: 整, h: 整): 整
+外 函 XT_LoadTextureSVGText(svg: 字, w: 整, h: 整): 整
 外 函 XT_GenGradientTexture(w: 整, h: 整, r1: 整, g1: 整, b1: 整, a1: 整, r2: 整, g2: 整, b2: 整, a2: 整, dir: 整, radius: 整, feather: 整): 整
 外 函 XT_DrawRectFP(x: 整, y: 整, w: 整, h: 整, r: 整, g: 整, b: 整, a: 整): 空
 外 函 XT_DrawRectLinesFP(x: 整, y: 整, w: 整, h: 整, lineThick: 整, r: 整, g: 整, b: 整, a: 整): 空
@@ -644,6 +647,27 @@
     返 XT_LoadFont(文件, 字号)
 }
 
+// 判断字体句柄是否含指定 Unicode 码点的字形（缺字监测用）。
+// 字体池句柄看烘焙字形表；Windows GDI 系统字体问系统 cmap（能识别字体文件里存在、
+// 但未参与烘焙的字）。句柄无效 / 码点非法一律返 假。
+//
+// 参数 字体句柄: 整 — 加载字体/加载系统字体 返回的句柄
+// 参数 码点: 整 — Unicode 码点（如 0x22EF）
+// 返回: 布尔 — 真=有字形，假=缺字
+公 函 字体有字形?(字体句柄, 码点) {
+    返 XT_FontHasGlyph(字体句柄, 码点) == 1
+}
+
+// 按「字符下标」取 UTF-8 文本的 Unicode 码点（缺字监测逐字检查用）。
+// 下标是字符序（跳过 UTF-8 续字节），与字符串的字符数/截取口径一致。
+//
+// 参数 文本: 字符串 — 任意 UTF-8 文本
+// 参数 下标: 整 — 字符下标（0 起；越界返 0）
+// 返回: 整 — 码点；0=越界或无效
+公 函 字符码点(文本, 下标) {
+    返 XT_CharCodepoint(文本, 下标)
+}
+
 // 按系统字体名取字体，不必自带字体文件；所得句柄同样适用于 绘字体文字/量字体文字/释字体。
 // Windows 走 GDI 系统光栅化（句柄为 100+）；macOS/Linux 把字体名映射到系统字体文件后经 raylib 载入。名字未命中时回退系统 CJK 默认字体，全部取不到才返回 0。
 //
@@ -875,6 +899,17 @@
 // 返回: 整 — 纹理句柄（1–32）；0=失败（池满 / 文件缺失 / 解析或光栅化失败）
 公 函 加载SVG纹理(文件, 宽, 高) {
     返 XT_LoadTextureSVG(文件, 宽, 高)
+}
+
+// 从内存里的 SVG 文本加载纹理（内置图标集用：图标数据编译进程序，不依赖外部文件）。
+// 光栅化规则与 加载SVG纹理 相同；宽/高任一为 0 时取 SVG 自身尺寸。
+//
+// 参数 文本: 字符串 — 完整 SVG 文档文本
+// 参数 宽: 整 — 目标宽（像素，0=按 SVG 原尺寸）
+// 参数 高: 整 — 目标高（像素，0=按 SVG 原尺寸）
+// 返回: 整 — 纹理句柄；0=解析/光栅化失败
+公 函 加载SVG文字纹理(文本, 宽, 高) {
+    返 XT_LoadTextureSVGText(文本, 宽, 高)
 }
 
 // 生成双色线性渐变 + 圆角 + 边缘羽化的纹理；色 1 与色 2 相同时即圆角羽化纯色块。

@@ -962,6 +962,58 @@ uintptr_t XT_LoadTextureSVG(uintptr_t filename, uintptr_t w, uintptr_t h) {
     return XT_FROM_INT(slot + 1);
 }
 
+// 从内存里的 SVG 文本加载纹理(内置图标集用:图标数据编译进程序,不依赖外部文件)。
+// 与 XT_LoadTextureSVG 同一套 nanosvg 光栅化;nsvgParse 会原地改缓冲,所以先复制。
+uintptr_t XT_LoadTextureSVGText(uintptr_t svgVal, uintptr_t w, uintptr_t h) {
+    if (!IS_PTR(svgVal)) return XT_FROM_INT(0);
+    int slot = xt_tex_alloc();
+    if (slot < 0) return XT_FROM_INT(0);
+    Texture2D tex;
+    memset(&tex, 0, sizeof(tex));
+    const char* src = xt_get_cstr(svgVal);
+    size_t n = strlen(src);
+    char* buf = (char*)malloc(n + 1);
+    if (buf) {
+        memcpy(buf, src, n + 1);
+        NSVGimage* svg = nsvgParse(buf, "px", 96.0f);
+        free(buf);
+        if (svg) {
+            int W = (int)xt_ni(w), H = (int)xt_ni(h);
+            if (W <= 0) W = (int)svg->width;
+            if (H <= 0) H = (int)svg->height;
+            if (W > 0 && H > 0 && svg->width > 0 && svg->height > 0) {
+                float sc = (float)W / svg->width;
+                float sc2 = (float)H / svg->height;
+                if (sc2 < sc) sc = sc2;
+                unsigned char* rgba = (unsigned char*)calloc((size_t)W * H * 4, 1);
+                if (rgba) {
+                    NSVGrasterizer* rast = nsvgCreateRasterizer();
+                    if (rast) {
+                        nsvgRasterize(rast, svg, 0, 0, sc, rgba, W, H, W * 4);
+                        nsvgDeleteRasterizer(rast);
+                    }
+                    Image img;
+                    img.data = rgba;
+                    img.width = W;
+                    img.height = H;
+                    img.mipmaps = 1;
+                    img.format = PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+                    tex = LoadTextureFromImage(img);
+                    free(rgba);
+                }
+            }
+            nsvgDelete(svg);
+        }
+    }
+    if (tex.id == 0 || tex.width == 0 || tex.height == 0) {
+        xt_tex_used[slot] = 0;
+        return XT_FROM_INT(0);
+    }
+    xt_tex_pool[slot] = tex;
+    xt_tex_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
 // 圆角渐变纹理生成器:逐像素双色线性插值 + 圆角矩形 SDF 覆盖度。
 // 一份代码同时解决:背景渐变(横/竖)、渐变色的圆角抗锯齿、边缘羽化(羽化>1)。
 // 方向: 0=横向 1=竖向;羽化: 边缘过渡像素数(1=仅抗锯齿);圆角: 像素(0=直角)。
@@ -2604,6 +2656,69 @@ void XT_FontGDI_Unload(uintptr_t handle) {
     f->used = 0;
 }
 #endif /* _WIN32 */
+
+/* 判断某字体句柄是否含指定 Unicode 码点的字形(缺字监测用;1=有,0=无/句柄无效)。
+   两套字体后端都覆盖:
+   - raylib 字体池(1..8):看字形表里有没有该码点(只含烘焙码点,未烘焙=视为缺字);
+   - Windows GDI 字体(100+):GetGlyphIndicesW + GGI_MARK_NONEXISTING_GLYPHS,
+     由系统字体真实 cmap 判定,能识别未烘焙但字体文件里存在的字。 */
+#ifdef _WIN32
+extern __declspec(dllimport) unsigned int WINAPI GetGlyphIndicesW(
+    XT_HDC, const wchar_t*, int, unsigned short*, unsigned int);
+#endif
+uintptr_t XT_FontHasGlyph(uintptr_t fontVal, uintptr_t cpVal) {
+    int cp = (int)xt_ni(cpVal);
+    if (cp <= 0) return XT_FROM_INT(0);
+#ifdef _WIN32
+    int64_t h = XT_TO_INT(fontVal);
+    if (h >= 100) {
+        int idx = (int)(h - 100);
+        if (idx >= 0 && idx < XT_GDI_MAX_FONTS) {
+            XTGdiFont* f = &xt_gdi_fonts[idx];
+            if (f->used) {
+                /* 取一个已建好的字号槽(缺省 32);SelectObject 后才能问 cmap */
+                int si = xt_gdi_size_slot(f, f->sizeCount > 0 ? f->sizes[0] : 32);
+                if (si >= 0 && si < f->sizeCount && f->hfonts[si]) {
+                    SelectObject(f->hdc, f->hfonts[si]);
+                    wchar_t wch = (wchar_t)(cp <= 0xFFFF ? cp : 0xFFFD);
+                    unsigned short gi = 0;
+                    unsigned int r = GetGlyphIndicesW(f->hdc, &wch, 1, &gi, 1u);
+                    if (r != 0xFFFFFFFFu && gi != 0xFFFF) return XT_FROM_INT(1);
+                }
+                return XT_FROM_INT(0);
+            }
+        }
+        return XT_FROM_INT(0);
+    }
+#endif
+    Font* p = xt_get_font(fontVal);
+    if (!p) return XT_FROM_INT(0);
+    for (int i = 0; i < p->glyphCount; i++) {
+        if (p->glyphs[i].value == cp) return XT_FROM_INT(1);
+    }
+    return XT_FROM_INT(0);
+}
+
+/* UTF-8 字符串按「字符下标」取 Unicode 码点(缺字监测逐字检查用;下标越界返 0)。
+   下标是字符序(跳过 UTF-8 续字节),与 玄铁 字符串.截取 的字符索引一致。 */
+uintptr_t XT_CharCodepoint(uintptr_t textVal, uintptr_t idxVal) {
+    if (!IS_PTR(textVal)) return XT_FROM_INT(0);
+    const unsigned char* s = (const unsigned char*)xt_get_cstr(textVal);
+    int want = (int)xt_ni(idxVal);
+    int ci = 0;
+    while (*s) {
+        unsigned cp = 0;
+        int len = 1;
+        if (*s < 0x80) { cp = *s; len = 1; }
+        else if ((*s & 0xE0) == 0xC0) { cp = ((unsigned)(*s & 0x1F) << 6) | (unsigned)(s[1] & 0x3F); len = 2; }
+        else if ((*s & 0xF0) == 0xE0) { cp = ((unsigned)(*s & 0x0F) << 12) | ((unsigned)(s[1] & 0x3F) << 6) | (unsigned)(s[2] & 0x3F); len = 3; }
+        else { cp = ((unsigned)(*s & 0x07) << 18) | ((unsigned)(s[1] & 0x3F) << 12) | ((unsigned)(s[2] & 0x3F) << 6) | (unsigned)(s[3] & 0x3F); len = 4; }
+        if (ci == want) return XT_FROM_INT((int64_t)cp);
+        s += len;
+        ci++;
+    }
+    return XT_FROM_INT(0);
+}
 
 /* ── 系统字体名 → 字体文件路径(POSIX 用;issue #43)─────────────────────────────
    Windows 的系统字体走 GDI 光栅化,不需要文件;macOS/Linux 没有 GDI,只能由 raylib 从
