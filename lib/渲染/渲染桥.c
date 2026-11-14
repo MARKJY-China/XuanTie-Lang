@@ -193,7 +193,12 @@ extern __declspec(dllimport) intptr_t WINAPI GetWindowLongPtrW(HWND hWnd, int nI
 extern __declspec(dllimport) intptr_t WINAPI SetWindowLongPtrW(HWND hWnd, int nIndex, intptr_t dwNewLong);
 extern __declspec(dllimport) int WINAPI SetWindowPos(HWND hWnd, HWND hWndInsertAfter,
     int X, int Y, int cx, int cy, unsigned int uFlags);
+typedef struct { long left, top, right, bottom; } XT_CLIENT_RECT;
+extern __declspec(dllimport) int WINAPI GetClientRect(HWND hWnd, XT_CLIENT_RECT* lpRect);
+extern __declspec(dllimport) int WINAPI AdjustWindowRectEx(XT_CLIENT_RECT* lpRect, unsigned long dwStyle,
+    int bMenu, unsigned long dwExStyle);
 #define XT_GWL_STYLE        (-16)
+#define XT_GWL_EXSTYLE      (-20)
 #define XT_WS_THICKFRAME    0x00040000L
 #define XT_WS_MAXIMIZEBOX   0x00010000L
 #define XT_WS_CAPTION       0x00C00000L
@@ -201,6 +206,7 @@ extern __declspec(dllimport) int WINAPI SetWindowPos(HWND hWnd, HWND hWndInsertA
 #define XT_SWP_NOSIZE       0x0001
 #define XT_SWP_NOMOVE       0x0002
 #define XT_SWP_NOZORDER     0x0004
+#define XT_SWP_NOACTIVATE   0x0010
 #define XT_SWP_FRAMECHANGED 0x0020
 // Per-Monitor DPI Aware V2(PMv2,Win10 1703+)——动态取符号,旧系统静默跳过(issue #22)
 extern __declspec(dllimport) HANDLE WINAPI GetModuleHandleA(const char* lpModuleName);
@@ -398,6 +404,12 @@ void XT_SetWindowUndecorated(uintptr_t on) {
 #ifdef _WIN32
     HWND hwnd = (HWND)GetWindowHandle();
     if (!hwnd) return;
+    // 切换风格会改变客户区尺寸(无边框比有边框大);先记住切换前客户区,改完再按它还原,
+    // 否则 UI.应用 用入参宽高布局、真实客户区却是另一份尺寸,右侧/底部被裁。
+    XT_CLIENT_RECT cr = {0, 0, 0, 0};
+    int have_client = GetClientRect(hwnd, &cr);
+    int cw = cr.right - cr.left;
+    int ch = cr.bottom - cr.top;
     intptr_t style = GetWindowLongPtrW(hwnd, XT_GWL_STYLE);
     if (XT_TO_INT(on)) {
         style &= ~(XT_WS_CAPTION | XT_WS_SYSMENU | XT_WS_THICKFRAME | XT_WS_MAXIMIZEBOX);
@@ -407,6 +419,15 @@ void XT_SetWindowUndecorated(uintptr_t on) {
     }
     SetWindowLongPtrW(hwnd, XT_GWL_STYLE, style);
     xt_apply_style(hwnd);
+    // 按切换后的风格反算外部窗口尺寸,让客户区恢复成切换前的大小
+    if (have_client != 0 && cw > 0 && ch > 0) {
+        intptr_t ex = GetWindowLongPtrW(hwnd, XT_GWL_EXSTYLE);
+        XT_CLIENT_RECT wr = {0, 0, cw, ch};
+        if (AdjustWindowRectEx(&wr, (unsigned long)style, 0, (unsigned long)ex)) {
+            SetWindowPos(hwnd, 0, 0, 0, wr.right - wr.left, wr.bottom - wr.top,
+                XT_SWP_NOMOVE | XT_SWP_NOZORDER | XT_SWP_NOACTIVATE | XT_SWP_FRAMECHANGED);
+        }
+    }
 #else
     if (XT_TO_INT(on)) SetWindowState(FLAG_WINDOW_UNDECORATED);
     else ClearWindowState(FLAG_WINDOW_UNDECORATED);
@@ -437,9 +458,14 @@ void XT_BeginDrawing(void) {
     BeginDrawing();
 }
 
+// 截图取帧前必须 flush rlgl 批次:LoadImageFromScreen 直接 glReadPixels,
+// 不 flush 时本帧尚未提交的图元不在 framebuffer(实测截图缺最后一批绘制)。
+extern void rlDrawRenderBatchActive(void);
+
 void XT_EndDrawing(void) {
     // issue #92:抓帧必须在交换缓冲之前完成。
     if (xt_shot_pending) {
+        rlDrawRenderBatchActive();
         Image img = LoadImageFromScreen();
         if (img.data) {
             ExportImage(img, xt_shot_pending);
@@ -776,13 +802,20 @@ void XT_DrawFPS(uintptr_t x, uintptr_t y) {
 // 纹理句柄池:返回 1-based 标记整数索引(与字体句柄同方案)。
 // 历史教训:此前直接返回裸 Texture2D* 指针,玄铁 ARC 会把该值当 XTObject 做
 // retain/release/析构,读取 Texture2D 字段当 magic → 报堆损坏甚至错误释放 C 内存。
-// v1.2.0 起 16→32:UI 图标缓存 + 渐变纹理缓存 + 用户纹理共存,16 槽不够。
-static Texture2D xt_tex_pool[32];
-static int xt_tex_used[32];
+// v1.2.0 起 16→32;v1.3.9 起 32→256:仿微信 demo 实测 40+ 张头像/图标/渐变同时驻留,
+// 池满后 LoadTexture 直接返回 0(不打印失败日志),表现为"部分图标按钮/图片静默不渲染"。
+#define XT_TEX_MAX 256
+static Texture2D xt_tex_pool[XT_TEX_MAX];
+static int xt_tex_used[XT_TEX_MAX];
+static int xt_tex_warned = 0;
 
 static int xt_tex_alloc(void) {
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < XT_TEX_MAX; i++) {
         if (!xt_tex_used[i]) return i;
+    }
+    if (!xt_tex_warned) {
+        xt_tex_warned = 1;
+        fprintf(stderr, "[渲染库][警告] 纹理池已满(%d 个),后续纹理加载会静默失败;请减少同时驻留的纹理或增大池\n", XT_TEX_MAX);
     }
     return -1;
 }
@@ -790,7 +823,7 @@ static int xt_tex_alloc(void) {
 static Texture2D* xt_get_tex(uintptr_t v) {
     if (!IS_INT(v)) return NULL;
     int64_t idx = XT_TO_INT(v);
-    if (idx < 1 || idx > 32) return NULL;
+    if (idx < 1 || idx > XT_TEX_MAX) return NULL;
     if (!xt_tex_used[idx - 1]) return NULL;
     return &xt_tex_pool[idx - 1];
 }
@@ -846,7 +879,7 @@ uintptr_t XT_LoadTexture(uintptr_t filename) {
 void XT_UnloadTexture(uintptr_t texPtr) {
     if (!IS_INT(texPtr)) return;
     int64_t idx = XT_TO_INT(texPtr);
-    if (idx < 1 || idx > 32 || !xt_tex_used[idx - 1]) return;
+    if (idx < 1 || idx > XT_TEX_MAX || !xt_tex_used[idx - 1]) return;
     Texture2D* p = &xt_tex_pool[idx - 1];
     UnloadTexture(*p);
     xt_tex_used[idx - 1] = 0;

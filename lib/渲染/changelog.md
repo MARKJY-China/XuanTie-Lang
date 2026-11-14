@@ -1,5 +1,13 @@
 # 渲染库 Changelog
 
+## v1.3.9
+
+**修复**
+
+- **纹理池 32 → 256**（仿微信 demo 实测）：UIC 缓存 + 头像/图标/渐变同时驻留超过 32 张时，`xt_tex_alloc` 返回 -1，`XT_LoadTexture` 直接返回 0 且**不打印失败日志**，表现为「部分图标按钮/图片静默不渲染」（布局与纹理加载日志都正常）。池满时现在会向 stderr 打一次明确警告。
+- **`截图` 缺最后一批绘制**：`XT_EndDrawing` 抓帧前没有 flush rlgl 批次，`LoadImageFromScreen` 直接读 framebuffer 会漏掉尚未提交的图元。现在抓帧前调用 `rlDrawRenderBatchActive()`，自动化验收/文档抓帧不再静默缺图。
+- **`设窗口无边框` 改变客户区尺寸**：切换 Win32 窗口风格后客户区变大（实测 1137×800 → 1143×829），而 `UI.应用` 仍按入参宽高布局，右侧/底部被裁。现在切换前后用 `GetClientRect + AdjustWindowRectEx + SetWindowPos` 把客户区还原成原尺寸。
+
 ## v1.3.8
 
 **新增**
