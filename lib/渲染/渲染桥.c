@@ -437,9 +437,14 @@ void XT_BeginDrawing(void) {
     BeginDrawing();
 }
 
+/* raylib.h 不含 rlgl.h,显式声明原型——桥内已有同类先例(见下方「rlgl 矩阵栈」注释区)。
+   符号已确认在随包 libraylib.a 中(nm 实测 _rlDrawRenderBatchActive)。 */
+void rlDrawRenderBatchActive(void);
+
 void XT_EndDrawing(void) {
     // issue #92:抓帧必须在交换缓冲之前完成。
     if (xt_shot_pending) {
+        rlDrawRenderBatchActive(); // 先冲刷批处理几何,否则截图缺 绘矩形 等所有批绘内容
         Image img = LoadImageFromScreen();
         if (img.data) {
             ExportImage(img, xt_shot_pending);
