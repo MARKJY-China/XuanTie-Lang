@@ -103,8 +103,8 @@
   fail 红)+ 双击开 `PreflightConsole`(`ui/preflight-console.ts`,CI 式浮层);Rust
   `run_streaming` 逐行 emit `preflight-progress`(stage/log/done 三型;事件名常量
   `PROGRESS_EVENT`)——改校验流程时三型事件要同步。
-- **runtime .o 红线**:`build/env/runtime/` 必须保留 xt_runtime/xt_threadpool/xt_net/xt_tls
-  四个预编译 .o(缺失会让每次 `xtc tie` 现场编 C,实测 +7s);发行由 make_pkg.sh 生成同名 .o。
+- **runtime .o 红线**:`build/env/runtime/` 必须保留 xt_runtime/xt_threadpool/xt_net/xt_tls/xt_process
+  五个预编译 .o(缺失会让每次 `xtc tie` 现场编 C,实测 +7s);发行由 make_pkg.sh 生成同名 .o。
   重建 env 后补:
   `clang -target x86_64-w64-windows-gnu -O2 -c runtime/<f>.c -o build/env/runtime/<f>.o`。
 - **诊断导出纪律**:log-bus 分池(warnPool 保底 200 条,永不被 debug 挤出;dbgPool 折叠

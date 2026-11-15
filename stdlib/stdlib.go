@@ -503,6 +503,15 @@ var Builtins = map[string]object.Object{
 			},
 		},
 	},
+	"进程": &object.Dict{
+		Pairs: map[string]object.Object{
+			"启动":   &object.Builtin{Fn: processStart},
+			"写":    &object.Builtin{Fn: processWrite},
+			"刷新":   &object.Builtin{Fn: processFlush},
+			"关闭输入": &object.Builtin{Fn: processCloseInput},
+			"等退出":  &object.Builtin{Fn: processWait},
+		},
+	},
 	"执": &object.Builtin{
 		Fn: func(args ...object.Object) object.Object {
 			if len(args) != 1 {

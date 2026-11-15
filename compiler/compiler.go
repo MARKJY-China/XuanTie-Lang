@@ -486,6 +486,109 @@ func (c *GoCompiler) writeHeader() {
 	c.output.WriteString("\t\"参数\": func() []interface{} { res := make([]interface{}, len(os.Args)); for i, a := range os.Args { res[i] = a }; return res }(),\n")
 	c.output.WriteString("}\n\n")
 
+	c.output.WriteString(`type xtProcess struct {
+	cmd *exec.Cmd
+	stdin io.WriteCloser
+	closeErr error
+	waited bool
+	exitCode int
+	waitErr error
+}
+
+func xtProcessStart(command string) (*xtProcess, error) {
+	if command == "" { return nil, fmt.Errorf("子进程命令不能为空") }
+	var cmd *exec.Cmd
+	if os.PathSeparator == '\\' { cmd = exec.Command("cmd", "/c", command) } else { cmd = exec.Command("/bin/sh", "-c", command) }
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	stdin, err := cmd.StdinPipe()
+	if err != nil { return nil, err }
+	if err = cmd.Start(); err != nil { _ = stdin.Close(); return nil, err }
+	return &xtProcess{cmd: cmd, stdin: stdin, exitCode: -1}, nil
+}
+
+func xtProcessWrite(p *xtProcess, data []byte) error {
+	if p == nil || p.stdin == nil { return fmt.Errorf("子进程标准输入已关闭") }
+	for len(data) > 0 {
+		n, err := p.stdin.Write(data)
+		if n > 0 { data = data[n:] }
+		if err != nil { return err }
+		if n == 0 { return io.ErrShortWrite }
+	}
+	return nil
+}
+
+func xtProcessClose(p *xtProcess) error {
+	if p == nil { return fmt.Errorf("不是子进程句柄") }
+	if p.stdin == nil { return p.closeErr }
+	p.closeErr = p.stdin.Close()
+	p.stdin = nil
+	return p.closeErr
+}
+
+func xtProcessWait(p *xtProcess) (int, error) {
+	if p == nil { return -1, fmt.Errorf("不是子进程句柄") }
+	if p.waited { return p.exitCode, p.waitErr }
+	p.waited = true
+	closeErr := xtProcessClose(p)
+	err := p.cmd.Wait()
+	p.exitCode = p.cmd.ProcessState.ExitCode()
+	if err != nil {
+		if _, ok := err.(*exec.ExitError); !ok { p.exitCode = -1; p.waitErr = err }
+	}
+	if p.waitErr == nil && closeErr != nil { p.waitErr = closeErr }
+	return p.exitCode, p.waitErr
+}
+
+func xtProcessResult(value interface{}, err error) interface{} {
+	if err != nil { return &Result{IsSuccess: false, Value: int64(-1), Error: err.Error()} }
+	return &Result{IsSuccess: true, Value: value}
+}
+
+var 进程 = map[string]interface{}{
+	"启动": func(args []interface{}) interface{} {
+		if len(args) != 1 { return &Result{IsSuccess: false, Error: "进程.启动 期望 1 个参数"} }
+		command, ok := args[0].(string)
+		if !ok { return &Result{IsSuccess: false, Error: "进程.启动 的命令必须是字符串"} }
+		p, err := xtProcessStart(command)
+		if err != nil { return xtProcessResult(nil, err) }
+		return &Result{IsSuccess: true, Value: p}
+	},
+	"写": func(args []interface{}) interface{} {
+		if len(args) != 2 { return &Result{IsSuccess: false, Error: "进程.写 期望 2 个参数"} }
+		p, ok := args[0].(*xtProcess)
+		if !ok { return &Result{IsSuccess: false, Error: "不是子进程句柄"} }
+		var data []byte
+		switch content := args[1].(type) {
+		case string: data = []byte(content)
+		case []byte: data = content
+		default: return &Result{IsSuccess: false, Error: "写入内容必须是字符串或字节"}
+		}
+		return xtProcessResult(true, xtProcessWrite(p, data))
+	},
+	"刷新": func(args []interface{}) interface{} {
+		if len(args) != 1 { return &Result{IsSuccess: false, Error: "进程.刷新 期望 1 个参数"} }
+		p, ok := args[0].(*xtProcess)
+		if !ok || p.stdin == nil { return &Result{IsSuccess: false, Error: "子进程标准输入已关闭"} }
+		return xtProcessResult(true, nil)
+	},
+	"关闭输入": func(args []interface{}) interface{} {
+		if len(args) != 1 { return &Result{IsSuccess: false, Error: "进程.关闭输入 期望 1 个参数"} }
+		p, ok := args[0].(*xtProcess)
+		if !ok { return &Result{IsSuccess: false, Error: "不是子进程句柄"} }
+		return xtProcessResult(true, xtProcessClose(p))
+	},
+	"等退出": func(args []interface{}) interface{} {
+		if len(args) != 1 { return &Result{IsSuccess: false, Error: "进程.等退出 期望 1 个参数"} }
+		p, ok := args[0].(*xtProcess)
+		if !ok { return &Result{IsSuccess: false, Error: "不是子进程句柄"} }
+		code, err := xtProcessWait(p)
+		if err != nil { return &Result{IsSuccess: false, Value: int64(code), Error: err.Error()} }
+		return &Result{IsSuccess: true, Value: int64(code)}
+	},
+}
+
+`)
 	c.output.WriteString("func execute(cmd interface{}) interface{} {\n")
 	c.output.WriteString("\tcmdStr := fmt.Sprintf(\"%v\", cmd)\n")
 	c.output.WriteString("\tparts := strings.Fields(cmdStr)\n")

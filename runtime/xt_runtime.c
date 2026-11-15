@@ -1558,6 +1558,16 @@ static void xt_free_obj(XTObject* obj) {
             f->closed = 1;
             break;
         }
+        case XT_TYPE_PROCESS: {
+            XTProcess* process = (XTProcess*)obj;
+            XTValue close_result = xt_process_close_input((XTValue)process);
+            xt_release(close_result);
+            if (!process->waited) {
+                XTValue wait_result = xt_process_wait((XTValue)process);
+                xt_release(wait_result);
+            }
+            break;
+        }
         case XT_TYPE_HANDLE: {
             XTHandle* h = (XTHandle*)obj;
             if (h->dtor && h->payload) { h->dtor(h->payload); h->payload = NULL; }
@@ -1861,6 +1871,7 @@ static const char* xt_type_label_zh(XTValue v) {
         case XT_TYPE_SOCKET:   return "网络流";
         case XT_TYPE_FILE:     return "文件句柄";
         case XT_TYPE_HANDLE:   return "外部句柄";
+        case XT_TYPE_PROCESS:  return "子进程句柄";
         default:               return "其它对象";
     }
 }

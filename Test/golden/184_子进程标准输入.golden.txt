@@ -1,0 +1,25 @@
+compile_ok=True
+exit=0
+PASS 启动子进程
+PASS 第一次写原始字节
+PASS 第二次写原始字节
+PASS 写入文本片段
+PASS 刷新输入
+PASS 关闭输入
+PASS 关闭输入幂等
+PASS 关闭后写入被拒绝
+PASS 等待成功
+PASS 零退出码
+PASS 等待幂等
+PASS 二进制逐次拼接
+PASS NUL原样保留
+PASS 换行不转换
+PASS 非ASCII字节原样保留
+PASS 回车原样保留
+PASS 非零退出也属于等待成功
+PASS 返回实际非零退出码
+PASS 异步子进程等待
+PASS 空命令明确失败
+PASS 不是进程句柄
+PASS 写入类型明确失败
+子进程标准输入 全绿

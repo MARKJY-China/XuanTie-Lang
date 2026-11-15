@@ -1002,6 +1002,22 @@
     遍历 _bc3 于 _伴随候选3 { 若 文件.存在?(_bc3) { tlsFile = _bc3 ; 断 } }
     若 输出详细 且 tlsFile != "" { 示("TLS栈文件: " & tlsFile) }
 
+    设 processFile = ""
+    设 _伴随候选4 = []
+    若 _自身目录 != "" { _伴随候选4.追加(_自身目录 & "runtime" & _路径分隔 & "xt_process.o") }
+    _伴随候选4.追加("runtime" & _路径分隔 & "xt_process.o")
+    _伴随候选4.追加(".." & _路径分隔 & "runtime" & _路径分隔 & "xt_process.o")
+    _伴随候选4.追加("runtime" & _路径分隔 & "xt_process.c")
+    _伴随候选4.追加(".." & _路径分隔 & "runtime" & _路径分隔 & "xt_process.c")
+    _伴随候选4.追加(rtFile.替换("xt_runtime.c", "xt_process.c").替换("xt_runtime.o", "xt_process.o"))
+    遍历 _bc4 于 _伴随候选4 { 若 文件.存在?(_bc4) { processFile = _bc4 ; 断 } }
+    若 processFile == "" {
+        示("错误: 未找到子进程运行时(xt_process.o/.c),请更新完整运行时资源")
+        xt_arena_destroy(池)
+        终 1
+    }
+    若 输出详细 { 示("子进程运行时: " & processFile) }
+
     // 检测渲染库导入(编译阶段由 编译.引用了渲染 记录,含经 UI 等包间接引入)
     设 使用渲染 = 假
     设 渲染桥C = ""
@@ -1193,6 +1209,7 @@
             若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
             若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
             若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
+            若 processFile != "" { 链接指令 = 链接指令 & " \"" & processFile & "\"" }
             若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm -limm32" }
             链接指令 = 链接指令 & _原生链接串
             若 窗口模式 { 链接指令 = 链接指令 & " -mwindows" }
@@ -1202,6 +1219,7 @@
             若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
             若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
             若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
+            若 processFile != "" { 链接指令 = 链接指令 & " \"" & processFile & "\"" }
             若 使用渲染 { 链接指令 = 链接指令 & " \"" & 渲染桥Obj & "\" \"" & raylibA & "\" -lopengl32 -lgdi32 -lwinmm -limm32" }
             链接指令 = 链接指令 & _原生链接串
             若 窗口模式 { 链接指令 = 链接指令 & " -mwindows" }
@@ -1220,6 +1238,7 @@
         若 tpFile != "" { 链接指令 = 链接指令 & " \"" & tpFile & "\"" }
         若 netFile != "" { 链接指令 = 链接指令 & " \"" & netFile & "\"" }
         若 tlsFile != "" { 链接指令 = 链接指令 & " \"" & tlsFile & "\"" }
+            若 processFile != "" { 链接指令 = 链接指令 & " \"" & processFile & "\"" }
         若 平台 == "linux" { 链接指令 = 链接指令 & " -lm -lpthread -ldl" }
         链接指令 = 链接指令 & _原生链接串
         若 使用渲染 {

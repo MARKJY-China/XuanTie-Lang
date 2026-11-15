@@ -99,7 +99,7 @@ echo "[自举门禁] 环境: 平台=$(uname -s)  显式架构=${XT_ARCH_WANT:-�
 # ── 运行时目标文件预编译(阶段零之前,一次做完后续全部复用)────────────────────
 # 编译器找运行时的顺序是"自身目录/runtime/xt_runtime.o 优先",而链上各级二进制都在 $BUILD;
 # 把 .o 放这里,链的每一级、两段冒烟、以及后续全量回归的每个用例都直接吃 .o ——
-# 否则每个编译单元都要现场 clang 编 xt_runtime.c(160KB)+3 个伴随源文件,实测每次约 3.2 秒:
+# 否则每个编译单元都要现场 clang 编 xt_runtime.c(160KB)+4 个伴随源文件,实测每次约 3.2 秒:
 # 一行程序总耗时 4322ms → 1100ms;回归 130+ 用例即约 7 分钟白花在重复编译同一份 C 源上。
 # 用与发行包相同的 -O2(见 release/make_pkg.sh):门禁/回归链接到的运行时与用户拿到的发行包一致。
 echo "[自举门禁] 阶段零·预备:预编译运行时目标文件(各级链接与回归复用,免逐次现编 C 源)"
@@ -115,7 +115,7 @@ if uname | grep -qiE "MINGW|MSYS|CYGWIN"; then
 else
     XT_CLANG_TARGET=""
 fi
-for _rt in xt_runtime xt_threadpool xt_net xt_tls; do
+for _rt in xt_runtime xt_threadpool xt_net xt_tls xt_process; do
     [ -f "$ROOT/runtime/$_rt.c" ] || fail "未找到 runtime/$_rt.c"
     clang $XT_CLANG_TARGET -O2 -c "$ROOT/runtime/$_rt.c" -o "$BUILD/runtime/$_rt.o" \
         > "$SCRATCH/rt_$_rt.log" 2>&1 || { dump_log "$SCRATCH/rt_$_rt.log"; fail "预编译 runtime/$_rt.c 失败"; }

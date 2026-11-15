@@ -343,7 +343,8 @@ func main() {
 		threadpoolC := filepath.Join(runtimeDir, "xt_threadpool.c")
 		netC := filepath.Join(runtimeDir, "xt_net.c")
 		tlsC := filepath.Join(runtimeDir, "xt_tls.c")
-		gccArgs := []string{objFile, rtC, threadpoolC, netC, tlsC, "-o", outputName}
+		processC := filepath.Join(runtimeDir, "xt_process.c")
+		gccArgs := []string{objFile, rtC, threadpoolC, netC, tlsC, processC, "-o", outputName}
 		if targetOS == "windows" {
 			// Windows: TLS(Schannel 实现在 xt_tls.c) + WinSock + 安全库
 			gccArgs = append(gccArgs, "-lshell32", "-lws2_32", "-lsecur32")
