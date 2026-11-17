@@ -2360,6 +2360,244 @@ uintptr_t XT_LoadFontFullHiDPI(uintptr_t filename, uintptr_t fontSize) {
     return XT_LoadFont(filename, XT_FROM_INT(raster));
 }
 
+/* ---- 字体链(issue: 单字体无法同时覆盖汉字与修饰键符号) ----
+   设计:加载时一次性——主字体按参考文本收码点并光栅化;缺失码点向回退字体借字形;
+   全部字形一次 GenImageFontAtlas 打包组装成单一 Font。绘字路径零改动(按码点查同一张图集,
+   不逐字符切字体)。缺字判定复用扩段告警的约定(主字形表查不到 = 缺)。
+   macOS 经 CoreText 借字形(CTFontCreateWithName → CTFontGetGlyphsForCharacters →
+   CTFontDrawGlyphs,灰度覆盖位图);Windows(GDI/DirectWrite)与 Linux(fontconfig/FreeType)
+   各是另一套依赖面,不在本实现范围——存根返回 0,跨平台链接保持可用(同 XT_FontGDI 先例)。 */
+#if defined(__APPLE__)
+#include <CoreText/CoreText.h>
+
+/* 借字形光栅化:CoreText 渲染成灰度覆盖位图(1 字节/像素,与 LoadFontData 产出的
+   字形位图同构,GenImageFontAtlas 打包时统一转 GRAY_ALPHA)。
+   注意三点(实测踩坑):①无 alpha 的灰度上下文初始全 0,必须用白画笔,黑笔=黑底黑字全空;
+   ②CG 坐标系 y 向上而位图内存行 0 在顶,CTFontDrawGlyphs 直接画即可,读出来方向正确;
+   ③位置用 (-bounds.origin.x, -bounds.origin.y) 把字形贴进位图原点。
+   返回 malloc 位图,w/h 出参 */
+static unsigned char* xt_ct_render_glyph(CTFontRef ct, CGGlyph glyph, int* outW, int* outH) {
+    CGRect b;
+    CTFontGetBoundingRectsForGlyphs(ct, kCTFontOrientationHorizontal, &glyph, &b, 1);
+    int w = (int)ceil(b.origin.x + b.size.width) - (int)floor(b.origin.x);
+    int h = (int)ceil(b.origin.y + b.size.height) - (int)floor(b.origin.y);
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    unsigned char* cov = (unsigned char*)malloc((size_t)w * (size_t)h);
+    if (!cov) return NULL;
+    memset(cov, 0, (size_t)w * (size_t)h);
+    CGColorSpaceRef gray = CGColorSpaceCreateDeviceGray();
+    CGContextRef ctx = CGBitmapContextCreate(cov, w, h, 8, (size_t)w, gray, kCGImageAlphaNone);
+    CGColorSpaceRelease(gray);
+    if (!ctx) { free(cov); return NULL; }
+    CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
+    CGContextSetAllowsAntialiasing(ctx, true);
+    CGContextSetTextMatrix(ctx, CGAffineTransformIdentity);
+    CGPoint pos = CGPointMake(-b.origin.x, -b.origin.y);
+    CTFontDrawGlyphs(ct, &glyph, &pos, 1, ctx);
+    CGContextRelease(ctx);
+    *outW = w;
+    *outH = h;
+    return cov;
+}
+
+uintptr_t XT_LoadFontChain(uintptr_t mainPath, uintptr_t fallbackName, uintptr_t fontSize, uintptr_t refText) {
+    if (xt_font_count >= 8) return XT_FROM_INT(0);
+
+    /* 码点收集(同 XT_LoadFontEx: ASCII 95 + 参考文本非 ASCII 去重) */
+    const char* ref = xt_get_cstr(refText);
+    int refLen = (int)strlen(ref);
+    int* codepoints = (int*)malloc((size_t)(95 + refLen) * sizeof(int));
+    if (!codepoints) return XT_FROM_INT(0);
+    int idx = 0;
+    for (int c = 32; c <= 126; c++) codepoints[idx++] = c;
+    int bp = 0;
+    while (bp < refLen) {
+        int cp = 0;
+        unsigned char b0 = (unsigned char)ref[bp];
+        if (b0 < 0x80)      { cp = b0; bp += 1; }
+        else if (b0 < 0xE0) { cp = ((b0 & 0x1F) << 6)  | (ref[bp+1] & 0x3F); bp += 2; }
+        else if (b0 < 0xF0) { cp = ((b0 & 0x0F) << 12) | ((ref[bp+1] & 0x3F) << 6) | (ref[bp+2] & 0x3F); bp += 3; }
+        else                { cp = ((b0 & 0x07) << 18) | ((ref[bp+1] & 0x3F) << 12) | ((ref[bp+2] & 0x3F) << 6) | (ref[bp+3] & 0x3F); bp += 4; }
+        if (cp < 32 || cp > 126) {
+            int dup = 0;
+            for (int j = 95; j < idx; j++) { if (codepoints[j] == cp) { dup = 1; break; } }
+            if (!dup) codepoints[idx++] = cp;
+        }
+    }
+
+    /* 读主字体文件(ttc 处理同 XT_LoadFont) */
+    int dataSize = 0;
+    unsigned char* data = xt_read_file_bytes(xt_get_cstr(mainPath), &dataSize);
+    if (!data) { free(codepoints); return XT_FROM_INT(0); }
+    unsigned char* loadData = data;
+    int loadSize = dataSize;
+    unsigned int ttcOff = xt_ttc_first_face_offset(data, (size_t)dataSize);
+    if (ttcOff) {
+        if ((size_t)dataSize >= 4 && ttcOff <= (size_t)dataSize - 4 &&
+            memcmp(data + ttcOff, "OTTO", 4) == 0) {
+            free(data); free(codepoints); return XT_FROM_INT(0);
+        }
+        unsigned char* rebuilt = xt_ttc_rebuild_face(data, dataSize, ttcOff, &loadSize);
+        if (!rebuilt) { free(data); free(codepoints); return XT_FROM_INT(0); }
+        loadData = rebuilt;
+    }
+
+    int fsize = (int)xt_ni(fontSize);
+    int mainCount = 0;
+    GlyphInfo* mg = LoadFontData(loadData, loadSize, fsize, codepoints, idx, 0, &mainCount);
+
+    /* 主字体纵态度量(与 raylib LoadFontData 同口径):stbtt_ScaleForPixelHeight 下
+       scale = fontSize/(asc-desc),raylib 把每个字形的 offsetY 加上 (int)(ascent*scale)。
+       借来的字形必须加上同一项,否则基线悬空(实测)。hhea 度量经 CoreText 从字体数据取 */
+    CGFloat ascentScaled = (CGFloat)fsize;
+    {
+        CFDataRef mdata = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, (const UInt8*)loadData,
+                                                      (CFIndex)loadSize, kCFAllocatorNull);
+        CTFontDescriptorRef mdesc = mdata ? CTFontManagerCreateFontDescriptorFromData(mdata) : NULL;
+        if (mdata) CFRelease(mdata);
+        if (mdesc) {
+            CTFontRef mf = CTFontCreateWithFontDescriptor(mdesc, (CGFloat)fsize, NULL);
+            CGFloat asc = CTFontGetAscent(mf);
+            CGFloat desc = CTFontGetDescent(mf);  /* CoreText 返回正值(基线下方距离) */
+            if (asc + desc > 0.001) ascentScaled = asc * (CGFloat)fsize / (asc + desc);
+            CFRelease(mf);
+            CFRelease(mdesc);
+        }
+    }
+
+    if (loadData != data) free(loadData);
+    free(data);
+    if (!mg || mainCount == 0) {
+        if (mg) free(mg);
+        free(codepoints);
+        return XT_FROM_INT(0);
+    }
+
+    /* 找主字体缺的码点,向回退字体借(CoreText, BMP 码点)。
+       回退字体名:空串 = macOS 系统界面字体(CTFontCreateUIFontForLanguage,即 SF NS,
+       含 ⎋/⏎/⌘ 等——这些符号无法按名字取:名字直取 ".SFNS-Regular" 会被系统拒绝,
+       "SFNS" 会被解析成 Helvetica,均为系统行为,实测);具名 = CTFontCreateWithName */
+    CFStringRef fbName = NULL;
+    CTFontRef ct = NULL;
+    if (xt_get_cstr(fallbackName)[0] == '\0') {
+        ct = CTFontCreateUIFontForLanguage(kCTFontUIFontSystem, (CGFloat)fsize, NULL);
+    } else {
+        fbName = CFStringCreateWithCString(kCFAllocatorDefault,
+                                           xt_get_cstr(fallbackName), kCFStringEncodingUTF8);
+        ct = CTFontCreateWithName(fbName, (CGFloat)fsize, NULL);
+    }
+    if (fbName) CFRelease(fbName);
+    if (!ct) {
+        for (int k = 0; k < mainCount; k++) { if (mg[k].image.data) free(mg[k].image.data); }
+        free(mg);
+        free(codepoints);
+        return XT_FROM_INT(0);
+    }
+    GlyphInfo* extra = (GlyphInfo*)malloc((size_t)idx * sizeof(GlyphInfo));
+    if (!extra) {
+        CFRelease(ct);
+        for (int k = 0; k < mainCount; k++) { if (mg[k].image.data) free(mg[k].image.data); }
+        free(mg);
+        free(codepoints);
+        return XT_FROM_INT(0);
+    }
+    int borrowed = 0;
+    for (int j = 0; j < idx; j++) {
+        int cp = codepoints[j];
+        GlyphInfo* g = NULL;
+        for (int k = 0; k < mainCount; k++) { if (mg[k].value == cp) { g = &mg[k]; break; } }
+        if (g && g->image.data && g->image.width > 0) continue;  /* 主字体有字形 */
+        if (cp > 0xFFFF) continue;                               /* BMP 限定 */
+        UniChar uc = (UniChar)cp;
+        CGGlyph glyph = 0;
+        if (!CTFontGetGlyphsForCharacters(ct, &uc, &glyph, 1) || glyph == 0) continue;
+        int w = 0, h = 0;
+        unsigned char* cov = xt_ct_render_glyph(ct, glyph, &w, &h);
+        if (!cov) continue;
+        CGRect b;
+        CGGlyph gg = glyph;
+        CTFontGetBoundingRectsForGlyphs(ct, kCTFontOrientationHorizontal, &gg, &b, 1);
+        CGSize adv;
+        CTFontGetAdvancesForGlyphs(ct, kCTFontOrientationHorizontal, &gg, &adv, 1);
+        GlyphInfo gi;
+        gi.value = cp;
+        gi.offsetX = (int)roundf((float)b.origin.x);
+        /* offsetY 与 raylib LoadFontData 同约定:stb oy(y 向下,字形顶相对基线,基线上方为负)
+           加上 (int)(ascent*scale)——ascentScaled 已按主字体度量算出 */
+        gi.offsetY = (int)(-(b.origin.y + b.size.height)) + (int)ascentScaled;
+        gi.advanceX = (int)lroundf((float)adv.width);
+        gi.image.width = w;
+        gi.image.height = h;
+        gi.image.mipmaps = 1;
+        gi.image.format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE;
+        gi.image.data = cov;
+        extra[borrowed] = gi;
+        borrowed++;
+    }
+
+    /* 合并字形数组,一次打包 */
+    int total = mainCount + borrowed;
+    GlyphInfo* all = (GlyphInfo*)malloc((size_t)total * sizeof(GlyphInfo));
+    if (!all) {
+        CFRelease(ct);
+        for (int k = 0; k < mainCount; k++) { if (mg[k].image.data) free(mg[k].image.data); }
+        free(mg);
+        for (int k = 0; k < borrowed; k++) free(extra[k].image.data);
+        free(extra);
+        free(codepoints);
+        return XT_FROM_INT(0);
+    }
+    memcpy(all, mg, (size_t)mainCount * sizeof(GlyphInfo));
+    memcpy(all + mainCount, extra, (size_t)borrowed * sizeof(GlyphInfo));
+    int pad = fsize / 10;
+    if (pad < 1) pad = 1;
+    if (pad > 16) pad = 16;
+    Rectangle* recs = NULL;
+    Image atlas = GenImageFontAtlas(all, &recs, total, fsize, pad, 0);
+
+    /* 图集打包已完成像素拷贝,释放源位图 */
+    for (int k = 0; k < mainCount; k++) { if (mg[k].image.data) free(mg[k].image.data); }
+    free(mg);
+    for (int k = 0; k < borrowed; k++) free(extra[k].image.data);
+    free(extra);
+    free(codepoints);
+
+    if (!atlas.data || !recs) {
+        CFRelease(ct);
+        free(all);
+        if (recs) free(recs);
+        return XT_FROM_INT(0);
+    }
+    Texture2D tex = LoadTextureFromImage(atlas);
+    UnloadImage(atlas);
+    if (tex.id == 0) {
+        CFRelease(ct);
+        free(all);
+        free(recs);
+        return XT_FROM_INT(0);
+    }
+    SetTextureFilter(tex, TEXTURE_FILTER_BILINEAR);
+
+    Font f;
+    f.baseSize = fsize;
+    f.glyphCount = total;
+    f.glyphPadding = pad;
+    f.texture = tex;
+    f.recs = recs;
+    f.glyphs = all;
+    xt_font_pool[xt_font_count] = f;
+    xt_font_count++;
+    CFRelease(ct);
+    return XT_FROM_INT(xt_font_count);
+}
+#else
+uintptr_t XT_LoadFontChain(uintptr_t mainPath, uintptr_t fallbackName, uintptr_t fontSize, uintptr_t refText) {
+    (void)mainPath; (void)fallbackName; (void)fontSize; (void)refText;
+    return XT_FROM_INT(0);  /* 非 macOS:字体链暂未实现,返回失败(跨平台链接保持可用) */
+}
+#endif
+
 #ifdef _WIN32
 /* GDI 字体(系统级光栅化)前向声明——实现在文件尾 GDI 段 */
 uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal);

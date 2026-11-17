@@ -110,6 +110,7 @@
 外 函 XT_LoadFontEx(filename: 字, fontSize: 整, refText: 字): 整
 外 函 XT_LoadFontHiDPI(filename: 字, fontSize: 整, refText: 字): 整
 外 函 XT_LoadFontFullHiDPI(filename: 字, fontSize: 整): 整
+外 函 XT_LoadFontChain(mainFont: 字, fallbackName: 字, fontSize: 整, refText: 字): 整
 外 函 XT_FontGDI_Create(face: 字, size: 整): 整
 外 函 XT_SaveScreenshot(path: 字): 整
 外 函 XT_BeginScissor(x: 整, y: 整, w: 整, h: 整): 空
@@ -830,6 +831,27 @@
 // 返回: 整 — 字体句柄（1–8），0=失败
 公 函 加载字体高清(文件, 逻辑字号, 参考文本) {
     返 XT_LoadFontHiDPI(文件, 逻辑字号, 参考文本)
+}
+
+// 加载字体链：主字体 + 回退字体合成为单一字体（macOS 实现经 CoreText 借字形）。
+// 加载时一次性完成：主字体按参考文本收集码点光栅化；主字体缺失的码点向回退字体借
+// 字形；全部字形合入同一张图集，组装成单一字体句柄。运行时 绘字体文字 路径零改动，
+// 不需要逐字符切换字体。缺字判定与缺字告警共用同一约定。
+//
+// 适用场景：字符串同时含汉字与 ⌘/⎋/⏎ 等修饰键符号——没有任何单一字体文件能同时
+// 覆盖两者（汉字字体缺符号、符号字体缺汉字），本函数把两边的字形拼进一张图集。
+//
+// 注意：本实现为 macOS 专属（CoreText）；Windows/Linux 返回 0（各自系统机制另行实现）。
+// 回退字体按系统字体名取（如 "SFNS"）；CoreText 与主字体光栅引擎不同，混排风格
+// 可能有细微差异；借字形占用图集面积。
+//
+// 参数 主字体: 字符串 — 主字体文件路径（UTF-8，ttc 取第 1 个 face）
+// 参数 回退字体名: 字符串 — 回退字体的系统字体名（macOS，如 "SFNS"）
+// 参数 字号: 整 — 图集光栅化字号（逻辑像素，须 > 0）
+// 参数 参考文本: 字符串 — 需要覆盖的字符集合；主字体缺的部分向回退字体借
+// 返回: 整 — 字体句柄（1–8），0=失败（含非 macOS 平台）
+公 函 加载字体链(主字体, 回退字体名, 字号, 参考文本) {
+    返 XT_LoadFontChain(主字体, 回退字体名, 字号, 参考文本)
 }
 
 // 释放字体占用的字形纹理与句柄（按句柄区间自动分派文件字体与 Windows GDI 字体）。
