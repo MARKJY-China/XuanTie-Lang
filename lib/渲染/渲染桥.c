@@ -2281,6 +2281,29 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     return XT_FROM_INT(xt_font_count);
 }
 
+/* ---- HIGHDPI 高清入口(issue: Retina 模糊) ----
+   加载函数的「字号」对调用方是显示字号、对库是图集光栅化字号——低 DPI 下恰好相等,
+   2x 屏必然分离:图集 24、绘制 40 逻辑像素 = 80 物理像素,3.3 倍放大笔画毛糙。
+   这两个入口把换算收进库内:以 逻辑字号 × 取缩放系数() 光栅化,参数语义 =「屏幕上看到多大」,
+   位图按出生尺寸 1:1 贴屏,放大采样不再发生。倍率取 GetRenderWidth/GetScreenWidth(与
+   XT_GetWindowScale 同口径):1x 屏算出 = 原字号,图集零增量;Mac Retina 原生缩放即 2x。
+   旧函数语义不变(参数即光栅化字号),Windows GDI 路径原生设备分辨率,均不受影响。 */
+uintptr_t XT_LoadFontHiDPI(uintptr_t filename, uintptr_t fontSize, uintptr_t refText) {
+    int sw = GetScreenWidth();
+    double scale = (sw > 0) ? (double)GetRenderWidth() / (double)sw : 1.0;
+    int raster = (int)((double)xt_ni(fontSize) * scale + 0.5);
+    if (raster < 1) raster = 1;
+    return XT_LoadFontEx(filename, XT_FROM_INT(raster), refText);
+}
+
+uintptr_t XT_LoadFontFullHiDPI(uintptr_t filename, uintptr_t fontSize) {
+    int sw = GetScreenWidth();
+    double scale = (sw > 0) ? (double)GetRenderWidth() / (double)sw : 1.0;
+    int raster = (int)((double)xt_ni(fontSize) * scale + 0.5);
+    if (raster < 1) raster = 1;
+    return XT_LoadFont(filename, XT_FROM_INT(raster));
+}
+
 #ifdef _WIN32
 /* GDI 字体(系统级光栅化)前向声明——实现在文件尾 GDI 段 */
 uintptr_t XT_FontGDI_Create(uintptr_t faceVal, uintptr_t sizeVal);
