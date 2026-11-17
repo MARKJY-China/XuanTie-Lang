@@ -2166,21 +2166,27 @@ uintptr_t XT_LoadFont(uintptr_t filename, uintptr_t fontSize) {
     if (xt_font_count >= 8) return XT_FROM_INT(0);
 
     // ASCII (32-126) + CJK 统一汉字基本区 (U+4E00–U+9FFF, ~21K)
-    // + 拉丁补充(U+00A0–U+00FF,含间隔号「·」) + 通用标点(U+2018–U+2026,引号/破折号/省略号)
-    // + CJK 标点(U+3000–U+303F,全角标点)。否则常用符号显示为「?」(实测 U+00B7 缺失)
+    // + 拉丁补充(U+00A0–U+00FF,含间隔号「·」) + 通用标点(U+2010–U+2027,破折号/引号/省略号)
+    // + CJK 标点(U+3000–U+303F,全角标点) + Box Drawing(U+2500–U+257F,制表线)
+    // + 半全角区(U+FF00–U+FFEF,中文括号/全角标点)。否则常用符号显示为「?」
+    // (实测 U+00B7/U+2014——/U+FF08 中文括号/U+2500 ─/U+FF1B ；缺失)
     int asciiCount = 95;
     int cjkCount = 0x9FFF - 0x4E00 + 1;  // 20992 个汉字
     int latinCount = 0x00FF - 0x00A0 + 1;
-    int punctCount = 0x2026 - 0x2018 + 1;
+    int punctCount = 0x2027 - 0x2010 + 1;
+    int boxCount = 0x257F - 0x2500 + 1;  // 128 个制表线字形
+    int halfFullCount = 0xFFEF - 0xFF00 + 1;  // 240 个半全角字形
     int cjkPunctCount = 0x303F - 0x3000 + 1;
-    int cpCount = asciiCount + cjkCount + latinCount + punctCount + cjkPunctCount;
+    int cpCount = asciiCount + cjkCount + latinCount + punctCount + boxCount + halfFullCount + cjkPunctCount;
     int* codepoints = (int*)malloc((size_t)cpCount * sizeof(int));
     if (!codepoints) return XT_FROM_INT(0);
     int idx = 0;
     for (int c = 32; c <= 126; c++) codepoints[idx++] = c;
     for (int c = 0x4E00; c <= 0x9FFF; c++) codepoints[idx++] = c;
     for (int c = 0x00A0; c <= 0x00FF; c++) codepoints[idx++] = c;
-    for (int c = 0x2018; c <= 0x2026; c++) codepoints[idx++] = c;
+    for (int c = 0x2010; c <= 0x2027; c++) codepoints[idx++] = c;
+    for (int c = 0x2500; c <= 0x257F; c++) codepoints[idx++] = c;
+    for (int c = 0xFF00; c <= 0xFFEF; c++) codepoints[idx++] = c;
     for (int c = 0x3000; c <= 0x303F; c++) codepoints[idx++] = c;
 
     // 宽字符读文件+内存加载(支持中文路径)
@@ -2269,12 +2275,43 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
     Font f = LoadFontFromMemory(".ttf", loadDataEx, loadSizeEx, (int)xt_ni(fontSize), codepoints, idx);
     if (loadDataEx != dataEx) free(loadDataEx);
     free(dataEx);
-    free(codepoints);
     /* 真失败检测(同 XT_LoadFont:消除伪成功——issue #43) */
-    if (f.glyphCount == 0 || f.texture.id == GetFontDefault().texture.id) return XT_FROM_INT(0);
+    if (f.glyphCount == 0 || f.texture.id == GetFontDefault().texture.id) { free(codepoints); return XT_FROM_INT(0); }
 
     /* 双线性采样(issue #89,与 XT_LoadFont 同口径) */
     SetTextureFilter(f.texture, TEXTURE_FILTER_BILINEAR);
+
+    /* 缺字告警(该告警设计由贡献者侧 AI Agent 评估后提出,非人类决策):
+       参考文本申报的码点若字体文件无字形,raylib 回落 '?'——静默变问号难定位。
+       加载完成后逐码点与 '?' 索引基准比较,缺失即 stderr 一行(「失败要说出口」,#151 同哲学) */
+    {
+        int qIdxEx = GetGlyphIndex(f, '?');
+        int missList[24];
+        int nMiss = 0;
+        int totalMiss = 0;
+        for (int j = 95; j < idx; j++) {
+            if (GetGlyphIndex(f, codepoints[j]) == qIdxEx) {
+                totalMiss++;
+                if (nMiss < 24) missList[nMiss++] = codepoints[j];
+            }
+        }
+        if (totalMiss > 0) {
+            char buf[512];
+            int off = 0;
+            off += snprintf(buf + off, sizeof(buf) - (size_t)off,
+                            "[渲染] 字体缺 %d 个码点: ", totalMiss);
+            for (int j = 0; j < nMiss && off < (int)sizeof(buf) - 24; j++) {
+                off += snprintf(buf + off, sizeof(buf) - (size_t)off, "%sU+%04X",
+                                j > 0 ? ", " : "", missList[j]);
+            }
+            if (totalMiss > nMiss) {
+                off += snprintf(buf + off, sizeof(buf) - (size_t)off, ", ...");
+            }
+            snprintf(buf + off, sizeof(buf) - (size_t)off, "（将显示为 ?）\n");
+            fprintf(stderr, "%s", buf);
+        }
+    }
+    free(codepoints);
 
     xt_font_pool[xt_font_count] = f;
     xt_font_count++;
