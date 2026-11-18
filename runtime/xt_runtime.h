@@ -79,6 +79,14 @@ typedef uintptr_t XTValue;
 /// 从标记后的 XTValue 提取原始整数
 #define XT_TO_INT(v)    ((int64_t)((intptr_t)(v) >> 1))
 
+// 整 的标记编码可表示域(issue #150/#153):值左移 1 位装箱,契约域为对称的 ±(2^62-1)
+// (-2^62 虽在二进制上可编码,但按对称口径同样视为越界,便于编译期/运行时同一判据)。
+// 超出该域的值不得再经 XT_FROM_INT 装箱(左移会静默溢进符号位);运行时入口
+// (解() 数字解析、整()/化() 数值转换等)必须在装箱前显式报错,而不是静默失真。
+#define XT_INT_TAG_MAX   ((int64_t)4611686018427387903LL)    ///<  2^62-1
+#define XT_INT_TAG_MIN   (-(int64_t)4611686018427387903LL)   ///< -(2^62-1)
+#define XT_INT_IN_TAG_RANGE(v) ((int64_t)(v) >= XT_INT_TAG_MIN && (int64_t)(v) <= XT_INT_TAG_MAX)
+
 /**
  * @brief 特殊常量定义 (均为偶数地址，LSB=0)
  * 

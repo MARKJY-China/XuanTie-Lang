@@ -172,6 +172,29 @@ static HANDLE g_sched_wake_event = NULL;
 #define SCHED_IS_MAIN_THREAD() (g_main_thread_id_set && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id))
 #endif
 
+// issue #142:主线程泵送不得被「永不结束的后台任务」永久卡住。
+// 主脚本到底后,main 末尾会调用 xt_scheduler_run() 排空线程池——有限任务必须执行完
+// (issue #31 / Test/99_异步裸spawn退出 锁定的语义);但异步块可以是常驻心跳/服务循环,
+// 线程池 busy_count 永远 > 0,旧实现「全静止才返回」会永不返回,进程退不出、主线程的
+// 通道操作也一起卡死。现改为**有界等待**:预算耗尽即放弃等待直接返回(不杀后台任务,
+// 进程退出时由 OS 回收),有限任务的完整 drain 语义保持不变。
+// 预算默认 2000ms,可用环境变量 XT_SCHED_DRAIN_MS 覆盖(毫秒;0=不等待;非法值回退默认)。
+#define XT_SCHED_DRAIN_DEFAULT_MS 2000
+static int64_t _sched_drain_budget_us(void) {
+    static int _inited = 0;
+    static int64_t _us = (int64_t)XT_SCHED_DRAIN_DEFAULT_MS * 1000;
+    if (!_inited) {
+        _inited = 1;
+        const char* env = getenv("XT_SCHED_DRAIN_MS");
+        if (env && *env) {
+            char* end = NULL;
+            long ms = strtol(env, &end, 10);
+            if (end && *end == '\0' && ms >= 0) { _us = (int64_t)ms * 1000; }
+        }
+    }
+    return _us;
+}
+
 // fiber 槽位回收:空闲栈(存 fiber 下标)。槽位在「完成且结果已消费」后入栈,spawn 优先复用,
 // 防止长线程序把池打满(原模型:槽位永不复用,累积超上限即显式报错退出)
 static int* g_fiber_free_ids = NULL;
@@ -276,16 +299,23 @@ XTValue xt_fiber_spawn(void* state, int (*poll)(void*)) {
     return (XTValue)(uintptr_t)(f - g_scheduler->fibers) + 1;
 }
 
-void xt_scheduler_run() {
+// 内部泵送实现:drain_budget_us = 主线程等待线程池静止的预算(0=不等待,负值按 0)。
+// 拆出预算参数供内部有界调用(如 选 的泵送按剩余超时截断),公开 ABI 仍是 xt_scheduler_run()。
+static void _sched_run_budget(int64_t drain_budget_us) {
     if (!g_scheduler) return;
+    if (drain_budget_us < 0) drain_budget_us = 0;
+    int64_t drain_deadline = 0;   // 0=尚未进入等待线程池的窗口;懒设为 now+budget
     // 纯线程池任务场景(fiber_count==0,如裸 spawn 异步块后直接走到 main 末尾):
     // 主线程须 drain 排队+执行中的任务,否则 return 后 main 退出会把 worker 上的任务杀掉(失语竞态)。
     // 仅主线程 drain:worker 内(xt_async_wait 驱动)若也等 busy,在途任务含 worker 自己→自死锁。
     // 自旋期间若有 fiber 被任务内嵌套 spawn,则转出主循环驱动之。
+    // issue #142:等待线程池静止改为有界,预算耗尽即返回(后台常驻任务不杀,进程退出清理)。
     if (g_scheduler->fiber_count == 0) {
         if (!SCHED_IS_MAIN_THREAD()) return;
+        drain_deadline = _sched_now_us() + drain_budget_us;
         while (xt_threadpool_busy_count() > 0) {
             if (g_scheduler->fiber_count > 0) break;
+            if (_sched_now_us() >= drain_deadline) break;
             _sched_sleep_us(1000);
         }
         if (g_scheduler->fiber_count == 0) return;
@@ -343,7 +373,14 @@ void xt_scheduler_run() {
                     // (xt_async_spawn;它们可能反过来经 xt_async_wait 自旋等 fiber DONE),
                     // 故不是阻塞等待,而是不置退出标志、继续主循环保持驱动 fiber。
                     // worker 内驱动不 drain:在途任务含 worker 自己,等 busy 即自死锁。
-                    if (SCHED_IS_MAIN_THREAD() && xt_threadpool_busy_count() > 0) { _sched_sleep_us(1000); }
+                    // issue #142:同样有界——预算耗尽即置退出标志返回,避免常驻后台任务把
+                    // main 末尾的 drain 变成永久循环(不杀任务,进程退出时 OS 回收)。
+                    if (SCHED_IS_MAIN_THREAD() && xt_threadpool_busy_count() > 0) {
+                        int64_t now = _sched_now_us();
+                        if (drain_deadline == 0) drain_deadline = now + drain_budget_us;
+                        if (now < drain_deadline) { _sched_sleep_us(1000); }
+                        else { SCHED_LOCK(); if (g_scheduler->ready_head == NULL) { g_scheduler->running = 0; } SCHED_UNLOCK(); }
+                    }
                     else { SCHED_LOCK(); if (g_scheduler->ready_head == NULL) { g_scheduler->running = 0; } SCHED_UNLOCK(); }
                 }
             } else { SCHED_UNLOCK(); _sched_sleep_us(next_wake < 100 ? 100 : next_wake); }
@@ -365,6 +402,9 @@ void xt_scheduler_run() {
         }
     }
 }
+
+// 公开入口(ABI 不变):主线程等待线程池的预算取默认值/环境变量(见 _sched_drain_budget_us)。
+void xt_scheduler_run() { _sched_run_budget(_sched_drain_budget_us()); }
 
 // 非阻塞单步泵:给「主线程长期自有循环」(如 UI 帧循环)一个驱动 fiber 的入口——
 // scheduler_run 全静止才返回,主线程进 UI 主循环后永不调用它,fiber 将整体饿死(实测:
@@ -1740,7 +1780,15 @@ int64_t xt_to_int(XTValue val) {
 }
 
 XTValue xt_convert_to_int(XTValue val) {
-    return XT_FROM_INT(xt_to_int(val));
+    // issue #150/#153:整 的标记编码域只有 ±(2^62-1),超域装箱会静默溢出成负数。
+    // 本入口没有 结果 容器可表达失败,按运行时「宁可报错退出」纪律显式诊断后退出。
+    int64_t v = xt_to_int(val);
+    if (!XT_INT_IN_TAG_RANGE(v)) {
+        fprintf(stderr, "[玄铁运行时错误] 整 转换: 整数 %lld 超出 整 可表示域 ±(2^62-1)\n",
+                (long long)v);
+        exit(1);
+    }
+    return XT_FROM_INT(v);
 }
 
 // 严格整数解析:允许首尾空白,其余必须全为可选符号+数字
@@ -1765,20 +1813,46 @@ static int _xt_parse_float_strict(const char* s, double* out) {
     return 1;
 }
 
+// issue #150/#153:整数超域统一失败结果(结果容器版 整()/化() 的失败通路)。
+// 契约:整 的可表示域为 ±(2^62-1)(标记编码 v<<1);越界必须显式失败,不得静默 XT_FROM_INT 溢出。
+static XTValue _xt_int_range_fail_result(int64_t v) {
+    char buf[192];
+    snprintf(buf, sizeof(buf),
+             "整数 %lld 超出 整 可表示域 ±(2^62-1)(标记编码 v<<1 会溢进符号位)",
+             (long long)v);
+    return (XTValue)xt_result_new(0, NULL, xt_string_new(buf));
+}
+
 // 结果 版类型转换(语义决策 2026-08-09:与解释器一致,失败返回 失败(...))
 XTValue xt_convert_to_int_result(XTValue val) {
-    if (XT_IS_INT(val)) return (XTValue)xt_result_new(1, (void*)val, NULL);
+    if (XT_IS_INT(val)) {
+        // 标记整数解码域理论上含 -2^62;契约取对称域 ±(2^62-1),边界外同样显式失败。
+        int64_t v = XT_TO_INT(val);
+        if (!XT_INT_IN_TAG_RANGE(v)) return _xt_int_range_fail_result(v);
+        return (XTValue)xt_result_new(1, (void*)val, NULL);
+    }
     if (val == XT_TRUE)  return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(1), NULL);
     if (val == XT_FALSE) return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(0), NULL);
     if (val == XT_NULL)  return (XTValue)xt_result_new(0, NULL, xt_string_new("无法将 空 转换为整数"));
     if (XT_IS_REAL_PTR(val)) {
         XTObject* obj = (XTObject*)val;
-        if (obj->type_id == XT_TYPE_INT)   return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(((XTInt*)val)->value), NULL);
-        if (obj->type_id == XT_TYPE_FLOAT) return (XTValue)xt_result_new(1, (void*)XT_FROM_INT((int64_t)((struct { XTObject h; double v; }*)val)->v), NULL);
+        if (obj->type_id == XT_TYPE_INT) {
+            int64_t v = ((XTInt*)val)->value;
+            if (!XT_INT_IN_TAG_RANGE(v)) return _xt_int_range_fail_result(v);
+            return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(v), NULL);
+        }
+        if (obj->type_id == XT_TYPE_FLOAT) {
+            int64_t v = (int64_t)((struct { XTObject h; double v; }*)val)->v;
+            if (!XT_INT_IN_TAG_RANGE(v)) return _xt_int_range_fail_result(v);
+            return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(v), NULL);
+        }
         if (obj->type_id == XT_TYPE_STRING) {
             const char* s = ((XTString*)val)->data;
             int64_t v = 0;
-            if (_xt_parse_int_strict(s, &v)) return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(v), NULL);
+            if (_xt_parse_int_strict(s, &v)) {
+                if (!XT_INT_IN_TAG_RANGE(v)) return _xt_int_range_fail_result(v);
+                return (XTValue)xt_result_new(1, (void*)XT_FROM_INT(v), NULL);
+            }
             char buf[256];
             snprintf(buf, sizeof(buf), "无法将 '%s' 转换为整数", s ? s : "");
             return (XTValue)xt_result_new(0, NULL, xt_string_new(buf));
@@ -3068,7 +3142,9 @@ XTValue xt_async_wait(XTValue task) {
     if (task >= 1 && task <= 0x10000 && g_scheduler) {
         int fid = (int)task - 1;
         if (fid >= 0 && fid < g_scheduler->fiber_count) {
-            xt_scheduler_run();
+            // 只驱动用户态调度器,不为「与本次等待无关的线程池在途任务」自旋等待
+            // (issue #142):预算 0 保证目标 fiber 完成后立即返回,常驻后台任务不拖慢 等待。
+            _sched_run_budget(0);
             // 若调度器正被其他线程驱动,run 会立即返回;自旋等待目标 fiber 完成。
             // (主线程路径下 run 真实执行至全局静止,目标必为 DONE,此循环通常零迭代)
             while (g_scheduler->fibers[fid].status != XT_FIBER_DONE
@@ -3186,13 +3262,15 @@ XTValue xt_channel_receive_blocking(XTValue chan_val, int timeout_ms) {
         if (timeout_ms == 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); return XT_NULL; }
         // 主线程无限等待:先泵一轮用户态调度器,避免 fiber 被阻塞的主线程饿死。
         // 重入保护:调度器运行中(fiber 内普通函数间接调用到此处)不泵,退化为条件变量等待。
+        // issue #142:这里只做「泵送一次/事件驱动」——预算 0,绝不为线程池在途任务自旋等待;
+        // 常驻后台任务不再把主线程的通道接收卡死,数据到达由 recv_cv 正常唤醒。
         if (timeout_ms < 0 && g_scheduler && !g_scheduler->running
             && g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id)) {
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
-            xt_scheduler_run();
+            _sched_run_budget(0);
             XT_CHAN_MUTEX_LOCK(&c->mu);
             if (c->size > 0) break;
-            // 泵完仍无数据:后续数据只能来自线程池任务,落入普通条件变量阻塞
+            // 泵完仍无数据:落入普通条件变量阻塞(线程池任务发送时会 signal recv_cv)
         }
         /* -1 = 无限等待:Windows 侧经模转换为 INFINITE,POSIX 侧宏内走 pthread_cond_wait */
         long wait_ms = (timeout_ms < 0) ? -1 : (long)timeout_ms;
@@ -3220,10 +3298,11 @@ int xt_channel_send_blocking(XTValue chan_val, XTValue val, int timeout_ms) {
     while (c->size >= c->capacity) {
         if (timeout_ms == 0) { XT_CHAN_MUTEX_UNLOCK(&c->mu); return 0; }
         // 主线程无限等待:先泵一轮用户态调度器,避免 fiber 消费者被饿死(与 收 对称)
+        // issue #142:同上,只泵送一次/事件驱动(预算 0),不为线程池在途任务自旋等待
         if (timeout_ms < 0 && g_scheduler && !g_scheduler->running
             && g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id)) {
             XT_CHAN_MUTEX_UNLOCK(&c->mu);
-            xt_scheduler_run();
+            _sched_run_budget(0);
             XT_CHAN_MUTEX_LOCK(&c->mu);
             if (c->size < c->capacity) break;
         }
@@ -3262,13 +3341,12 @@ int xt_channel_select(XTValue* channels, int count, int timeout_ms) {
         if (timeout_ms == 0) return -1;
         // 主线程泵送(D1方案A):等待期间驱动用户态调度器,否则 fiber 发送者永不被驱动(实测丢数据:
         // 选([道],3000) 等到超时也收不到 fiber 发的数据)。与 收/发 的无限等待泵送同款设计。
-        // 代价:scheduler_run 全静止才返回——fiber 含长睡眠/线程池有在途任务时,返回可能晚于
-        // 用户给的 timeout(超时变粗);泵送耗时计入扣减,到期仍未就绪返回 -1。
-        // 后续可升级为带 deadline 的单步驱动(C方案),兼顾驱动与超时精度。
+        // issue #142:泵送只做「驱动 fiber + 就绪事件」,预算 0——绝不为线程池在途任务自旋等待,
+        // 否则常驻后台任务会把 选 的等待拖成永久(旧缺陷)。超时/轮询仍由下方条件变量循环负责。
         if (g_scheduler && !g_scheduler->running
             && g_main_thread_id != 0 && XT_THREAD_EQ(XT_THREAD_SELF(), g_main_thread_id)) {
             int64_t pump_t0 = _sched_now_us();
-            xt_scheduler_run();
+            _sched_run_budget(0);
             int64_t pump_cost_ms = (_sched_now_us() - pump_t0) / 1000;
             // 泵完先扫一次:数据可能已在泵送期间到达
             int ready_idx = -1;
@@ -5220,6 +5298,15 @@ XTValue xt_string_trim_end(XTValue str_val) {
 /**
  * @brief JSON 序列化 (递归实现)
  */
+
+// issue #148:型实例在运行时就是字典(xuantie_compiler 编译实例化:xt_dict_new + __类型__
+// + 属性 + 全部方法以 XT_TYPE_FUNCTION 对象存同一字典)。序列化契约定为「纯字段快照」:
+// 字典里的函数值(方法/构造器)不是数据,跳过整个键值对,不得落 "object" 兜底脏键。
+// 数组元素位置的函数值无法跳过索引,按 null 序列化(见 default 分支)。
+static int xt_json_value_unserializable(XTValue v) {
+    return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_FUNCTION;
+}
+
 XTString* xt_json_serialize(XTValue val) {
     if (XT_IS_INT(val)) return xt_int_to_string(XT_TO_INT(val));
     if (val == XT_TRUE) return xt_string_new("true");
@@ -5284,6 +5371,8 @@ XTString* xt_json_serialize(XTValue val) {
             for (size_t i = 0; i < dict->capacity; i++) {
                 XTDictEntry* entry = dict->buckets[i];
                 while (entry) {
+                    // issue #148:方法/构造器等函数值不入序列化输出
+                    if (xt_json_value_unserializable(entry->value)) { entry = entry->next; continue; }
                     if (!first) {
                         XTString* comma = xt_string_new(", ");
                         XTString* temp = xt_string_concat(res, comma);
@@ -5304,6 +5393,8 @@ XTString* xt_json_serialize(XTValue val) {
             XTString* final_res = xt_string_concat(res, suffix);
             xt_release((XTValue)res); xt_release((XTValue)suffix); return final_res;
         }
+        // issue #148:函数值不可序列化(数组元素需占位,用 null;字典键值对在 dict 分支跳过)
+        case XT_TYPE_FUNCTION: return xt_string_new("null");
         default: return xt_string_new("\"object\"");
     }
 }
@@ -5329,8 +5420,10 @@ static XTString* xt_json_serialize_indent(XTValue val, int depth) {
         count = (int)((XTArray*)val)->length;
     } else {
         XTDict* d = (XTDict*)val;
+        // issue #148:函数值键值对不参与输出,计数与换行/逗号按「实际输出条目」算
         for (size_t i = 0; i < d->capacity; i++)
-            for (XTDictEntry* e = d->buckets[i]; e; e = e->next) count++;
+            for (XTDictEntry* e = d->buckets[i]; e; e = e->next)
+                if (!xt_json_value_unserializable(e->value)) count++;
     }
     if (count == 0) return xt_string_new(isArr ? "[]" : "{}");
 
@@ -5350,7 +5443,9 @@ static XTString* xt_json_serialize_indent(XTValue val, int depth) {
     } else {
         XTDict* d = (XTDict*)val;
         for (size_t i = 0; i < d->capacity; i++) {
-            for (XTDictEntry* e = d->buckets[i]; e; e = e->next, idx++) {
+            for (XTDictEntry* e = d->buckets[i]; e; e = e->next) {
+                // issue #148:方法/构造器函数值不入快照
+                if (xt_json_value_unserializable(e->value)) continue;
                 XTString* ind = xt_json_indent_unit(depth + 1);
                 XTString* key = xt_json_serialize(e->key);
                 XTString* vs = xt_json_serialize_indent(e->value, depth + 1);
@@ -5360,6 +5455,7 @@ static XTString* xt_json_serialize_indent(XTValue val, int depth) {
                 res = xt_string_concat(res, vs);
                 res = xt_string_concat(res, xt_string_new(idx + 1 < count ? ",\n" : "\n"));
                 xt_release((XTValue)ind); xt_release((XTValue)key); xt_release((XTValue)vs);
+                idx++;
             }
         }
     }
@@ -5392,6 +5488,15 @@ XTValue xt_json_serialize_with(XTValue val, XTValue opt) {
 static void json_skip_ws(const char** p) {
     while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
 }
+
+// 解析失败粘滞标志:数字越界等「必须让整份 解() 失败」的错误用(issue #150/#153)。
+// 置位后容器解析提前收手,xt_json_deserialize 统一返回 空,不再把坏值当 null 塞进结果。
+// 线程局部:解() 可被多个异步任务并发调用,解析状态不得跨线程串扰。
+#if defined(_MSC_VER)
+static __declspec(thread) int g_json_parse_failed = 0;
+#else
+static __thread int g_json_parse_failed = 0;
+#endif
 
 static XTValue json_parse_value(const char** p);
 
@@ -5441,21 +5546,63 @@ static XTString* json_parse_string(const char** p) {
     return res;
 }
 
+// 严格解析 JSON 整数 token(可选负号 + 十进制数字):返回 1=成功,0=超出 int64 或语法非法。
+// 前导零按数值处理("000123"=123);有效位 >19 直接判越界;最终域检查在调用方做。
+static int _xt_json_parse_int64(const char* start, size_t len, int64_t* out) {
+    size_t i = 0;
+    int neg = 0;
+    if (i < len && start[i] == '-') { neg = 1; i++; }
+    while (i < len && start[i] == '0') i++;   // 跳过前导零
+    if (i == len) { *out = 0; return 1; }     // "0"/"-0"/"000" 等
+    size_t sig = len - i;
+    if (sig > 19) return 0;                   // int64 十进制有效位最多 19 位
+    char buf[24];
+    size_t n = 0;
+    if (neg) buf[n++] = '-';
+    memcpy(buf + n, start + i, sig);
+    n += sig;
+    buf[n] = '\0';
+    errno = 0;
+    char* end = NULL;
+    long long v = strtoll(buf, &end, 10);
+    if (errno == ERANGE || end == buf || *end != '\0') return 0;
+    *out = (int64_t)v;
+    return 1;
+}
+
 static XTValue json_parse_number(const char** p) {
     const char* start = *p;
+    int is_int = 1;   // 纯整数 token(无小数/指数)才走 整 的标记编码域检查
     if (**p == '-') (*p)++;
     while (**p >= '0' && **p <= '9') (*p)++;
     if (**p == '.') {
+        is_int = 0;
         (*p)++;
         while (**p >= '0' && **p <= '9') (*p)++;
     }
     if (**p == 'e' || **p == 'E') {
+        is_int = 0;
         (*p)++;
         if (**p == '+' || **p == '-') (*p)++;
         while (**p >= '0' && **p <= '9') (*p)++;
     }
     size_t len = *p - start;
     if (len == 0 || (len == 1 && start[0] == '-')) { *p = start; return XT_NULL; }
+    if (is_int) {
+        int64_t iv = 0;
+        // issue #150/#153:整 的标记编码域 ±(2^62-1)。越界必须显式诊断并让整份解析失败,
+        // 绝不静默 XT_FROM_INT 溢出(旧行为:2^62 读成 -2^62,无任何提示)。
+        if (!_xt_json_parse_int64(start, len, &iv) || !XT_INT_IN_TAG_RANGE(iv)) {
+            int show = (int)(len > 64 ? 64 : len);
+            fprintf(stderr,
+                    "[玄铁运行时错误] 解(): 整数值超出 整 可表示域 ±(2^62-1): %.*s\n",
+                    show, start);
+            g_json_parse_failed = 1;
+            return XT_NULL;
+        }
+        return XT_FROM_INT(iv);
+    }
+    // 浮点/指数 token:保持既有简化语义(不做浮点装箱,issue #145 另行跟踪)
     char num[128];
     if (len >= sizeof(num)) len = sizeof(num) - 1;
     memcpy(num, start, len); num[len] = '\0';
@@ -5477,6 +5624,8 @@ static XTValue json_parse_object(const char** p) {
         (*p)++;
         json_skip_ws(p);
         XTValue val = json_parse_value(p);
+        // issue #150/#153:越界整数等粘滞错误 → 整份解析失败(不把 null 当值塞进结果)
+        if (g_json_parse_failed) { xt_release((XTValue)key); xt_release(dict); return XT_NULL; }
         xt_dict_set(dict, (XTValue)key, val);
         xt_release((XTValue)key);
         if (val != XT_NULL && !XT_IS_INT(val)) xt_release(val);
@@ -5496,6 +5645,7 @@ static XTValue json_parse_array(const char** p) {
     while (1) {
         json_skip_ws(p);
         XTValue val = json_parse_value(p);
+        if (g_json_parse_failed) { xt_release(arr); return XT_NULL; }   // issue #150/#153
         xt_array_append(arr, val);
         if (val != XT_NULL && !XT_IS_INT(val)) xt_release(val);
         json_skip_ws(p);
@@ -5532,7 +5682,20 @@ XTValue xt_json_deserialize(XTString* json_str) {
     }
     if (json_str->length == 0) return XT_NULL;
     const char* p = json_str->data;
-    return json_parse_value(&p);
+    // issue #151:入口跳过 UTF-8 BOM(EF BB BF)。解() 的入参是任意字符串,入口容错属入口自身
+    // 责任(Windows 记事本/部分编辑器默认给 UTF-8 加 BOM);文件.读 的字节语义不变。
+    if (json_str->length >= 3
+        && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
+        p += 3;
+    }
+    g_json_parse_failed = 0;
+    XTValue result = json_parse_value(&p);
+    if (g_json_parse_failed) {
+        // issue #150/#153:数字越界等硬错误 → 整份 解() 返回 空(stderr 已有诊断行)
+        if (result != XT_NULL && !XT_IS_INT(result)) xt_release(result);
+        return XT_NULL;
+    }
+    return result;
 }
 
 // --- 通用算术与位运算 Fallback ---
