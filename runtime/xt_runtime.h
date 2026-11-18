@@ -377,6 +377,15 @@ XTValue xt_stdout_write(XTValue s_val);
 /// 原样写 stderr(stdio 协议下的日志通道)
 XTValue xt_stderr_write(XTValue s_val);
 
+// --- TUI 控制台后端(字符流 库 Windows 读键路径;非 Windows 为 stub) ---
+/// 进轮询模式:Windows 设置控制台模式,返 1=成功/0=无控制台;非 Windows 恒 0
+XTValue xt_tui_enter(void);
+/// 恢复进入前控制台模式;可重复调用;非 Windows no-op
+void xt_tui_leave(void);
+/// 读 TUI 输入并翻译为 VT 字节流;每次返恰好 0 或 1 字节:
+/// ""=超时心跳,单字节串=一个字节,空=终端不可用(非 Windows stub 恒返 "")
+XTValue xt_tui_read_n(XTValue timeout_ms);
+
 /// 启动子进程并返回标准输入可写的进程句柄(结果容器)
 XTValue xt_process_start(XTValue cmd_val);
 XTValue xt_process_write(XTValue process_val, XTValue content_val);

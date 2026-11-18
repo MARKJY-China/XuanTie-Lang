@@ -1,4 +1,4 @@
-
+﻿
 # 过滤所有 .exe 文件
 _test_*
 *_traced.xt
@@ -105,6 +105,8 @@ INVESTIGATION_xt.md
 # 性能基准:跑分器与对照语料必须入库(第 37 行 *.py 会连 run.py 一起挡掉,
 # 首次提交时 bench/run.py 与 bench/cases/python_bench.py 因此被静默跳过)
 !/bench/**/*.py
+# 字符流库 pty 测试脚本必须入库(同受第 37 行 *.py 全局忽略影响)
+!/lib/字符流/测试/**/*.py
 # vendor 源码被 test* 规则误伤的单文件白名单(DSH 内核构建输入)
 !ide/vendor/dsh/packages/dsh-tools/src/testing.ts
 
@@ -124,3 +126,7 @@ INVESTIGATION_xt.md
 !.env.example
 # AI 文档层生成物(gen-ai-docs 输出)
 /dist/
+
+# Python 编译缓存(Oracle:避免测试脚本的 __pycache__ 被误提交)
+__pycache__/
+*.pyc

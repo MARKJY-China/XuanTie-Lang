@@ -71,6 +71,17 @@ jobs:
         shell: bash
         run: bash tools/bootstrap_check.sh
 
+      # 字符流库 Windows 门禁:编译层验证(本仓库唯一能自动覆盖 Windows 控制台后端的门禁;
+      # 真实控制台 TUI 交互需人工在 Windows Terminal 验收,CI 不起交互窗口)。
+      # 用 Python 脚本而非 bash 一行:subprocess 以 Unicode 传中文路径/参数,三平台同一口径;
+      # 产物名在脚本内固定为 ASCII(Windows MinGW 窄字符路径打不开中文产物名)。
+      - name: "字符流库编译门禁(Windows 后端:-jc/-lib 库检查 + 示例 -sc 链接;不跑 TUI)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        shell: bash
+        run: python lib/字符流/测试/编译冒烟.py --xtc build/xtc_s4.exe
+
       - name: 语法着色自检(TextMate 规则边界,防「是否完成」类标识符被劈开)
         env:
           PYTHONUTF8: "1"
@@ -151,6 +162,19 @@ jobs:
         shell: bash
         run: bash tools/bootstrap_check.sh
 
+      # 字符流库门禁(darwin):编译冒烟 + Unix pty 用例(示例全事件 / C1 读字节超时)。
+      # pty 用例带 --require-pty:该平台必须有 pty,静默跳过视为失败。
+      - name: "字符流库门禁(darwin:编译冒烟 + pty 全事件 + C1 契约)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        shell: bash
+        run: |
+          set -e
+          python3 lib/字符流/测试/编译冒烟.py --xtc build/xtc_s4.exe
+          python3 lib/字符流/测试/示例驱动.py --xtc build/xtc_s4.exe --require-pty
+          python3 lib/字符流/测试/C1读字节超时.py --xtc build/xtc_s4.exe --require-pty
+
       - name: "铁铺 CLI 冒烟(issue #49:POSIX 分支真跑一次——构建 + lc 硬判 + ql)"
         shell: bash
         run: |
@@ -217,6 +241,19 @@ jobs:
       - name: 自举链 + DDC 门禁(linux:硬判逐字节一致)
         shell: bash
         run: bash tools/bootstrap_check.sh
+
+      # 字符流库门禁(linux):编译冒烟 + Unix pty 用例(示例全事件 / C1 读字节超时)。
+      # pty 用例带 --require-pty:该平台必须有 pty,静默跳过视为失败。
+      - name: "字符流库门禁(linux:编译冒烟 + pty 全事件 + C1 契约)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        shell: bash
+        run: |
+          set -e
+          python3 lib/字符流/测试/编译冒烟.py --xtc build/xtc_s4.exe
+          python3 lib/字符流/测试/示例驱动.py --xtc build/xtc_s4.exe --require-pty
+          python3 lib/字符流/测试/C1读字节超时.py --xtc build/xtc_s4.exe --require-pty
 
       - name: "铁铺 CLI 冒烟(issue #49:POSIX 分支——含 Linux 专属 sha256sum 取哈希通道)"
         shell: bash
