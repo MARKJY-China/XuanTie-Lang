@@ -3789,6 +3789,388 @@ XTValue xt_stdin_read_n(XTValue n_val) {
     return (XTValue)str;
 }
 
+// ============================================================
+// TUI 控制台后端(字符流 库的 Windows 第二条读键路径)
+// 背景:Unix 路径用 stty + /dev/tty 轮询;Windows 没有这两样,改由本组函数
+// 用 ReadConsoleInputW 事件模型读键鼠,再翻译成 VT 字节流——库的解析器
+// (取键节/取事件)不区分平台,只消费字节,因此 Windows 分支必须与 Unix
+// 终端产生的字节流同构。不依赖 ConPTY、不创建子进程。
+// 接口契约(玄铁侧 外 函 声明见 lib/字符流/字符流.xt):
+//   xt_tui_enter()       进入轮询模式:保存并设置控制台模式、清陈旧输入。
+//                        Windows 返 1=成功(轮询),0=无控制台/设置失败(调用方回退);
+//                        非 Windows 恒返 0(stub,库不走该分支)。
+//   xt_tui_leave()       恢复进入前模式;可重复调用;非 Windows no-op。
+//   xt_tui_read_n(毫秒)  每次返恰好 0 或 1 字节的 字:
+//                        ""=本轮超时(心跳);单字节串=一个字节;空=终端不可用。
+//                        非 Windows 返 ""(stub)。
+// 为什么逐字节:库的取键节按 1 字节粒度消费,多字节序列(方向键/鼠标)必须
+// 排队分多次交出,否则与 Unix 每次 read 1 字节的节奏不一致,解析就会错位。
+// ============================================================
+#ifdef _WIN32
+
+// 老版 MinGW 头文件不一定定义 VTP(Windows 10 1511+ 才有);数值是公开约定
+#ifndef ENABLE_VIRTUAL_TERMINAL_PROCESSING
+#define ENABLE_VIRTUAL_TERMINAL_PROCESSING 0x0004
+#endif
+
+#define XT_TUI_QUEUE_CAP 4096   // 翻译后待消费字节的环形队列容量
+
+// 控制台句柄与进入前模式(leave 恢复用)
+static HANDLE s_tui_in = INVALID_HANDLE_VALUE;
+static HANDLE s_tui_out = INVALID_HANDLE_VALUE;
+static DWORD  s_tui_saved_in_mode = 0;
+static DWORD  s_tui_saved_out_mode = 0;
+static int    s_tui_out_mode_saved = 0;   // 输出句柄模式是否已保存(输出被重定向时为 0)
+static int    s_tui_active = 0;           // 是否已进入(leave 需配对)
+
+// 鼠标上一次按键状态(判按下/释放用,取 Windows 按钮位)
+static DWORD s_tui_prev_buttons = 0;
+
+// UTF-16 代理对跨事件暂存(控制台一次 KEY_EVENT 只给一个 UTF-16 码元)
+static WCHAR s_tui_high_surrogate = 0;
+
+static unsigned char s_tui_queue[XT_TUI_QUEUE_CAP];
+static size_t s_tui_qhead = 0;
+static size_t s_tui_qtail = 0;
+static size_t s_tui_qlen = 0;
+
+static void _xt_tui_queue_reset(void) {
+    s_tui_qhead = 0;
+    s_tui_qtail = 0;
+    s_tui_qlen = 0;
+}
+
+// 入队 1 字节;满则丢最旧,绝不越界(鼠标/粘贴突发可能超过容量)
+static void _xt_tui_qpush(unsigned char b) {
+    if (s_tui_qlen == XT_TUI_QUEUE_CAP) {
+        s_tui_qhead = (s_tui_qhead + 1) % XT_TUI_QUEUE_CAP;
+        s_tui_qlen--;
+    }
+    s_tui_queue[s_tui_qtail] = b;
+    s_tui_qtail = (s_tui_qtail + 1) % XT_TUI_QUEUE_CAP;
+    s_tui_qlen++;
+}
+
+static int _xt_tui_qpop(unsigned char* out) {
+    if (s_tui_qlen == 0) return 0;
+    *out = s_tui_queue[s_tui_qhead];
+    s_tui_qhead = (s_tui_qhead + 1) % XT_TUI_QUEUE_CAP;
+    s_tui_qlen--;
+    return 1;
+}
+
+static void _xt_tui_qpush_str(const char* s) {
+    while (*s) _xt_tui_qpush((unsigned char)*s++);
+}
+
+// 码点 → UTF-8 入队。非法标量值(孤立代理/越界)替换为 U+FFFD,不静默丢字符。
+static void _xt_tui_qpush_cp(unsigned int cp) {
+    if (cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) cp = 0xFFFD;
+    if (cp < 0x80) {
+        _xt_tui_qpush((unsigned char)cp);
+    } else if (cp < 0x800) {
+        _xt_tui_qpush((unsigned char)(0xC0 | (cp >> 6)));
+        _xt_tui_qpush((unsigned char)(0x80 | (cp & 0x3F)));
+    } else if (cp < 0x10000) {
+        _xt_tui_qpush((unsigned char)(0xE0 | (cp >> 12)));
+        _xt_tui_qpush((unsigned char)(0x80 | ((cp >> 6) & 0x3F)));
+        _xt_tui_qpush((unsigned char)(0x80 | (cp & 0x3F)));
+    } else {
+        _xt_tui_qpush((unsigned char)(0xF0 | (cp >> 18)));
+        _xt_tui_qpush((unsigned char)(0x80 | ((cp >> 12) & 0x3F)));
+        _xt_tui_qpush((unsigned char)(0x80 | ((cp >> 6) & 0x3F)));
+        _xt_tui_qpush((unsigned char)(0x80 | (cp & 0x3F)));
+    }
+}
+
+// 无字符键(UnicodeChar==0)的 VT 序列映射(xterm 约定)。
+// 方向键对应库的 1001-1004;Home/End/编辑键/功能键库当前只按 CSI 终字节报,
+// 但字节格式必须与 Unix 终端一致,后续库扩展键码时不用再动后端。
+static const char* _xt_tui_key_seq(WORD vk) {
+    switch (vk) {
+    case VK_UP:     return "\x1b[A";
+    case VK_DOWN:   return "\x1b[B";
+    case VK_RIGHT:  return "\x1b[C";
+    case VK_LEFT:   return "\x1b[D";
+    case VK_HOME:   return "\x1b[H";
+    case VK_END:    return "\x1b[F";
+    case VK_INSERT: return "\x1b[2~";
+    case VK_DELETE: return "\x1b[3~";
+    case VK_PRIOR:  return "\x1b[5~";   // PageUp
+    case VK_NEXT:   return "\x1b[6~";   // PageDown
+    case VK_F1:     return "\x1b[11~";
+    case VK_F2:     return "\x1b[12~";
+    case VK_F3:     return "\x1b[13~";
+    case VK_F4:     return "\x1b[14~";
+    case VK_F5:     return "\x1b[15~";
+    case VK_F6:     return "\x1b[17~";
+    case VK_F7:     return "\x1b[18~";
+    case VK_F8:     return "\x1b[19~";
+    case VK_F9:     return "\x1b[20~";
+    case VK_F10:    return "\x1b[21~";
+    case VK_F11:    return "\x1b[23~";
+    case VK_F12:    return "\x1b[24~";
+    default:        return NULL;
+    }
+}
+
+// SGR 1006 鼠标序列入队:ESC[<b;x;yM(按下) / ...m(释放)。x/y 从 0 起转 1 起。
+static void _xt_tui_emit_sgr(unsigned int button, SHORT x, SHORT y, int release) {
+    char seq[40];
+    snprintf(seq, sizeof(seq), "\x1b[<%u;%d;%d%c",
+             button, (int)x + 1, (int)y + 1, release ? 'm' : 'M');
+    _xt_tui_qpush_str(seq);
+}
+
+// 键盘事件 → 字节/序列入队。
+// bKeyDown=假 的抬起事件一律忽略;wRepeatCount 是 Windows 的连发合并计数,
+// 必须按次数重复产出,否则按住键的连发会丢。
+static void _xt_tui_handle_key(const KEY_EVENT_RECORD* k) {
+    if (!k->bKeyDown) return;
+    int repeat = (int)k->wRepeatCount;
+    if (repeat <= 0) repeat = 1;
+    if (repeat > 64) repeat = 64;   // 防御异常事件灌爆队列(正常连发远小于此)
+    WCHAR wc = k->uChar.UnicodeChar;
+
+    // 上一事件存下的 UTF-16 上半代理:优先配对成完整码点
+    if (s_tui_high_surrogate) {
+        WCHAR hi = s_tui_high_surrogate;
+        s_tui_high_surrogate = 0;
+        if (wc >= 0xDC00 && wc <= 0xDFFF) {
+            unsigned int cp = 0x10000u +
+                (((unsigned int)(hi - 0xD800)) << 10) +
+                (unsigned int)(wc - 0xDC00);
+            _xt_tui_qpush_cp(cp);
+            return;
+        }
+        _xt_tui_qpush_cp(0xFFFD);   // 上半代理后没有下半:补替换符,不静默吞
+    }
+
+    if (wc != 0) {
+        if (wc >= 0xD800 && wc <= 0xDBFF) {   // 上半代理:暂存等下一事件配对
+            s_tui_high_surrogate = wc;
+            return;
+        }
+        if (wc >= 0xDC00 && wc <= 0xDFFF) {   // 孤立下半代理
+            _xt_tui_qpush_cp(0xFFFD);
+            return;
+        }
+        // 普通 Unicode 字符按 UTF-8 入队。含 Enter=13/Tab=9/Backspace=8/ESC=27,
+        // 也含 Ctrl+字母的控制字符 1..26(PROCESSED 已关,原始字节就是它)。
+        for (int i = 0; i < repeat; i++) _xt_tui_qpush_cp((unsigned int)wc);
+        return;
+    }
+
+    // UnicodeChar==0:方向键/编辑键/功能键等无字符键
+    const char* seq = _xt_tui_key_seq(k->wVirtualKeyCode);
+    if (seq) {
+        for (int i = 0; i < repeat; i++) _xt_tui_qpush_str(seq);
+        return;
+    }
+
+    // Enter/Tab/Backspace/ESC 兜底原始字节(个别宿主这些键 UnicodeChar 给 0)
+    unsigned char raw = 0;
+    switch (k->wVirtualKeyCode) {
+    case VK_RETURN: raw = 13; break;
+    case VK_TAB:    raw = 9;  break;
+    case VK_BACK:   raw = 8;  break;
+    case VK_ESCAPE: raw = 27; break;
+    default: break;
+    }
+    if (raw != 0) {
+        for (int i = 0; i < repeat; i++) _xt_tui_qpush(raw);
+        return;
+    }
+
+    // Ctrl+字母:个别宿主不填控制字符,这里补 1..26
+    if ((k->dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) &&
+        k->wVirtualKeyCode >= 'A' && k->wVirtualKeyCode <= 'Z') {
+        unsigned char ctl = (unsigned char)(k->wVirtualKeyCode - 'A' + 1);
+        for (int i = 0; i < repeat; i++) _xt_tui_qpush(ctl);
+    }
+}
+
+// 鼠标事件 → SGR 1006 序列。库的解析器只认按下/释放/滚轮;纯移动、焦点、
+// 窗口大小事件一律忽略(但"移动同时按键状态变化"的事件必须上报,否则
+// 按住键拖动的首次按下/末次释放会被吞)。
+static void _xt_tui_handle_mouse(const MOUSE_EVENT_RECORD* m) {
+    DWORD flags = m->dwEventFlags;
+    unsigned int mods = 0;   // SGR 修饰位:Shift+4 / Alt+8 / Ctrl+16
+    if (m->dwControlKeyState & SHIFT_PRESSED) mods += 4;
+    if (m->dwControlKeyState & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) mods += 8;
+    if (m->dwControlKeyState & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) mods += 16;
+
+    if (flags & MOUSE_HWHEELED) return;   // 横向滚轮:库未约定事件,忽略
+    if (flags & MOUSE_WHEELED) {
+        int delta = (int)(short)HIWORD(m->dwButtonState);   // 高 16 位是有符号滚动量
+        if (delta > 0)      _xt_tui_emit_sgr(64 + mods, m->dwMousePosition.X, m->dwMousePosition.Y, 0);  // 上滚
+        else if (delta < 0) _xt_tui_emit_sgr(65 + mods, m->dwMousePosition.X, m->dwMousePosition.Y, 0);  // 下滚
+        return;   // 滚轮不改变按键按下状态
+    }
+
+    DWORD cur = m->dwButtonState &
+        (FROM_LEFT_1ST_BUTTON_PRESSED | RIGHTMOST_BUTTON_PRESSED | FROM_LEFT_2ND_BUTTON_PRESSED);
+    if ((flags & MOUSE_MOVED) && cur == s_tui_prev_buttons) return;   // 纯移动:忽略
+
+    // SGR 按钮号:左=0 中=1 右=2;Windows 按钮位:左 0x1 右 0x2 中 0x4
+    const DWORD win_bits[3] = {
+        FROM_LEFT_1ST_BUTTON_PRESSED,
+        FROM_LEFT_2ND_BUTTON_PRESSED,
+        RIGHTMOST_BUTTON_PRESSED,
+    };
+    for (int i = 0; i < 3; i++) {
+        int was = (s_tui_prev_buttons & win_bits[i]) != 0;
+        int now = (cur & win_bits[i]) != 0;
+        if (now && !was) {
+            _xt_tui_emit_sgr((unsigned int)i + mods, m->dwMousePosition.X, m->dwMousePosition.Y, 0);   // 按下 M
+        } else if (!now && was) {
+            _xt_tui_emit_sgr((unsigned int)i + mods, m->dwMousePosition.X, m->dwMousePosition.Y, 1);   // 释放 m
+        }
+    }
+    s_tui_prev_buttons = cur;
+}
+
+/**
+ * @brief 进 TUI 轮询模式(Windows 控制台;非 Windows stub)
+ * 玄铁侧: 外 函 xt_tui_enter(): 整
+ */
+XTValue xt_tui_enter(void) {
+    if (s_tui_active) return XT_FROM_INT(1);   // 重复进入:保留首次保存的模式,直接成功
+    HANDLE hin = GetStdHandle(STD_INPUT_HANDLE);
+    HANDLE hout = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD in_mode = 0;
+    if (hin == NULL || hin == INVALID_HANDLE_VALUE) return XT_FROM_INT(0);
+    if (!GetConsoleMode(hin, &in_mode)) return XT_FROM_INT(0);   // 管道/重定向:无控制台,调用方回退
+
+    s_tui_in = hin;
+    s_tui_saved_in_mode = in_mode;
+    DWORD new_in = ENABLE_EXTENDED_FLAGS | ENABLE_WINDOW_INPUT | ENABLE_MOUSE_INPUT;
+    if (!SetConsoleMode(s_tui_in, new_in)) {
+        fprintf(stderr, "字符流: 警告: 无法设置控制台输入模式 (错误码 %lu),回退阻塞模式\n",
+                (unsigned long)GetLastError());
+        s_tui_in = INVALID_HANDLE_VALUE;
+        return XT_FROM_INT(0);
+    }
+
+    // 输出端:追加 VT 处理,否则 ?1049h/清屏/光标/鼠标开关只会被当普通字符打印。
+    // 输出被重定向(非控制台)时降级——输入轮询仍可用,渲染字节原样写出。
+    s_tui_out = INVALID_HANDLE_VALUE;
+    s_tui_out_mode_saved = 0;
+    if (hout != NULL && hout != INVALID_HANDLE_VALUE) {
+        DWORD out_mode = 0;
+        if (GetConsoleMode(hout, &out_mode)) {
+            s_tui_saved_out_mode = out_mode;
+            s_tui_out_mode_saved = 1;
+            if (SetConsoleMode(hout, out_mode | ENABLE_PROCESSED_OUTPUT |
+                                     ENABLE_VIRTUAL_TERMINAL_PROCESSING)) {
+                s_tui_out = hout;
+            } else {
+                fprintf(stderr, "字符流: 警告: 控制台输出不支持 VT 处理 (错误码 %lu),渲染可能错乱\n",
+                        (unsigned long)GetLastError());
+                s_tui_out = hout;   // 模式没设上也要在 leave 时还原(设原值无害)
+            }
+        }
+    }
+
+    FlushConsoleInputBuffer(s_tui_in);   // 清陈旧输入,避免进 TUI 首拍吃到历史按键
+    _xt_tui_queue_reset();
+    s_tui_high_surrogate = 0;
+    s_tui_prev_buttons = 0;
+    s_tui_active = 1;
+    return XT_FROM_INT(1);
+}
+
+/**
+ * @brief 恢复进入前控制台模式(Windows;非 Windows no-op)
+ * 玄铁侧: 外 函 xt_tui_leave(): 空
+ */
+void xt_tui_leave(void) {
+    if (!s_tui_active) return;
+    // 先把 stdout 缓冲里的 VT 恢复序列真正写到控制台,再关 VTP——
+    // 否则缓冲后落地的 ESC 序列会变字面字符(库已按"先打印后 leave"调用,这里兜底)。
+    fflush(stdout);
+    if (s_tui_in != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(s_tui_in, s_tui_saved_in_mode);   // 尽力恢复,失败也不抛
+    }
+    if (s_tui_out_mode_saved && s_tui_out != INVALID_HANDLE_VALUE) {
+        SetConsoleMode(s_tui_out, s_tui_saved_out_mode);
+    }
+    s_tui_in = INVALID_HANDLE_VALUE;
+    s_tui_out = INVALID_HANDLE_VALUE;
+    s_tui_out_mode_saved = 0;
+    s_tui_active = 0;
+    _xt_tui_queue_reset();
+    s_tui_high_surrogate = 0;
+}
+
+/**
+ * @brief 读 TUI 输入并翻译成 VT 字节流;每次返恰好 0 或 1 字节
+ * 返回:""=本轮超时(心跳);单字节串=一个字节;空=终端不可用。
+ * 玄铁侧: 外 函 xt_tui_read_n(超时: 整): 字
+ */
+XTValue xt_tui_read_n(XTValue timeout_ms) {
+    if (!XT_IS_INT(timeout_ms)) return XT_NULL;
+    int64_t timeout = XT_TO_INT(timeout_ms);
+    if (timeout < 0) timeout = 0;
+    if (timeout > 600000) timeout = 600000;   // 上限 10 分钟,防溢出/失控
+    if (!s_tui_active || s_tui_in == INVALID_HANDLE_VALUE) return XT_NULL;
+
+    unsigned char byte;
+    uint64_t deadline = GetTickCount64() + (uint64_t)timeout;
+    for (;;) {
+        if (_xt_tui_qpop(&byte)) {
+            return (XTValue)xt_string_new_len((const char*)&byte, 1);   // 二进制安全(含 NUL 字节)
+        }
+
+        DWORD avail = 0;
+        if (!GetNumberOfConsoleInputEvents(s_tui_in, &avail)) return XT_NULL;
+        if (avail > 0) {
+            INPUT_RECORD recs[32];
+            DWORD want = avail > 32 ? 32 : avail;
+            DWORD got = 0;
+            if (!ReadConsoleInputW(s_tui_in, recs, want, &got)) return XT_NULL;
+            if (got == 0) return XT_NULL;   // 防御:报告有事件却读不到,视为终端异常,避免空转
+            for (DWORD i = 0; i < got; i++) {
+                switch (recs[i].EventType) {
+                case KEY_EVENT:   _xt_tui_handle_key(&recs[i].Event.KeyEvent); break;
+                case MOUSE_EVENT: _xt_tui_handle_mouse(&recs[i].Event.MouseEvent); break;
+                default: break;   // 窗口大小/焦点/菜单事件忽略
+                }
+            }
+            continue;   // 回队首:本批翻译出的字节立即消费
+        }
+
+        uint64_t now = GetTickCount64();
+        if (now >= deadline) return (XTValue)xt_string_new("");   // 超时:空转心跳
+        DWORD wr = WaitForSingleObject(s_tui_in, (DWORD)(deadline - now));
+        if (wr == WAIT_TIMEOUT) return (XTValue)xt_string_new("");
+        if (wr == WAIT_FAILED) {
+            // 个别宿主(远程会话/兼容层)的控制台输入句柄不可等待:退化为短睡轮询,
+            // 由下一轮 GetNumberOfConsoleInputEvents 判可用性,不误报"断"。
+            Sleep(1);
+        } else if (wr != WAIT_OBJECT_0 && wr != WAIT_ABANDONED) {
+            return XT_NULL;
+        }
+    }
+}
+
+#else  // !_WIN32
+
+// 非 Windows:Unix 路径由库自身 stty + /dev/tty 完成;这里只保证符号可链接。
+// 玄铁侧: 外 函 xt_tui_enter(): 整
+XTValue xt_tui_enter(void) { return XT_FROM_INT(0); }
+
+// 玄铁侧: 外 函 xt_tui_leave(): 空
+void xt_tui_leave(void) { }
+
+// 玄铁侧: 外 函 xt_tui_read_n(超时: 整): 字  (stub:库不会走该分支,返心跳空串)
+XTValue xt_tui_read_n(XTValue timeout_ms) {
+    (void)timeout_ms;
+    return (XTValue)xt_string_new("");
+}
+
+#endif  // _WIN32
+
 /**
  * @brief 原样写 stdout(不加换行,写后即 flush——协议帧独占 stdout 时用)
  * 玄铁侧: 外 函 xt_stdout_write(串: 字)
