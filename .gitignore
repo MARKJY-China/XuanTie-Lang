@@ -1,4 +1,4 @@
-﻿
+
 # 过滤所有 .exe 文件
 _test_*
 *_traced.xt
