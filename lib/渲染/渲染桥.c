@@ -261,7 +261,7 @@ static int xt_window_closed = 0;
 static char* xt_shot_pending = NULL;
 static int   xt_in_draw_frame = 0;
 
-void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
+static void xt_init_window_impl(uintptr_t w, uintptr_t h, uintptr_t title, int hidden) {
 #if defined(__APPLE__)
     xt_83_selfheal();  /* issue #83:非 ASCII 路径自愈,必须在 GLFW 初始化之前 */
 #endif
@@ -269,7 +269,11 @@ void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     // 拼合,不开多重采样时边缘台阶感严重)。须在 InitWindow 前设置;取不到多样本
     // 帧缓冲时 GLFW 自动降级,不影响功能。
     // HIGHDPI:macOS Retina/Linux 高分屏的 2x framebuffer(issue #22)。须与 MSAA 同批设置。
-    SetConfigFlags(0x00000020 | 0x00002000); // FLAG_MSAA_4X_HINT | FLAG_WINDOW_HIGHDPI
+    // HIDDEN(issue #155):离屏出帧(逐帧截图导出视频)不弹出可见窗口;raylib 在
+    // InitWindow 前按位或记账,故与 MSAA/HIGHDPI 同批设置即可。
+    unsigned int flags = 0x00000020u | 0x00002000u; // FLAG_MSAA_4X_HINT | FLAG_WINDOW_HIGHDPI
+    if (hidden) flags |= 0x00000080u;               // FLAG_WINDOW_HIDDEN
+    SetConfigFlags(flags);
 #ifdef _WIN32
     // Windows Per-Monitor DPI Aware V2(PMv2,Win10 1703+):窗口跨不同 DPI 显示器拖动时
     // 由应用按当前显示器 DPI 自行重排,避免系统按缩放比例强制拉伸模糊。V1 及更老档位
@@ -286,6 +290,21 @@ void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
     InitWindow((int)xt_ni(w), (int)xt_ni(h), xt_get_cstr(title));
     xt_window_close_requested = 0; /* 新窗口重置"请求关闭"标志(issue #47) */
     xt_window_closed = 0; /* 新窗口重置"已关闭"幂等标记(issue #56) */
+}
+
+// 可见窗口(默认行为,保持既有语义不变)
+void XT_InitWindow(uintptr_t w, uintptr_t h, uintptr_t title) {
+    xt_init_window_impl(w, h, title, 0);
+}
+
+// 隐藏窗口(issue #155):渲染/截图照常,窗口不显示;适合逐帧导出视频、无人值守批处理。
+void XT_InitWindowHidden(uintptr_t w, uintptr_t h, uintptr_t title) {
+    xt_init_window_impl(w, h, title, 1);
+}
+
+// 当前窗口是否处于隐藏状态(测试/诊断用;0/1 契约)
+uintptr_t XT_IsWindowHidden(void) {
+    return IsWindowHidden() ? 1 : 0;
 }
 
 uintptr_t XT_WindowShouldClose(void) {

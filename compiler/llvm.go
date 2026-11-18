@@ -129,7 +129,7 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 		moduleAliases:   make(map[string]bool),
 		declaredGlobals: make(map[string]bool),
 		arenaPoolRegs:   make(map[string]bool),
-	constNames:     make(map[string]bool),
+		constNames:      make(map[string]bool),
 		allocaSet:       make(map[string]bool),
 		funcReturnTypes: make(map[string]string),
 	}
@@ -147,6 +147,14 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	// 文件.删(路径):带重试的删除,结果容器带错误(与自举编译器一侧对齐)
 	c.symbolTable["文件.删"] = SymbolInfo{AddrReg: "@\"xt_file_delete\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["文件.删"] = true
+	for name, symbol := range map[string]string{
+		"进程.启动": "xt_process_start", "进程.写": "xt_process_write",
+		"进程.刷新": "xt_process_flush", "进程.关闭输入": "xt_process_close_input",
+		"进程.等退出": "xt_process_wait",
+	} {
+		c.symbolTable[name] = SymbolInfo{AddrReg: "@\"" + symbol + "\"", IsGlobal: true, Type: "i64"}
+		c.declaredGlobals[name] = true
+	}
 	c.symbolTable["道"] = SymbolInfo{AddrReg: "@\"xt_channel_new\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["道"] = true
 	// 字节(容量):字节流缓冲构造。XTC 侧有专门实例化分支(GSC 此前缺 → 字节(...) 会编译成
@@ -339,6 +347,11 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare i64 @xt_file_mtime(i64)\n")
 	res.WriteString("declare i64 @xt_utf8_invalid_offset(i64)\n")
 	res.WriteString("declare i64 @xt_file_delete(i64)\n")
+	res.WriteString("declare i64 @xt_process_start(i64)\n")
+	res.WriteString("declare i64 @xt_process_write(i64, i64)\n")
+	res.WriteString("declare i64 @xt_process_flush(i64)\n")
+	res.WriteString("declare i64 @xt_process_close_input(i64)\n")
+	res.WriteString("declare i64 @xt_process_wait(i64)\n")
 	res.WriteString("declare i64 @xt_http_request(i64)\n")
 	res.WriteString("declare i64 @xt_math_random(i64)\n")
 	res.WriteString("declare i64 @xt_math_sqrt(i64)\n")
@@ -1953,6 +1966,35 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					c.emit("  call void @xt_release(i64 %s)", xtVal)
 					return res, "i64", ""
 				}
+			} else if ident.Value == "进程" {
+				require := map[string]int{"启动": 1, "写": 2, "刷新": 1, "关闭输入": 1, "等退出": 1}
+				want, ok := require[e.Member.Value]
+				if !ok {
+					c.addError("进程 没有成员 %q", e.Member.Value)
+					return "0", "i64", ""
+				}
+				if len(e.Arguments) != want {
+					c.addError("进程.%s 需要 %d 个参数,实际 %d 个", e.Member.Value, want, len(e.Arguments))
+					return "0", "i64", ""
+				}
+				runtimeName := map[string]string{
+					"启动": "xt_process_start", "写": "xt_process_write", "刷新": "xt_process_flush",
+					"关闭输入": "xt_process_close_input", "等退出": "xt_process_wait",
+				}[e.Member.Value]
+				args := []string{}
+				argRegs := []string{}
+				for _, a := range e.Arguments {
+					valReg, valType, _ := c.compileExpression(a)
+					xtVal := c.ensureI64(valReg, valType)
+					argRegs = append(argRegs, xtVal)
+					args = append(args, "i64 "+xtVal)
+				}
+				res := c.nextReg()
+				c.emit("  %s = call i64 @%s(%s)", res, runtimeName, strings.Join(args, ", "))
+				for _, r := range argRegs {
+					c.emit("  call void @xt_release(i64 %s)", r)
+				}
+				return res, "i64", ""
 			} else if ident.Value == "时" {
 				if e.Member.Value == "现" {
 					res := c.nextReg()
@@ -1989,8 +2031,8 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 					fnName := map[string]string{
 						"平方根": "xt_math_sqrt",
 						"绝对值": "xt_math_abs",
-						"正弦": "xt_math_sin",
-						"余弦": "xt_math_cos",
+						"正弦":  "xt_math_sin",
+						"余弦":  "xt_math_cos",
 						"最大值": "xt_math_max",
 						"最小值": "xt_math_min",
 					}[e.Member.Value]

@@ -237,13 +237,13 @@ fi
 cp $ROOT/runtime/xt_runtime.c $ROOT/runtime/xt_runtime.h \
    $ROOT/runtime/xt_threadpool.c $ROOT/runtime/xt_threadpool.h \
    $ROOT/runtime/xt_net.c $ROOT/runtime/xt_net.h \
-   $ROOT/runtime/xt_tls.c $ROOT/runtime/xt_scheduler.h $PKG/runtime/
+   $ROOT/runtime/xt_tls.c $ROOT/runtime/xt_process.c $ROOT/runtime/xt_scheduler.h $PKG/runtime/
 if [ "$PLATFORM" = "windows" ]; then
-  for f in xt_runtime xt_threadpool xt_net xt_tls; do
+  for f in xt_runtime xt_threadpool xt_net xt_tls xt_process; do
     clang -target x86_64-w64-windows-gnu -O2 -c $ROOT/runtime/$f.c -o $PKG/runtime/$f.o
   done
 else
-  for f in xt_runtime xt_threadpool xt_net xt_tls; do
+  for f in xt_runtime xt_threadpool xt_net xt_tls xt_process; do
     clang -O2 -c $ROOT/runtime/$f.c -o $PKG/runtime/$f.o
   done
 fi

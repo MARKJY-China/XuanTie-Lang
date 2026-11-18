@@ -79,6 +79,14 @@ typedef uintptr_t XTValue;
 /// 从标记后的 XTValue 提取原始整数
 #define XT_TO_INT(v)    ((int64_t)((intptr_t)(v) >> 1))
 
+// 整 的标记编码可表示域(issue #150/#153):值左移 1 位装箱,契约域为对称的 ±(2^62-1)
+// (-2^62 虽在二进制上可编码,但按对称口径同样视为越界,便于编译期/运行时同一判据)。
+// 超出该域的值不得再经 XT_FROM_INT 装箱(左移会静默溢进符号位);运行时入口
+// (解() 数字解析、整()/化() 数值转换等)必须在装箱前显式报错,而不是静默失真。
+#define XT_INT_TAG_MAX   ((int64_t)4611686018427387903LL)    ///<  2^62-1
+#define XT_INT_TAG_MIN   (-(int64_t)4611686018427387903LL)   ///< -(2^62-1)
+#define XT_INT_IN_TAG_RANGE(v) ((int64_t)(v) >= XT_INT_TAG_MIN && (int64_t)(v) <= XT_INT_TAG_MAX)
+
 /**
  * @brief 特殊常量定义 (均为偶数地址，LSB=0)
  * 
@@ -111,6 +119,7 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_SOCKET    14 ///< 网络 socket
 #define XT_TYPE_FILE      15 ///< 流式文件句柄
 #define XT_TYPE_HANDLE    16 ///< 通用外部句柄(原生包用;带析构钩子)
+#define XT_TYPE_PROCESS   17 ///< 子进程句柄(标准输入可写;关闭并等待释放)
 
 // 内存管理常量
 #define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
@@ -242,6 +251,22 @@ typedef struct XTFile {
     int closed;       // 是否已关闭(关闭幂等;回收时自动关闭)
 } XTFile;
 
+typedef struct XTProcess {
+    XTObject header;
+    FILE* input;
+    int input_closed;
+    int input_error;
+    int waited;
+    int wait_error;
+    int exit_code;
+    char error[256];
+#ifdef _WIN32
+    HANDLE process;
+#else
+    intptr_t process_id;
+#endif
+} XTProcess;
+
 /**
  * @brief 通用外部句柄 (批次五;原生包用——payload 任意,ARC 回收时经析构钩子释放)
  * 例:SQLite 连接(dtor=sqlite3_close 包装)。dtor 为 NULL 时回收只放对象本体。
@@ -351,6 +376,14 @@ XTValue xt_stdin_read_n(XTValue n_val);
 XTValue xt_stdout_write(XTValue s_val);
 /// 原样写 stderr(stdio 协议下的日志通道)
 XTValue xt_stderr_write(XTValue s_val);
+
+/// 启动子进程并返回标准输入可写的进程句柄(结果容器)
+XTValue xt_process_start(XTValue cmd_val);
+XTValue xt_process_write(XTValue process_val, XTValue content_val);
+XTValue xt_process_flush(XTValue process_val);
+XTValue xt_process_close_input(XTValue process_val);
+/// 等待子进程;.成功 表示等待操作成功,.值 为实际退出码
+XTValue xt_process_wait(XTValue process_val);
 
 // --- 对象创建与管理 ---
 

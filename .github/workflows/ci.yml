@@ -107,6 +107,12 @@ jobs:
           PYTHONIOENCODING: "utf-8"
         run: python tools/regress.py --xtc build/xtc_s4.exe --skip 96_,97_,98_,77_
 
+      - name: "专项门禁:跨单元 ABI(#140)/库编译 -lib(#141)/隐藏窗口编译(#155)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: python tools/check_abi_lib.py --xtc build/xtc_s4.exe
+
       - name: 失败时上传回归日志
         if: failure()
         uses: actions/upload-artifact@v4

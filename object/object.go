@@ -35,6 +35,7 @@ const (
 	HTTP_RES_OBJ     ObjectType = "HTTP_RES"
 	BYTES_OBJ        ObjectType = "BYTES"
 	FFI_FUNCTION_OBJ ObjectType = "FFI_FUNCTION"
+	PROCESS_OBJ      ObjectType = "PROCESS"
 	INTERNAL_ENV_OBJ ObjectType = "INTERNAL_ENV"
 )
 
