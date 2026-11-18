@@ -2487,7 +2487,19 @@ XTString* xt_float_to_string(double val) {
  * @brief 核心对象反射转字符串接口
  */
 XTString* xt_obj_to_string(XTValue val) {
-    if (XT_IS_INT(val)) return xt_int_to_string(XT_TO_INT(val));
+    if (XT_IS_INT(val)) {
+        /* issue #153:合法语言值的标记整数必在 ±(2^62-1) 域内;越域只可能来自违反
+           外 函 ABI 的 C 返回值。旧实现会把这种值算术右移后当普通整数打印(如
+           0x7FFF... 打成 -1),这里显式拒绝,避免错值静默穿透到 字()/拼接。 */
+        int64_t raw = XT_TO_INT(val);
+        if (!XT_INT_IN_TAG_RANGE(raw)) {
+            fprintf(stderr,
+                    "[玄铁运行时错误] 字():标记整数解码超出 整 可表示域 ±(2^62-1)\n"
+                    "  该值很可能来自违反 ABI 的外 函 返回值;C 侧须用 XT_FROM_INT(值) 且值在域内。\n");
+            exit(1);
+        }
+        return xt_int_to_string(raw);
+    }
     if (val == XT_TRUE) return xt_string_new("真");
     if (val == XT_FALSE) return xt_string_new("假");
     if (val == XT_NULL) return xt_string_new("空");
@@ -5720,6 +5732,86 @@ XTValue xt_string_append(XTValue a, XTValue b) {
     return xt_add(a, b);
 }
 
+/* issue #153:整的标记编码域为 ±(2^62-1)。加法/减法/乘法/位移/位运算都可能把结果
+   推出域外(旧实现直接 XT_FROM_INT 左移,静默溢出成负值);这里统一做域检查。
+   在 尝试 块内抛可捕捉异常,否则明确 stderr + exit(1)——与除零路径同纪律,绝不静默。 */
+static void xt_int_overflow(const char* op) {
+    if (xt_exc_active()) {
+        /* xt_exc_raise 保存的是指针,必须传字符串常量,不能传栈缓冲 */
+        xt_exc_raise("整数溢出(超出可表示域 ±2^62-1)");
+        return;
+    }
+    fprintf(stderr,
+            "[玄铁运行时错误] 整数运算溢出:%s 的结果超出 整 可表示域 ±(2^62-1)\n"
+            "  整 采用 tagged 编码 (值<<1)|1,越域会静默失真;本实现选择显式报错。\n",
+            op);
+    exit(1);
+}
+
+static XTValue xt_int_checked(const char* op, int64_t v) {
+    if (!XT_INT_IN_TAG_RANGE(v)) {
+        xt_int_overflow(op);
+        return XT_FROM_INT(0);   /* 尝试块路径:raise 后返回占位,语句轮询会转异常 */
+    }
+    return XT_FROM_INT(v);
+}
+
+/* 编译器静态整数内联路径的带检查原生运算(issue #153):
+   入参/返回都是未标记 raw i64;溢出/越域时与装箱路径同一套 fail-loud 语义。 */
+static int64_t xt_int_raw_checked(const char* op, int64_t v) {
+    if (!XT_INT_IN_TAG_RANGE(v)) {
+        xt_int_overflow(op);
+        return 0;
+    }
+    return v;
+}
+
+int64_t xt_int_add_raw(int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_add_overflow(a, b, &r)) { xt_int_overflow("加"); return 0; }
+    return xt_int_raw_checked("加", r);
+}
+
+int64_t xt_int_sub_raw(int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_sub_overflow(a, b, &r)) { xt_int_overflow("减"); return 0; }
+    return xt_int_raw_checked("减", r);
+}
+
+int64_t xt_int_mul_raw(int64_t a, int64_t b) {
+    int64_t r;
+    if (__builtin_mul_overflow(a, b, &r)) { xt_int_overflow("乘"); return 0; }
+    return xt_int_raw_checked("乘", r);
+}
+
+int64_t xt_int_div_raw(int64_t a, int64_t b) {
+    if (b == 0) return 0;   /* 编译器快路径零除数已分流到 xt_div;这里兜底返 0 */
+    if (a == INT64_MIN && b == -1) { xt_int_overflow("除"); return 0; }
+    return xt_int_raw_checked("除", a / b);
+}
+
+int64_t xt_int_mod_raw(int64_t a, int64_t b) {
+    if (b == 0) return 0;
+    if (a == INT64_MIN && b == -1) return 0;   /* 余数恒 0 */
+    return xt_int_raw_checked("模", a % b);
+}
+
+int64_t xt_int_and_raw(int64_t a, int64_t b) { return xt_int_raw_checked("位与", a & b); }
+int64_t xt_int_or_raw(int64_t a, int64_t b)  { return xt_int_raw_checked("位或", a | b); }
+int64_t xt_int_xor_raw(int64_t a, int64_t b) { return xt_int_raw_checked("位异或", a ^ b); }
+
+int64_t xt_int_not_raw(int64_t a) { return xt_int_raw_checked("取反", ~a); }
+
+int64_t xt_int_shl_raw(int64_t a, int64_t sh) {
+    if (sh < 0 || sh >= 63) { xt_int_overflow("左移"); return 0; }
+    return xt_int_raw_checked("左移", (int64_t)((uint64_t)a << (unsigned)sh));
+}
+
+int64_t xt_int_shr_raw(int64_t a, int64_t sh) {
+    if (sh < 0 || sh >= 63) { xt_int_overflow("右移"); return 0; }
+    return xt_int_raw_checked("右移", a >> (unsigned)sh);
+}
+
 XTValue xt_add(XTValue a, XTValue b) {
     // 字符串拼接分派:任一侧为字符串对象 → 字符串化拼接(与 & 运算符、GSC 解释器语义一致)。
     // 编译器对静态不可证纯整数的 boxed i64 一律落到这里——boxed 可能是字符串指针,
@@ -5738,7 +5830,11 @@ XTValue xt_add(XTValue a, XTValue b) {
         if (sbOwned) xt_release((XTValue)sb);
         return (XTValue)r;
     }
-    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) + XT_TO_INT(b));
+    if (XT_IS_INT(a) && XT_IS_INT(b)) {
+        int64_t r;
+        if (__builtin_add_overflow(XT_TO_INT(a), XT_TO_INT(b), &r)) { xt_int_overflow("加"); return XT_FROM_INT(0); }
+        return xt_int_checked("加", r);
+    }
     // 浮点分派:任一侧浮点对象且两侧均可数值化(整/浮混合提升)→ double 运算,结果装箱浮点
     {
         double _da, _db;
@@ -5748,11 +5844,19 @@ XTValue xt_add(XTValue a, XTValue b) {
             return (XTValue)xt_float_new(_da + _db);
         }
     }
-    return XT_FROM_INT(xt_to_int(a) + xt_to_int(b));
+    {
+        int64_t r;
+        if (__builtin_add_overflow(xt_to_int(a), xt_to_int(b), &r)) { xt_int_overflow("加"); return XT_FROM_INT(0); }
+        return xt_int_checked("加", r);
+    }
 }
 
 XTValue xt_sub(XTValue a, XTValue b) {
-    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) - XT_TO_INT(b));
+    if (XT_IS_INT(a) && XT_IS_INT(b)) {
+        int64_t r;
+        if (__builtin_sub_overflow(XT_TO_INT(a), XT_TO_INT(b), &r)) { xt_int_overflow("减"); return XT_FROM_INT(0); }
+        return xt_int_checked("减", r);
+    }
     {
         double _da, _db;
         int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
@@ -5761,11 +5865,19 @@ XTValue xt_sub(XTValue a, XTValue b) {
             return (XTValue)xt_float_new(_da - _db);
         }
     }
-    return XT_FROM_INT(xt_to_int(a) - xt_to_int(b));
+    {
+        int64_t r;
+        if (__builtin_sub_overflow(xt_to_int(a), xt_to_int(b), &r)) { xt_int_overflow("减"); return XT_FROM_INT(0); }
+        return xt_int_checked("减", r);
+    }
 }
 
 XTValue xt_mul(XTValue a, XTValue b) {
-    if (XT_IS_INT(a) && XT_IS_INT(b)) return XT_FROM_INT(XT_TO_INT(a) * XT_TO_INT(b));
+    if (XT_IS_INT(a) && XT_IS_INT(b)) {
+        int64_t r;
+        if (__builtin_mul_overflow(XT_TO_INT(a), XT_TO_INT(b), &r)) { xt_int_overflow("乘"); return XT_FROM_INT(0); }
+        return xt_int_checked("乘", r);
+    }
     {
         double _da, _db;
         int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
@@ -5774,7 +5886,11 @@ XTValue xt_mul(XTValue a, XTValue b) {
             return (XTValue)xt_float_new(_da * _db);
         }
     }
-    return XT_FROM_INT(xt_to_int(a) * xt_to_int(b));
+    {
+        int64_t r;
+        if (__builtin_mul_overflow(xt_to_int(a), xt_to_int(b), &r)) { xt_int_overflow("乘"); return XT_FROM_INT(0); }
+        return xt_int_checked("乘", r);
+    }
 }
 
 XTValue xt_div(XTValue a, XTValue b) {
@@ -5791,15 +5907,19 @@ XTValue xt_div(XTValue a, XTValue b) {
             return (XTValue)xt_float_new(_da / _db);
         }
     }
-    int64_t vb = xt_to_int(b);
-    if (vb == 0) {
-        if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
-        return XT_FROM_INT(0);
-    }
-    return XT_FROM_INT(xt_to_int(a) / vb);
-}
+     int64_t vb = xt_to_int(b);
+     if (vb == 0) {
+         if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
+         return XT_FROM_INT(0);
+     }
+     {
+         int64_t va = xt_to_int(a);
+         if (va == INT64_MIN && vb == -1) { xt_int_overflow("除"); return XT_FROM_INT(0); }
+         return xt_int_checked("除", va / vb);
+     }
+ }
 
-XTValue xt_mod(XTValue a, XTValue b) {
+ XTValue xt_mod(XTValue a, XTValue b) {
     {
         double _da, _db;
         int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
@@ -5817,27 +5937,38 @@ XTValue xt_mod(XTValue a, XTValue b) {
         if (xt_exc_active()) { xt_exc_raise("除数不能为零"); }
         return XT_FROM_INT(0);
     }
-    return XT_FROM_INT(xt_to_int(a) % vb);
+    {
+        int64_t va = xt_to_int(a);
+        if (va == INT64_MIN && vb == -1) return XT_FROM_INT(0);   /* 余数恒 0,不越域 */
+        return xt_int_checked("模", va % vb);
+    }
 }
 
 XTValue xt_bit_and(XTValue a, XTValue b) {
-    return XT_FROM_INT(xt_to_int(a) & xt_to_int(b));
+    return xt_int_checked("位与", xt_to_int(a) & xt_to_int(b));
 }
 
 XTValue xt_bit_or(XTValue a, XTValue b) {
-    return XT_FROM_INT(xt_to_int(a) | xt_to_int(b));
+    return xt_int_checked("位或", xt_to_int(a) | xt_to_int(b));
 }
 
 XTValue xt_bit_xor(XTValue a, XTValue b) {
-    return XT_FROM_INT(xt_to_int(a) ^ xt_to_int(b));
+    return xt_int_checked("位异或", xt_to_int(a) ^ xt_to_int(b));
 }
 
 XTValue xt_bit_shl(XTValue a, XTValue b) {
-    return XT_FROM_INT(xt_to_int(a) << xt_to_int(b));
+    int64_t sh = xt_to_int(b);
+    if (sh < 0 || sh >= 63) { xt_int_overflow("左移"); return XT_FROM_INT(0); }
+    {
+        uint64_t raw = (uint64_t)xt_to_int(a) << (unsigned)sh;
+        return xt_int_checked("左移", (int64_t)raw);
+    }
 }
 
 XTValue xt_bit_shr(XTValue a, XTValue b) {
-    return XT_FROM_INT(xt_to_int(a) >> xt_to_int(b));
+    int64_t sh = xt_to_int(b);
+    if (sh < 0 || sh >= 63) { xt_int_overflow("右移"); return XT_FROM_INT(0); }
+    return xt_int_checked("右移", xt_to_int(a) >> (unsigned)sh);
 }
 
 /**

@@ -1351,6 +1351,18 @@
         此.写出("declare i64 @\"xt_mul\"(i64, i64)")
         此.写出("declare i64 @\"xt_div\"(i64, i64)")
         此.写出("declare i64 @\"xt_mod\"(i64, i64)")
+        // issue #153:静态整数内联路径的带域检查原生运算(入参/返回 raw i64)
+        此.写出("declare i64 @\"xt_int_add_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_sub_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_mul_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_div_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_mod_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_and_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_or_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_xor_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_not_raw\"(i64)")
+        此.写出("declare i64 @\"xt_int_shl_raw\"(i64, i64)")
+        此.写出("declare i64 @\"xt_int_shr_raw\"(i64, i64)")
         此.写出("declare double @\"xt_f64_of\"(i64)")
         此.写出("declare i64 @\"xt_fneg\"(i64)")
         // 尝试/捕捉(轮询式):深度记账 + 语句级轮询 + 捕捉清标志 + 消息读取
@@ -3483,13 +3495,13 @@
                 } 抑 节点.操作符 == "取反" {
                     若 翻译右[1] == "raw_i64" {
                         设 res = 此.取新寄存器()
-                        此.写出("  " & res & " = xor i64 " & 此.符(翻译右[0]) & ", -1")
+                        此.写出("  " & res & " = call i64 @\"xt_int_not_raw\"(i64 " & 此.符(翻译右[0]) & ")")
                         设 _r = [res, "raw_i64"]
                         返 _r
                     }
                     设 val = 此.确保RawI64(翻译右[0], 翻译右[1])
                     设 notVal = 此.取新寄存器()
-                    此.写出("  " & notVal & " = xor i64 " & val & ", -1")
+                    此.写出("  " & notVal & " = call i64 @\"xt_int_not_raw\"(i64 " & val & ")")
                     设 res = 此.取新寄存器()
                     // 重新装箱：(notVal << 1) | 1
                     设 shifted = 此.取新寄存器()
@@ -7886,6 +7898,16 @@
                 此.写出("  " & _pfA & " = ashr i64 " & _lXt2 & ", 1")
                 设 _pfB = 此.取新寄存器()
                 此.写出("  " & _pfB & " = ashr i64 " & _rXt2 & ", 1")
+                // issue #153:原生运算必须走带域检查的 raw 助手(+ - * / %),否则两个
+                // 合法标记整数相加/相乘可能越过 ±2^62-1 后静默回绕。
+                设 _pfRawFn = ""
+                匹配 _pf码 {
+                    "add" -> { _pfRawFn = "xt_int_add_raw" }
+                    "sub" -> { _pfRawFn = "xt_int_sub_raw" }
+                    "mul" -> { _pfRawFn = "xt_int_mul_raw" }
+                    "sdiv" -> { _pfRawFn = "xt_int_div_raw" }
+                    "srem" -> { _pfRawFn = "xt_int_mod_raw" }
+                }
                 // 除/模:除数为零时**不得执行**原生指令(裸 sdiv/srem 遇零是 UB/信号),故用 br 提前分流到
                 // 运行时调用;select 只会事后选值,挡不住那次执行——这正是 3258029 当初删掉内联的原因。
                 // 两块落点一致:各自把结果 store 进 _pfRes 后并流,后续回标/使用逻辑无需改动。
@@ -7897,7 +7919,7 @@
                     此.写出("  br i1 " & _pfZ & ", label %" & _pf零L & ", label %" & _pf算L)
                     此.写出(_pf算L & ":")
                     设 _pfRaw = 此.取新寄存器()
-                    此.写出("  " & _pfRaw & " = " & _pf码 & " i64 " & _pfA & ", " & _pfB)
+                    此.写出("  " & _pfRaw & " = call i64 @\"" & _pfRawFn & "\"(i64 " & _pfA & ", i64 " & _pfB & ")")
                     设 _pfT = 此.取新寄存器()
                     此.写出("  " & _pfT & " = shl i64 " & _pfRaw & ", 1")
                     设 _pfO = 此.取新寄存器()
@@ -7913,7 +7935,7 @@
                     此.写出("  br label %" & _pfMergeL)
                 } 否 {
                     设 _pfRaw = 此.取新寄存器()
-                    此.写出("  " & _pfRaw & " = " & _pf码 & " i64 " & _pfA & ", " & _pfB)
+                    此.写出("  " & _pfRaw & " = call i64 @\"" & _pfRawFn & "\"(i64 " & _pfA & ", i64 " & _pfB & ")")
                     设 _pfT = 此.取新寄存器()
                     此.写出("  " & _pfT & " = shl i64 " & _pfRaw & ", 1")
                     设 _pfO = 此.取新寄存器()
@@ -8160,6 +8182,28 @@
                 "==" -> { 指令 = "icmp eq" }
                 "!=" -> { 指令 = "icmp ne" }
             }
+            // issue #153:整数 + - * 与位运算/移位不能裸内联——结果可能越过 tagged
+            // 编码域(±2^62-1),旧实现直接 i64 运算后静默回绕。改调运行时的 raw
+            // 带检查版本(仍免装箱,只多一次边界检查);比较仍内联。
+            设 _raw函数 = ""
+            匹配 节点.中缀运算符 {
+                "+" -> { _raw函数 = "xt_int_add_raw" }
+                "-" -> { _raw函数 = "xt_int_sub_raw" }
+                "*" -> { _raw函数 = "xt_int_mul_raw" }
+                "位与" -> { _raw函数 = "xt_int_and_raw" }
+                "位或" -> { _raw函数 = "xt_int_or_raw" }
+                "异或" -> { _raw函数 = "xt_int_xor_raw" }
+                "左移" -> { _raw函数 = "xt_int_shl_raw" }
+                "右移" -> { _raw函数 = "xt_int_shr_raw" }
+            }
+            若 _raw函数 != "" {
+                设 左原 = 此.确保RawI64(左寄存器, 左类型)
+                设 右原 = 此.确保RawI64(右寄存器, 右类型)
+                设 res = 此.取新寄存器()
+                此.写出("  " & res & " = call i64 @\"" & _raw函数 & "\"(i64 " & 左原 & ", i64 " & 右原 & ")")
+                设 _r = [res, "raw_i64"]
+                返 _r
+            }
             若 指令 != "" {
                 设 左原 = 此.确保RawI64(左寄存器, 左类型)
                 设 右原 = 此.确保RawI64(右寄存器, 右类型)
@@ -8378,6 +8422,27 @@
                 设 _ra = [_ar, "i64"]
                 返 _ra
             }
+        }
+
+        // issue #153:位运算/移位同样可能越过 tagged 域(如 1 << 62、负值位或),
+        // 统一走运行时的 raw 带检查助手;比较(icmp)不在其中,仍可内联。
+        设 _位函数 = ""
+        匹配 指令 {
+            "and" -> { _位函数 = "xt_int_and_raw" }
+            "or" -> { _位函数 = "xt_int_or_raw" }
+            "xor" -> { _位函数 = "xt_int_xor_raw" }
+            "shl" -> { _位函数 = "xt_int_shl_raw" }
+            "ashr" -> { _位函数 = "xt_int_shr_raw" }
+        }
+        若 _位函数 != "" {
+            设 左原 = 此.确保RawI64(左寄存器, 左类型)
+            设 右原 = 此.确保RawI64(右寄存器, 右类型)
+            设 res = 此.取新寄存器()
+            此.写出("  " & res & " = call i64 @\"" & _位函数 & "\"(i64 " & 左原 & ", i64 " & 右原 & ")")
+            此.写_释放_xt(左寄存器, 左类型)
+            此.写_释放_xt(右寄存器, 右类型)
+            设 _r = [res, "raw_i64"]
+            返 _r
         }
 
         设 左原 = 此.确保RawI64(左寄存器, 左类型)
