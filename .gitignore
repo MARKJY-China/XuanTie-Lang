@@ -107,6 +107,8 @@ INVESTIGATION_xt.md
 !/bench/**/*.py
 # 字符流库 pty 测试脚本必须入库(同受第 37 行 *.py 全局忽略影响)
 !/lib/字符流/测试/**/*.py
+# 渲染库编译冒烟脚本必须入库(同受第 37 行 *.py 全局忽略影响)
+!/lib/渲染/测试/**/*.py
 # vendor 源码被 test* 规则误伤的单文件白名单(DSH 内核构建输入)
 !ide/vendor/dsh/packages/dsh-tools/src/testing.ts
 
