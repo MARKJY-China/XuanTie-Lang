@@ -1,4 +1,4 @@
-
+﻿
 # 过滤所有 .exe 文件
 _test_*
 *_traced.xt
@@ -126,3 +126,7 @@ INVESTIGATION_xt.md
 !.env.example
 # AI 文档层生成物(gen-ai-docs 输出)
 /dist/
+
+# Python 编译缓存(Oracle:避免测试脚本的 __pycache__ 被误提交)
+__pycache__/
+*.pyc

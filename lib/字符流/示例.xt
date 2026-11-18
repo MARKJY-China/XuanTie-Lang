@@ -1,7 +1,10 @@
 // 示例.xt — 字符流最小示例：进原始模式，把每个键/鼠标事件原样显示，回车或 Ctrl+C 退出
 //
-// 编译运行(与本文件同目录)：
-//   xtc tie 示例.xt -sc 字符流示例 -pt darwin -jg arm64 && ./字符流示例
+// 编译运行（在本目录执行；xtc 指玄铁自举编译器，如仓库根的 build/xtc_s4.exe，
+// 缺省按宿主平台/架构自动选目标，不要写死 -pt/-jg）：
+//   Linux/macOS：xtc 铁 示例.xt -sc charstream_example && ./charstream_example
+//   Windows    ：xtc 铁 示例.xt -sc charstream_example.exe && charstream_example.exe
+// 产物名请用 ASCII：Windows 的 gcc/ld 走窄字符路径，中文产物名会打不开。
 //
 // 事件类型齐全地过一遍：方向键/滚轮/点击/普通键/心跳静默/孤 ESC/退出键。
 
