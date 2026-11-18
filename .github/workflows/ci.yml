@@ -175,6 +175,18 @@ jobs:
           python3 lib/字符流/测试/示例驱动.py --xtc build/xtc_s4.exe --require-pty
           python3 lib/字符流/测试/C1读字节超时.py --xtc build/xtc_s4.exe --require-pty
 
+      # 渲染库门禁(darwin):字体四入口编译链接(-jc/-lib/探针 -sc,不运行窗口)。
+      # 覆盖 渲染桥.c 编译 + raylib 静态链 + CoreText(-framework) 链接——
+      # 此前 gate-darwin 不编译渲染库,#161 字体链入口的链接可行性无 CI 证据。
+      - name: "渲染库编译门禁(darwin:字体四入口 -jc/-lib/-sc,不跑窗口)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        shell: bash
+        run: |
+          set -e
+          python3 lib/渲染/测试/编译冒烟.py --xtc build/xtc_s4.exe
+
       - name: "铁铺 CLI 冒烟(issue #49:POSIX 分支真跑一次——构建 + lc 硬判 + ql)"
         shell: bash
         run: |
@@ -254,6 +266,21 @@ jobs:
           python3 lib/字符流/测试/编译冒烟.py --xtc build/xtc_s4.exe
           python3 lib/字符流/测试/示例驱动.py --xtc build/xtc_s4.exe --require-pty
           python3 lib/字符流/测试/C1读字节超时.py --xtc build/xtc_s4.exe --require-pty
+
+      # 渲染库链接依赖(linux):raylib 静态链需要 libGL/libX11(编译器 linux 链接串:
+      # -lGL -lm -lpthread -ldl -lrt -lX11);显式安装防 runner 镜像变动。
+      - name: "渲染库链接依赖(linux:libGL/libX11 等开发库)"
+        run: sudo apt-get update && sudo apt-get install -y libgl1-mesa-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev
+
+      # 渲染库门禁(linux):字体四入口编译链接(不运行窗口,CI 无显示服务)。
+      - name: "渲染库编译门禁(linux:字体四入口 -jc/-lib/-sc,不跑窗口)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        shell: bash
+        run: |
+          set -e
+          python3 lib/渲染/测试/编译冒烟.py --xtc build/xtc_s4.exe
 
       - name: "铁铺 CLI 冒烟(issue #49:POSIX 分支——含 Linux 专属 sha256sum 取哈希通道)"
         shell: bash
