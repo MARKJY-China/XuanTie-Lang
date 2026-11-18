@@ -1,0 +1,4 @@
+compile_ok=True
+exit=0
+非空=真
+甲=1
