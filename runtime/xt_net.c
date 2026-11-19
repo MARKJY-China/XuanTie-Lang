@@ -414,50 +414,123 @@ static void http_join_location(const char* base, const char* loc, char* out, siz
     }
 }
 
-// 单参 GET:跟随重定向(≤5 跳;301/302/303/307/308),返回最终响应体(处理 chunked)。
-// 失败返回错误串(malloc)——与历史行为一致(调用方 xt_http_request 以字符串前缀判错)。
-void* xt_net_http_get(const char* url) {
+// 抓取最终响应体(二进制安全):跟随重定向(≤5 跳;301/302/303/307/308),chunked 自动解码。
+// 成功返 0:*out = malloc 缓冲(末尾补 NUL;正文可能含内嵌 NUL,长度一律以 *outlen 为准),
+//   *status = 最终 HTTP 状态码(不需要可传 NULL)。调用方负责 free(*out)。
+// 失败返 -1:*err = malloc 错误串(调用方 free)。
+// 文本通道(xt_net_http_get / 求)与二进制通道(xt_http_get_bytes / 升级下载)共用这一份实现:
+// 重定向、chunked、代理、TLS 走同一路径,不许各写一份(两份必然漂移)。
+static int http_get_final_body(const char* url, char** out, size_t* outlen, int* status, char** err) {
+    *out = NULL;
+    *outlen = 0;
+    *err = NULL;
+    if (status) *status = 0;
+
     char current[2048];
     snprintf(current, sizeof(current), "%s", url ? url : "");
     char* raw = NULL;
-    char* err = NULL;
     char* loc = NULL;
-    int status = 0;
+    int st = 0;
     int hop;
     int rawLen = 0;
     for (hop = 0; hop < 6; hop++) {   // 1 次直连 + 至多 5 跳
-        free(err);
-        free(loc);
+        free(loc); loc = NULL;
         rawLen = 0;
-        raw = http_fetch_raw(current, 10000, 30000, &status, &loc, &err, &rawLen);
-        if (!raw) return err ? (void*)err : (void*)xt_strdup_or_empty("请求失败");
-        if (status >= 301 && status <= 308 && status != 304 && loc && loc[0]) {
+        raw = http_fetch_raw(current, 10000, 30000, &st, &loc, err, &rawLen);
+        if (!raw) {
+            free(loc);
+            if (!*err) *err = xt_strdup_or_empty("请求失败");
+            return -1;
+        }
+        if (st >= 301 && st <= 308 && st != 304 && loc && loc[0]) {
             char next[2048];
             http_join_location(current, loc, next, sizeof(next));
             snprintf(current, sizeof(current), "%s", next);
-            free(raw);
+            free(raw); raw = NULL;
             continue;
         }
         break;
     }
     free(loc);
-    if (!raw) return (void*)xt_strdup_or_empty("请求失败");
+    if (!raw) { *err = xt_strdup_or_empty("请求失败"); return -1; }
+    if (status) *status = st;
 
     char* hdrEnd = strstr(raw, "\r\n\r\n");
-    if (hdrEnd) {
-        char* bodyStart = hdrEnd + 4;
-        // chunked 自动解码(与双参形态一致):大响应(>2KB)服务端走 chunked,
-        // 裸返回会把块尺寸行吃进下游 JSON 解析(实测铁铺拉取索引崩溃/卡死)
-        if (xt_region_icontains(raw, (size_t)(hdrEnd - raw), "chunked") &&
-            xt_region_icontains(raw, (size_t)(hdrEnd - raw), "transfer-encoding")) {
-            size_t bodyLen = (size_t)rawLen - (size_t)(bodyStart - raw);
-            size_t decLen = 0;
-            char* dec = xt_http_decode_chunked(bodyStart, bodyLen, &decLen);
-            if (dec) { free(raw); return dec; }
-        }
-        char* r = strdup(bodyStart); free(raw); return r;
+    if (!hdrEnd) {
+        // 极端情形(连响应头都没有):沿用旧文本通道行为——整段原文当正文返回。
+        // 二进制下载侧由调用方按 HTTP 状态/gzip 魔数/长度做显式校验,不会静默当压缩包。
+        *out = raw;
+        *outlen = (size_t)rawLen;
+        return 0;
     }
-    return raw;
+    char* bodyStart = hdrEnd + 4;
+    size_t bodyLen = (size_t)rawLen - (size_t)(bodyStart - raw);
+    // chunked 自动解码(与双参形态一致):大响应(>2KB)服务端走 chunked,
+    // 裸返回会把块尺寸行吃进下游 JSON 解析(实测铁铺拉取索引崩溃/卡死)
+    if (xt_region_icontains(raw, (size_t)(hdrEnd - raw), "chunked") &&
+        xt_region_icontains(raw, (size_t)(hdrEnd - raw), "transfer-encoding")) {
+        size_t decLen = 0;
+        char* dec = xt_http_decode_chunked(bodyStart, bodyLen, &decLen);
+        free(raw);
+        if (!dec) { *err = xt_strdup_or_empty("chunked 解码失败"); return -1; }
+        *out = dec;
+        *outlen = decLen;
+        return 0;
+    }
+    char* body = (char*)malloc(bodyLen + 1);
+    if (!body) { free(raw); *err = xt_strdup_or_empty("内存不足"); return -1; }
+    if (bodyLen) memcpy(body, bodyStart, bodyLen);
+    body[bodyLen] = '\0';
+    free(raw);
+    *out = body;
+    *outlen = bodyLen;
+    return 0;
+}
+
+// 单参 GET:跟随重定向(≤5 跳;301/302/303/307/308),返回最终响应体(处理 chunked)。
+// 失败返回错误串(malloc)——与历史行为一致(调用方 xt_http_request 以字符串前缀判错)。
+void* xt_net_http_get(const char* url) {
+    char* body = NULL;
+    size_t bodyLen = 0;
+    char* err = NULL;
+    if (http_get_final_body(url, &body, &bodyLen, NULL, &err) == 0) return body;
+    free(body);
+    return err ? (void*)err : (void*)xt_strdup_or_empty("请求失败");
+}
+
+// 二进制 HTTP GET(编译器自更新下载 tar.gz 用):返回 结果。
+// 成功:成功=真,值=XTString(按字节长度保存,可含内嵌 NUL——文本通道的 strdup 会截断二进制);
+// 失败:成功=假,错误=明确错误串(URL 非法/连不上/非 2xx/正文 0 字节/内存不足)。
+// 与 求() 单参共用 http_get_final_body:重定向、chunked、代理、TLS 行为完全一致。
+XTValue xt_http_get_bytes(XTValue url_val) {
+    if (!XT_IS_REAL_PTR(url_val) || ((XTObject*)url_val)->type_id != XT_TYPE_STRING)
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("URL无效"));
+    const char* url = ((XTString*)url_val)->data;
+
+    char* body = NULL;
+    size_t bodyLen = 0;
+    char* err = NULL;
+    int status = 0;
+    if (http_get_final_body(url, &body, &bodyLen, &status, &err) != 0) {
+        XTString* e = xt_string_new(err ? err : "请求失败");
+        free(err);
+        return (XTValue)xt_result_new(0, NULL, (void*)e);
+    }
+    free(err);
+    if (status < 200 || status > 299) {
+        char msg[320];
+        snprintf(msg, sizeof(msg), "HTTP 状态 %d(非 2xx,拒绝作为发行包): %s", status, url);
+        free(body);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new(msg));
+    }
+    if (bodyLen == 0) {
+        free(body);
+        return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("响应正文为空(0 字节)"));
+    }
+    XTString* s = xt_string_new_len(body, bodyLen);
+    free(body);
+    if (!s) return (XTValue)xt_result_new(0, NULL, (void*)xt_string_new("内存不足"));
+    return (XTValue)xt_result_new(1, (void*)s, NULL);
 }
 
 

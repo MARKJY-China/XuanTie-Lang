@@ -20,6 +20,12 @@ void xt_net_cleanup(void);
 // url: "http://host:port/path" 或 "https://host/path"（HTTPS 走 Schannel 系统 TLS）
 void* xt_net_http_get(const char* url);
 
+// 二进制 HTTP GET(自更新下载发行包 tar.gz 用):返回 结果。
+// 成功:成功=真,值=XTString(按字节长度保存,可含内嵌 NUL);失败:成功=假,错误=错误串。
+// 与 xt_net_http_get 共用重定向/chunked/代理/TLS 同一实现,但保留正文真实长度(不做 C 串截断),
+// 且非 2xx 状态码/0 字节正文一律明确失败。语言侧经 `外 函 xt_http_get_bytes(url: 字): 结果` 调用。
+XTValue xt_http_get_bytes(XTValue url_val);
+
 // TLS 客户端接口 — runtime/xt_tls.c 实现(Windows=Schannel / macOS=SecureTransport,均系统原生零外部依赖)
 int xt_tls_handshake(uintptr_t sock, const char* hostname, void** ctx_out);
 int xt_tls_send(void* ctx, const char* data, int len);
