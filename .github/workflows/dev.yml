@@ -176,8 +176,10 @@ jobs:
           XTC="./build/xtc_s$TOP_N.exe"
           echo "链顶编译器: $XTC"
           if [ "${{ matrix.plat }}" = "windows" ]; then
-            # Windows 分支产物名(与 make_pkg 的查找路径一致)
+            # Windows 分支产物名(与 make_pkg 的查找路径一致);LSP 必须一起构建
           "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
+          "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp.exe
+          ls -la tiepm/tiepm.exe lsp/xt_lsp.exe
           else
             "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm
             "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp

@@ -123,6 +123,9 @@ mkdir -p $PKG/{runtime,lib,GUIDE,examples}
 if [ "$PLATFORM" = "windows" ]; then
   cp "$XTC_SRC" $PKG/xtc.exe
   cp $ROOT/tiepm/tiepm.exe $PKG/
+  # LSP 是发行包一等公民(rc.4/rc.5 曾漏装):缺文件必须硬失败,不允许静默出包。
+  [ -f "$ROOT/lsp/xt_lsp.exe" ] || { echo "错误: 缺少 lsp/xt_lsp.exe(发行包必须含 LSP;CI 先构建 xt_lsp)"; exit 1; }
+  cp "$ROOT/lsp/xt_lsp.exe" $PKG/
   if [ "${PKG_SKIP_TOOLS:-0}" = "1" ]; then
     echo "跳过 VSCode 插件(arm64 包不带 x64 插件里的 LSP 二进制)"
   else
@@ -138,7 +141,8 @@ else
   if [ -f "$ROOT/build/tiepm" ]; then cp "$ROOT/build/tiepm" $PKG/tiepm
   elif [ -f "$ROOT/tiepm/tiepm" ]; then cp "$ROOT/tiepm/tiepm" $PKG/tiepm
   else echo "错误: 未找到 tiepm 可执行(CI 中应先构建: xtc_s4 铁 tiepm/铁铺.xt -sc build/tiepm)"; exit 1; fi
-  if [ -f "$ROOT/lsp/xt_lsp" ]; then cp "$ROOT/lsp/xt_lsp" $PKG/xt_lsp; echo "xt_lsp 随包"; fi
+  [ -f "$ROOT/lsp/xt_lsp" ] || { echo "错误: 缺少 lsp/xt_lsp(发行包必须含 LSP;CI 先构建 xt_lsp)"; exit 1; }
+  cp "$ROOT/lsp/xt_lsp" $PKG/xt_lsp; echo "xt_lsp 随包"
 fi
 
 # ── 2. 自带极简工具链(仅 Windows x64:发行机无 C 工具链时的最小集;arm64 跳过)──
