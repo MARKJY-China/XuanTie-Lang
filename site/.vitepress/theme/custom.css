@@ -1033,3 +1033,24 @@ div[class*='language-'] > button.copy {
     font-size: 13px !important;
   }
 }
+
+/* 短列不折行：返回/类型列曾被压成「返/回」「小/数」两行（用户 2026-11-08 反馈）。
+   只给第二列最小宽度，不动长文本列的自然换行，避免横向溢出。 */
+.vp-doc th:nth-child(2),
+.vp-doc td:nth-child(2) {
+  min-width: 4.2em;
+}
+
+
+/* 表格"短列"：只保证第二列有最小宽度 + 列内行内代码不折行。
+   注意（2026-11-09 修正）：早前这里对 td:nth-child(2) 整体加了 white-space: nowrap，
+   结果「离线文档」这类第二列是整段说明的表格被撑宽、第三列被挤成竖排。
+   现在只让 code 不折行，整格仍可正常换行。 */
+.vp-doc th:nth-child(2),
+.vp-doc td:nth-child(2) {
+  min-width: 4.8em;
+}
+.vp-doc td:nth-child(2) code,
+.vp-doc th:nth-child(2) code {
+  white-space: nowrap;
+}

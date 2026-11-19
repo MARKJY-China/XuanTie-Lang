@@ -116,11 +116,11 @@ fi
 
 # ---------- 3. 上传 + 原子切换 ----------
 say "③ 上传并切换: $REMOTE_DIR"
-# 说明：tar 走 ssh 流，不依赖服务器装 rsync；
-#       .new 解包成功才动旧目录，失败时线上仍是旧版本。
-# 说明：tar 走 ssh 流，不依赖服务器装 rsync；
-#       .new 解包成功才动旧目录，失败时线上仍是旧版本。
-#       脚本通过远端命令传入（不能占用 stdin——stdin 是 tar 数据流）。
+# 说明：先在本地打成一个 tar.gz（大小已知 → 进度准确；失败可重传，不必重跑构建），
+#       再经 ssh 流式上传；远端脚本通过命令传入（stdin 是数据流，不能占用）。
+TARBALL="$SITE_DIR/.deploy-upload.tgz"
+trap 'rm -f "$TARBALL"' EXIT
+
 REMOTE_CMD="set -e
 mkdir -p '$REMOTE_DIR.new'
 rm -rf '$REMOTE_DIR.new'/*
@@ -134,9 +134,13 @@ mv '$REMOTE_DIR.new' '$REMOTE_DIR'
 echo '远端切换完成'"
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  printf '  [dry-run] tar -czf - -C %s . | ssh %s %s "<远端切换脚本>"\n' "$LOCAL_DIST" "${SSH_OPTS[*]}" "$SSH_TARGET"
+  printf '  [dry-run] tar -czf %s -C %s .\n' "$TARBALL" "$LOCAL_DIST"
+  printf '  [dry-run] node scripts/pipe-progress.mjs <总字节> < %s | ssh %s %s "<远端切换脚本>"\n' "$TARBALL" "${SSH_OPTS[*]}" "$SSH_TARGET"
 else
-  tar -czf - -C "$LOCAL_DIST" . | ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$REMOTE_CMD"
+  tar -czf "$TARBALL" -C "$LOCAL_DIST" .
+  TOTAL=$(wc -c < "$TARBALL" | tr -d ' ')
+  say "   打包完成：$TOTAL 字节，开始上传"
+  node "$SITE_DIR/scripts/pipe-progress.mjs" "$TOTAL" < "$TARBALL" | ssh "${SSH_OPTS[@]}" "$SSH_TARGET" "$REMOTE_CMD"
 fi
 
 say "④ 验证远端入口"

@@ -15,10 +15,10 @@ import XtMark from './components/XtMark.vue'
     <!-- 尾花：印章是全站唯一允许出现圆角与红色的地方 -->
     <template #layout-bottom>
       <div class="xt-colophon">
-        <img src="/seal.svg" alt="玄铁" width="20" height="20" />
+        <img src="/seal.svg" alt="玄铁" width="14" height="14" />
         <span>玄铁 XUANTIE · 中文系统级编程语言</span>
         <span class="sp" />
-        <span>MARK 玄·折 120×120 · STROKE 8 · NO CURVES</span>
+        <span>MARKJY · 问号盒</span>
       </div>
     </template>
   </DefaultTheme.Layout>
