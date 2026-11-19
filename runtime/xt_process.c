@@ -8,6 +8,7 @@
 #ifdef _WIN32
 #include <io.h>
 #include <fcntl.h>
+#include <wchar.h>
 #else
 #include <signal.h>
 #include <fcntl.h>
@@ -465,6 +466,83 @@ static void _xt_exec_empty(char** out_data, size_t* out_len) {
 }
 
 #ifdef _WIN32
+static int _xt_exec_wpath_ascii(const wchar_t* p) {
+    for (; *p; p++) {
+        if ((unsigned int)*p > 0x7F) return 0;
+    }
+    return 1;
+}
+
+static int _xt_exec_env_nonascii(const wchar_t* name) {
+    DWORD n = GetEnvironmentVariableW(name, NULL, 0);
+    if (n == 0) return 0;
+    wchar_t* buf = (wchar_t*)malloc((size_t)n * sizeof(wchar_t));
+    if (!buf) return 1;
+    DWORD got = GetEnvironmentVariableW(name, buf, n);
+    int nonascii = (got > 0 && !_xt_exec_wpath_ascii(buf));
+    free(buf);
+    return nonascii;
+}
+
+/* issue #162:Windows 子工具(gcc/ld/clang)自己也用 TEMP/TMP 建临时文件;
+   TEMP 是中文时它们会报 "Cannot create temporary file ...: Invalid argument"。
+   把子进程环境里的 TEMP/TMP 覆盖成 ASCII 的可写目录(PUBLIC\XuanTieTemp),
+   仅当当前 TEMP/TMP 含非 ASCII 时才做;用户 TEMP 本身不变。 */
+static int _xt_exec_ascii_temp(wchar_t* out, size_t cap) {
+    wchar_t pub[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"PUBLIC", pub, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        _snwprintf(out, cap, L"%ls\\XuanTieTemp", pub);
+        out[cap - 1] = 0;
+        if (_xt_exec_wpath_ascii(out)) {
+            CreateDirectoryW(out, NULL);
+            return 1;
+        }
+    }
+    wcscpy(out, L"C:\\Windows\\Temp\\XuanTieTemp");
+    CreateDirectoryW(out, NULL);
+    return _xt_exec_wpath_ascii(out);
+}
+
+static wchar_t* _xt_exec_env_with_ascii_temp(const wchar_t* fallback) {
+    wchar_t* src = GetEnvironmentStringsW();
+    if (!src) return NULL;
+    const wchar_t* p = src;
+    while (*p) p += wcslen(p) + 1;
+    size_t src_len = (size_t)(p - src) + 1;
+    size_t cap = src_len + 4 * (wcslen(fallback) + 32) + 8;
+    wchar_t* dst = (wchar_t*)malloc(cap * sizeof(wchar_t));
+    if (!dst) { FreeEnvironmentStringsW(src); return NULL; }
+    wchar_t* q = dst;
+    int have_temp = 0, have_tmp = 0;
+    p = src;
+    while (*p) {
+        size_t len = wcslen(p);
+        if (_wcsnicmp(p, L"TEMP=", 5) == 0) {
+            _snwprintf(q, (size_t)(dst + cap - q), L"TEMP=%ls", fallback);
+            have_temp = 1;
+        } else if (_wcsnicmp(p, L"TMP=", 4) == 0) {
+            _snwprintf(q, (size_t)(dst + cap - q), L"TMP=%ls", fallback);
+            have_tmp = 1;
+        } else {
+            wmemcpy(q, p, len + 1);
+        }
+        q += wcslen(q) + 1;
+        p += len + 1;
+    }
+    if (!have_temp) {
+        _snwprintf(q, (size_t)(dst + cap - q), L"TEMP=%ls", fallback);
+        q += wcslen(q) + 1;
+    }
+    if (!have_tmp) {
+        _snwprintf(q, (size_t)(dst + cap - q), L"TMP=%ls", fallback);
+        q += wcslen(q) + 1;
+    }
+    *q = 0;
+    FreeEnvironmentStringsW(src);
+    return dst;
+}
+
 static HANDLE _xt_exec_open_nul_read(SECURITY_ATTRIBUTES* sa) {
     return CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                        sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
@@ -568,9 +646,17 @@ int xt_process_exec_capture(const char* command, int64_t timeout_ms,
     si.hStdError = hWrite;
     ZeroMemory(&pi, sizeof(pi));
 
+    wchar_t ascii_temp[MAX_PATH];
+    wchar_t* child_env = NULL;
+    if ((_xt_exec_env_nonascii(L"TEMP") || _xt_exec_env_nonascii(L"TMP")) &&
+        _xt_exec_ascii_temp(ascii_temp, MAX_PATH)) {
+        child_env = _xt_exec_env_with_ascii_temp(ascii_temp);
+    }
+
     BOOL created = CreateProcessW(NULL, line, NULL, NULL, TRUE,
-                                  CREATE_NO_WINDOW | CREATE_SUSPENDED,
-                                  NULL, NULL, &si, &pi);
+                                  CREATE_NO_WINDOW | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT,
+                                  child_env, NULL, &si, &pi);
+    free(child_env);
     free(line);
     CloseHandle(hWrite);
     CloseHandle(hNul);
@@ -662,6 +748,7 @@ int xt_process_exec_capture(const char* command, int64_t timeout_ms,
                             int* timed_out, char* error, size_t error_size) {
     int fds[2];
     pid_t pid;
+    int use_pgid;
     char* out = NULL;
     size_t len = 0, cap = 0;
     int status = 0;
@@ -689,11 +776,13 @@ int xt_process_exec_capture(const char* command, int64_t timeout_ms,
         close(fds[0]); close(fds[1]);
         return 0;
     }
+    use_pgid = !isatty(STDIN_FILENO);
     if (pid == 0) {
-        setpgid(0, 0);
+        /* 普通命令用新进程组便于超时杀整棵进程树;但 stdin 是终端时必须留在
+           前台进程组——字符流库的 `执("stty ...")` 就是靠前台终端设置 raw 模式,
+           放到后台进程组会收到 SIGTTOU。 */
+        if (use_pgid) setpgid(0, 0);
         close(fds[0]);
-        int devnull = open("/dev/null", O_RDONLY);
-        if (devnull >= 0) { dup2(devnull, 0); close(devnull); }
         dup2(fds[1], 1);
         dup2(fds[1], 2);
         close(fds[1]);
@@ -701,7 +790,7 @@ int xt_process_exec_capture(const char* command, int64_t timeout_ms,
         _exit(127);
     }
     close(fds[1]);
-    setpgid(pid, pid);
+    if (use_pgid) setpgid(pid, pid);
     start = _xt_exec_now_ms();
 
     for (;;) {
@@ -734,7 +823,7 @@ int xt_process_exec_capture(const char* command, int64_t timeout_ms,
     }
 
     if (*timed_out || overflow) {
-        kill(-pid, SIGKILL);
+        if (use_pgid) kill(-pid, SIGKILL);
         kill(pid, SIGKILL);
         waitpid(pid, &status, 0);
     } else {
