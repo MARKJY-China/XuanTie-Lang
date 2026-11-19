@@ -224,17 +224,17 @@ jobs:
       - name: 列出 dev 产物
         run: ls -la artifacts/
 
-      - name: dev 指纹校验(MANIFEST 提交 == 本次构建;版本 == 源码版本常量)
+      - name: dev 指纹校验(MANIFEST 提交 == 本次构建;版本 == dev 版本)
         run: |
           set -e
-          BASE="${{ needs.meta.outputs.base }}"
-          echo "构建提交: $GITHUB_SHA;版本基准: $BASE"
+          DEV="${{ needs.meta.outputs.version }}"
+          echo "构建提交: $GITHUB_SHA;dev 版本: $DEV"
           ok=1
           for f in artifacts/MANIFEST_*.txt; do
             echo "── $f"
             grep -m1 '^提交: ' "$f" || { echo "缺「提交:」行"; ok=0; }
             grep -q "^提交: $GITHUB_SHA" "$f" || { echo "！！ MANIFEST 提交与本次构建不一致 —— 拒绝发布"; ok=0; }
-            grep -q "^版本: ${BASE}$" "$f" || { echo "！！ MANIFEST 版本与源码版本常量($BASE)不一致 —— 拒绝发布"; ok=0; }
+            grep -q "^版本: ${DEV}$" "$f" || { echo "！！ MANIFEST 版本与 dev 版本($DEV)不一致 —— 拒绝发布"; ok=0; }
           done
           [ "$ok" = "1" ] || exit 1
           echo "dev 指纹校验通过"
