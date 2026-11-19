@@ -1,0 +1,5 @@
+compile_ok=True
+exit=1
+Inf 序列化前
+[玄铁运行时错误] 化(): 非有限小数(NaN 或 ±Inf)不能表示为 JSON 数字
+  JSON 规范没有 NaN/Infinity 字面量;本实现选择显式报错,不产出非法 JSON。

@@ -1,0 +1,10 @@
+compile_ok=True
+exit=0
+甲={"mu": 3, "zeta": 1, "alpha": 2}
+PASS 同对象稳定
+PASS 键序非书写序
+乙={"mu": 3, "zeta": 1, "alpha": 2}
+PASS 样本内插入序无关
+PASS 嵌套稳定
+PASS 缩进稳定
+207 PASS

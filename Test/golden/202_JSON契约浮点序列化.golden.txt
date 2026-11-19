@@ -1,0 +1,18 @@
+compile_ok=True
+exit=0
+PASS 化3.14
+PASS 化0.1
+PASS 化1.0
+PASS 化-2.5
+PASS 化1000.0
+PASS 化0.1+0.2
+PASS 往返0.1+0.2
+PASS 往返1/3
+PASS 化大整数
+PASS 化嵌套数组
+PASS 嵌套回读0.1
+PASS 嵌套回读2e6
+PASS 嵌套是小数
+PASS 缩进小数
+PASS 重复序列化
+202 PASS

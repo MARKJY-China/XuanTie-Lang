@@ -99,6 +99,8 @@ def normalize(text, sort_lines):
     # 记录与比对两侧都替换成 <ROOT>,基线才能跨机器复用。
     text = text.replace(str(ROOT), "<ROOT>")
     text = text.replace(str(ROOT).replace("\\", "/"), "<ROOT>")
+    # issue #110:运行时错误位置带平台路径分隔符;基线跨 Windows/Linux 统一成 "/"
+    text = text.replace("<ROOT>\\", "<ROOT>/")
     for pat, rep in VOLATILE:
         text = pat.sub(rep, text)
     lines = []
@@ -189,6 +191,8 @@ def one_test(xtfile, record):
     g_compile = glines[0].split("=", 1)[1] == "True"
     g_exit = glines[1].split("=", 1)[1]
     g_body = "\n".join(glines[2:])
+    # issue #110:基线里的 <ROOT>\Test 与 Linux 的 <ROOT>/Test 视为同一路径
+    g_body = g_body.replace("<ROOT>\\", "<ROOT>/")
 
     if not compile_ok:
         if g_compile:

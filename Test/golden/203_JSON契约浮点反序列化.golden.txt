@@ -1,0 +1,26 @@
+compile_ok=True
+exit=0
+PASS 解3.14
+PASS 解3.14是小数
+PASS 解0.1
+PASS 解0.1是小数
+PASS 解-1.5
+PASS 解1e3
+PASS 解1e3是小数
+PASS 解2e6
+PASS 解2e6是小数
+PASS 解负指数
+PASS 解大写E
+PASS 解大整数
+PASS 解大整数是整
+PASS 大整数非double
+PASS 嵌套数组浮点
+PASS 嵌套字典浮点
+PASS 嵌套科学计数
+PASS 嵌套类型
+PASS 闭环3.14
+PASS 闭环0.1
+PASS 闭环1e3
+PASS 闭环2e6
+PASS 闭环混合数组
+203 PASS

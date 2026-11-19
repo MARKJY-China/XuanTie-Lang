@@ -195,6 +195,8 @@ func NewLLVMCompiler(program *ast.Program) *LLVMCompiler {
 	c.declaredGlobals["化"] = true
 	c.symbolTable["解"] = SymbolInfo{AddrReg: "@\"xt_json_deserialize\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["解"] = true
+	c.symbolTable["试解"] = SymbolInfo{AddrReg: "@\"xt_json_try_deserialize\"", IsGlobal: true, Type: "i64"}
+	c.declaredGlobals["试解"] = true
 	// URL 编解码与字节→字符串(与自举编译器一侧对齐;运行时严格校验,非法输入明确报错退出)
 	c.symbolTable["UTF8非法偏移"] = SymbolInfo{AddrReg: "@\"xt_utf8_invalid_offset\"", IsGlobal: true, Type: "i64"}
 	c.declaredGlobals["UTF8非法偏移"] = true
@@ -376,6 +378,7 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare i64 @xt_channel_receive(i64)\n")
 	res.WriteString("declare %XTString* @xt_json_serialize(i64)\n")
 	res.WriteString("declare i64 @xt_json_deserialize(%XTString*)\n")
+	res.WriteString("declare i64 @xt_json_try_deserialize(i64)\n")
 	res.WriteString("declare i64 @xt_async_wait(i64)\n")
 	res.WriteString("declare i64 @xt_async_spawn(i8*, i64)\n\n")
 

@@ -131,7 +131,7 @@ Runtime (`xt_runtime.c`) 中以 `XTValue xt_xxx(...)` 形式实现的函数，�
 
 **内置方法**：`追加`(append)、`删`(remove)、`插`(insert)、`找`(find)、`含?`(contains)、`连接`(join)。
 
-**高阶方法**（通过 `引 "../lib/数组.xt" 予 A` 引入标准库）：`A.映射`(map)、`A.过滤`(filter)、`A.归纳`(reduce)、`A.查找`(find)、`A.每个?`(every)、`A.存在?`(some)、`A.排序`(sort)、`A.去重`(dedup)、`A.反转`(reverse)。
+**高阶方法**（通过 `引 "../lib/数组.xt" 予 A` 引入标准库）：`A.映射`(map)、`A.过滤`(filter)、`A.归纳`(reduce)、`A.查找`(find)、`A.每个?`(every)、`A.存在?`(some)、`A.排序`(稳定归并排序, sort)、`A.排序依据`(按数值键稳定排序, sort_by_key)、`A.去重`(dedup)、`A.反转`(reverse)。
 
 > 完整教程、详细示例与输出请参阅：[06_数组编程指南.md](../06_数组编程指南.md)
 
@@ -164,4 +164,4 @@ Runtime (`xt_runtime.c`) 中以 `XTValue xt_xxx(...)` 形式实现的函数，�
 
 注意：**关键字作键仍需引号**（如 `{"选": 1}`，因 `选` 是通道关键字）；裸键仅限标识符。
 
-<sub><span style="color:#999">最后更新：2026-11-18</span></sub>
+<sub><span style="color:#999">最后更新：2026-11-20</span></sub>

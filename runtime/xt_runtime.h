@@ -500,6 +500,23 @@ double xt_f64_of(XTValue val);
 /// 浮点负号(前缀 "-" 的浮点落点)
 XTValue xt_fneg(XTValue v);
 
+// --- 运行时错误定位(#110)与硬错误可捕(#113) ---
+/// 编译器错误守卫点写入源码位置;file 传 NULL/空串表示未知(清空)。位置缺失时诊断退化为旧格式。
+void xt_error_set_file(const char* file);
+void xt_error_set_loc(int32_t line, int32_t col);
+/// 硬错误 handler:活动尝试块内 → 转为可捕异常(xt_exc_raise)并返回;无尝试块 → 打印诊断并 exit(1)
+void xt_member_missing(XTValue name_val);
+void xt_member_unknown(XTValue name_val);
+void xt_index_bad(XTValue val);
+void xt_index_negative(int64_t index);
+void xt_method_missing(XTValue name_val);
+/// 硬错误 handler 的「永不返回」变体:即使存在活动尝试块也打印诊断并 exit(1)。
+/// 供编译器在**不在本函数 尝试 块内**的守卫点发射(返回后继续使用无效值不安全,跨函数不捕捉)。
+void xt_member_missing_hard(XTValue name_val);
+void xt_member_unknown_hard(XTValue name_val);
+void xt_index_bad_hard(XTValue val);
+void xt_method_missing_hard(XTValue name_val);
+
 // --- 尝试/捕捉 与类型判断 ---
 /// 尝试入口(深度记账;轮询式捕捉,无 setjmp)
 void xt_exc_begin(void);
@@ -590,8 +607,14 @@ XTValue xt_cwd();
 
 /// 将对象序列化为 JSON 字符串
 XTString* xt_json_serialize(XTValue val);
-/// 将 JSON 字符串反序列化为玄铁对象
+/// 将 JSON 字符串反序列化为玄铁对象。
+/// 兼容契约(issue #146):空串 / 非法 JSON / JSON null 一律返回 空(三者不可区分)。
 XTValue xt_json_deserialize(XTString* json_str);
+/// 三态 JSON 反序列化(issue #145/#146):返回 结果 容器。
+/// 成功: .成功=真、.值=解析值(合法 null → .值=空,仍算成功);
+/// 失败: .成功=假、.错误=明确原因文本("空输入"/"非法 JSON"/"数值越界" 前缀)。
+/// 语言层 v1 内建名:试解(文本);C ABI 符号为 xt_json_try_deserialize(i64)。
+XTValue xt_json_try_deserialize(XTValue json_val);
 
 // --- 文件 I/O 接口 ---
 

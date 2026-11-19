@@ -1,0 +1,23 @@
+compile_ok=True
+exit=0
+PASS 空串失败
+PASS 空串原因
+PASS 空白失败
+PASS 坏对象失败
+PASS 坏对象原因
+PASS 坏数组失败
+PASS 尾垃圾失败
+PASS null成功
+PASS null值为空
+PASS null无错误
+PASS 数值成功
+PASS 数值正确
+PASS 嵌套成功
+PASS 嵌套值
+PASS 浮点溢出失败
+PASS 浮点溢出原因
+PASS 整溢出失败
+PASS 解空串为空
+PASS 解非法为空
+PASS 解null为空
+204 PASS

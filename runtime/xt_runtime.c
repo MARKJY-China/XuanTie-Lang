@@ -44,6 +44,9 @@
 // --- 前置内部函数声明 ---
 // issue #126:字符串取字(定义在 826 行)用到负索引诊断,而该函数定义在 1300+ 行,先声明。
 void xt_index_negative(int64_t index);
+// issue #113:硬错误 handler 在活动尝试块内要转为可捕异常(异常机制定义在本文件 1690 行附近),先声明。
+int xt_exc_active(void);
+void xt_exc_raise(const char* msg);
 static void print_pool_stats();
 static int xt_is_real_ptr(XTValue val);
 static const char* xt_type_label_zh(XTValue v);   // URL/字节内置的报错文案要用(定义在文件后部)
@@ -1326,58 +1329,207 @@ void* xt_malloc(size_t size, uint32_t type_id) {
     return (void*)obj;
 }
 
-// 成员缺失诊断:对非对象值(整数/布尔/空等标记值)访问成员时显式报错退出。
-// 原行为:直接 inttoptr 解引用标记整数 → Segfault。
-void xt_member_missing(XTValue name_val) {
-    const char* name = "?";
+// ===== 运行时错误定位(#110)与硬错误可捕(#113) =====
+//
+// 位置:由编译器在错误守卫点(cold path)调用 xt_error_set_file / xt_error_set_loc 写入,
+// 不在每条语句上付运行时开销。硬错误诊断统一打印「运行时错误 [文件:行:列]: ...」;
+// 位置缺失时退化为旧格式「运行时错误: ...」(运行库内部调用、合成节点等无位置场景)。
+//
+// 可捕:#113 要求成员/索引/方法这类硬错误在 尝试 块内可被 捕捉。
+//   · 编译器在守卫点查本函数的 尝试 块栈:
+//       - 在 尝试 块内 → 调用同名 handler;handler 见 xt_exc_active() 为真时只
+//         xt_exc_raise(消息,消息内嵌位置)并返回,编译器随后 br 到捕捉块;
+//       - 不在 尝试 块内 → 调用 *_hard 变体,一律诊断 + exit(1)。此时即便调用栈上
+//         有别人的活动 尝试 也不返回——返回后本表达式已无有效值可用,继续执行不安全。
+//   · 硬错误 handler 的「活动尝试块内 raise + 返回」语义同时与 GSC 产物兼容:
+//     GSC 在 call 之后本就生成 br 到合并块(取 空),由调用方语句级轮询截走。
+//
+// 线程局部:位置与异常消息缓冲区按线程各自记录,多线程不串扰。
+
+#if defined(_MSC_VER)
+static __declspec(thread) char xt_rt_err_file[512];
+static __declspec(thread) int xt_rt_err_line = 0;
+static __declspec(thread) int xt_rt_err_col = 0;
+static __declspec(thread) char xt_rt_exc_buf[768];
+#else
+static __thread char xt_rt_err_file[512];
+static __thread int xt_rt_err_line = 0;
+static __thread int xt_rt_err_col = 0;
+static __thread char xt_rt_exc_buf[768];
+#endif
+
+/* 编译器错误守卫点写入源文件路径(NULL/空串 = 未知,清空) */
+void xt_error_set_file(const char* file) {
+    if (file && file[0]) {
+        snprintf(xt_rt_err_file, sizeof(xt_rt_err_file), "%s", file);
+    } else {
+        xt_rt_err_file[0] = '\0';
+    }
+}
+
+/* 编译器错误守卫点写入行列(行<=0 视为未知) */
+void xt_error_set_loc(int32_t line, int32_t col) {
+    xt_rt_err_line = (line > 0) ? (int)line : 0;
+    xt_rt_err_col = (col > 0) ? (int)col : 0;
+}
+
+/* 清空位置:尝试入口/捕捉入口调用,防上一次错误的位置残留污染后续异常消息 */
+static void xt_error_clear_site(void) {
+    xt_rt_err_file[0] = '\0';
+    xt_rt_err_line = 0;
+    xt_rt_err_col = 0;
+}
+
+/* 统一诊断前缀(失败分支专用,无热路径开销) */
+static void xt_error_prefix(void) {
+    if (xt_rt_err_line > 0 && xt_rt_err_file[0]) {
+        fprintf(stderr, "运行时错误 [%s:%d:%d]: ", xt_rt_err_file, xt_rt_err_line, xt_rt_err_col);
+    } else if (xt_rt_err_line > 0) {
+        fprintf(stderr, "运行时错误 [行:%d, 列:%d]: ", xt_rt_err_line, xt_rt_err_col);
+    } else {
+        fprintf(stderr, "运行时错误: ");
+    }
+}
+
+/* 位置串 "[文件:行:列] "(供可捕异常消息内嵌);无位置时返回空串 */
+static const char* xt_error_site_prefix(char* buf, size_t cap) {
+    if (xt_rt_err_line > 0 && xt_rt_err_file[0]) {
+        snprintf(buf, cap, "[%s:%d:%d] ", xt_rt_err_file, xt_rt_err_line, xt_rt_err_col);
+        return buf;
+    }
+    buf[0] = '\0';
+    return buf;
+}
+
+/* 活动尝试块内:把消息(内嵌位置)转为可捕异常并返回 1;否则不动作返回 0 */
+static int xt_exc_raise_site(const char* msg) {
+    char _site[600];
+    if (!xt_exc_active()) return 0;
+    xt_error_site_prefix(_site, sizeof(_site));
+    snprintf(xt_rt_exc_buf, sizeof(xt_rt_exc_buf), "%s%s", _site, msg);
+    xt_exc_raise(xt_rt_exc_buf);
+    return 1;
+}
+
+/* 成员名值 → 可打印名字(非字符串标记值退化为 "?") */
+static const char* xt_err_name_of(XTValue name_val) {
     if (xt_is_real_ptr(name_val)) {
         XTString* s = (XTString*)name_val;
-        if (s->data) name = s->data;
+        if (s->data) return s->data;
     }
-    fprintf(stderr, "运行时错误: 对非对象值(整数/布尔/空)访问成员 '%s'\n", name);
+    return "?";
+}
+
+// 成员缺失诊断:对非对象值(整数/布尔/空等标记值)访问成员。
+// 原行为:直接 inttoptr 解引用标记整数 → Segfault。
+// 活动尝试块内:可捕异常(消息含成员名),由编译器守卫点分支到 捕捉 块。
+void xt_member_missing(XTValue name_val) {
+    const char* name = xt_err_name_of(name_val);
+    if (xt_exc_active()) {
+        char _m[256];
+        snprintf(_m, sizeof(_m), "对非对象值(整数/布尔/空)访问成员 '%s'", name);
+        (void)xt_exc_raise_site(_m);
+        return;
+    }
+    xt_error_prefix();
+    fprintf(stderr, "对非对象值(整数/布尔/空)访问成员 '%s'\n", name);
     fprintf(stderr, "  提示: 成员访问(如 .成功/.值/.长度)只对对象有效;请先用类型检查或 结果 判定保护。\n");
     exit(1);
 }
 
-// 未知成员诊断:对象类型不支持该成员(非字典/实例/结果/Socket 的动态成员访问)时显式报错退出。
+// 永不返回变体:不在本函数 尝试 块内的守卫点使用(见文件头说明)
+void xt_member_missing_hard(XTValue name_val) {
+    const char* name = xt_err_name_of(name_val);
+    xt_error_prefix();
+    fprintf(stderr, "对非对象值(整数/布尔/空)访问成员 '%s'\n", name);
+    fprintf(stderr, "  提示: 成员访问(如 .成功/.值/.长度)只对对象有效;请先用类型检查或 结果 判定保护。\n");
+    exit(1);
+}
+
+// 未知成员诊断:对象类型不支持该成员(非字典/实例/结果/Socket 的动态成员访问)。
 // 原行为:对任意对象静默返 空,拼写错误/类型误用被吞掉(违「宁可报错」原则)。
 void xt_member_unknown(XTValue name_val) {
-    const char* name = "?";
-    if (xt_is_real_ptr(name_val)) {
-        XTString* s = (XTString*)name_val;
-        if (s->data) name = s->data;
+    const char* name = xt_err_name_of(name_val);
+    if (xt_exc_active()) {
+        char _m[256];
+        snprintf(_m, sizeof(_m), "该值没有成员 '%s'", name);
+        (void)xt_exc_raise_site(_m);
+        return;
     }
-    fprintf(stderr, "运行时错误: 该值没有成员 '%s'(仅字典/型实例/结果/Socket 支持动态成员访问)\n", name);
+    xt_error_prefix();
+    fprintf(stderr, "该值没有成员 '%s'(仅字典/型实例/结果/Socket 支持动态成员访问)\n", name);
     fprintf(stderr, "  提示: 请检查成员名拼写;字符串/数组等内建类型的成员以官方手册为准。\n");
     exit(1);
 }
 
-// 索引非对象诊断:对标记值(整数/布尔/空)做索引([])会解引用野指针(Segfault),显式报错退出。
+void xt_member_unknown_hard(XTValue name_val) {
+    const char* name = xt_err_name_of(name_val);
+    xt_error_prefix();
+    fprintf(stderr, "该值没有成员 '%s'(仅字典/型实例/结果/Socket 支持动态成员访问)\n", name);
+    fprintf(stderr, "  提示: 请检查成员名拼写;字符串/数组等内建类型的成员以官方手册为准。\n");
+    exit(1);
+}
+
+// 索引非对象诊断:对标记值(整数/布尔/空)做索引([])会解引用野指针(Segfault)。
 // 原行为:直接读取垃圾地址的类型字段 → Segfault,无任何可诊断信息。
 void xt_index_bad(XTValue val) {
-    fprintf(stderr, "运行时错误: 对非对象值(整数/布尔/空)进行索引访问\n");
+    (void)val;
+    if (xt_exc_active()) {
+        (void)xt_exc_raise_site("对非对象值(整数/布尔/空)进行索引访问");
+        return;
+    }
+    xt_error_prefix();
+    fprintf(stderr, "对非对象值(整数/布尔/空)进行索引访问\n");
+    fprintf(stderr, "  提示: 索引([])只对字典/数组/字符串有效;请确认该值不是 空 或数字,必要时先用 结果 判定保护。\n");
+    exit(1);
+}
+
+void xt_index_bad_hard(XTValue val) {
+    (void)val;
+    xt_error_prefix();
+    fprintf(stderr, "对非对象值(整数/布尔/空)进行索引访问\n");
     fprintf(stderr, "  提示: 索引([])只对字典/数组/字符串有效;请确认该值不是 空 或数字,必要时先用 结果 判定保护。\n");
     exit(1);
 }
 
 // 负索引诊断(issue #126):数组/字符串取 [-1] 原本静默返回 空,把编程错误伪装成"没取到"。
-// 负索引没有语义支持(不是倒数),按「宁可报错,也不静默」显式退出;越界正向索引仍返回 空
+// 负索引没有语义支持(不是倒数),按「宁可报错,也不静默」处理;越界正向索引仍返回 空
 // (那是可判定的运行时状态,调用方可用 长度 判定)。
+// 活动尝试块内转为可捕异常并返回:调用方(xt_array_get/set/remove、xt_string_get_char)在
+// 负索引下本就只会走安全收尾(返回 空/空串),语句级轮询随即截走。
 void xt_index_negative(int64_t index) {
-    fprintf(stderr, "运行时错误: 索引不能为负:%lld\n", (long long)index);
+    if (xt_exc_active()) {
+        char _m[128];
+        snprintf(_m, sizeof(_m), "索引不能为负:%lld", (long long)index);
+        (void)xt_exc_raise_site(_m);
+        return;
+    }
+    xt_error_prefix();
+    fprintf(stderr, "索引不能为负:%lld\n", (long long)index);
     fprintf(stderr, "  提示: 数组/字符串下标从 0 开始;取最后一个元素请用 长度-1,负索引不是倒数语义。\n");
     exit(1);
 }
 
-// 方法缺失诊断:动态分派查无此方法时显式报错退出(遵循「明确的编程错误宁可报错也不静默」)。
+// 方法缺失诊断:动态分派查无此方法时显式报错(遵循「明确的编程错误宁可报错也不静默」)。
 // 原行为:对空指针解引用 → Segfault,无任何可诊断信息。
 void xt_method_missing(XTValue name_val) {
-    const char* name = "?";
-    if (xt_is_real_ptr(name_val)) {
-        XTString* s = (XTString*)name_val;
-        if (s->data) name = s->data;
+    const char* name = xt_err_name_of(name_val);
+    if (xt_exc_active()) {
+        char _m[256];
+        snprintf(_m, sizeof(_m), "调用了对象不存在的方法 '%s'", name);
+        (void)xt_exc_raise_site(_m);
+        return;
     }
-    fprintf(stderr, "运行时错误: 调用了对象不存在的方法: '%s'\n", name);
+    xt_error_prefix();
+    fprintf(stderr, "调用了对象不存在的方法: '%s'\n", name);
+    fprintf(stderr, "  提示: 请检查方法名拼写;字符串/数组/字典方法名以官方手册为准(注意部分方法带问号后缀,如 包含?/存在?)。\n");
+    exit(1);
+}
+
+void xt_method_missing_hard(XTValue name_val) {
+    const char* name = xt_err_name_of(name_val);
+    xt_error_prefix();
+    fprintf(stderr, "调用了对象不存在的方法: '%s'\n", name);
     fprintf(stderr, "  提示: 请检查方法名拼写;字符串/数组/字典方法名以官方手册为准(注意部分方法带问号后缀,如 包含?/存在?)。\n");
     exit(1);
 }
@@ -1674,14 +1826,16 @@ static int xt_is_real_ptr(XTValue val) {
 // 无 setjmp/longjmp(TDM 工具链对包装在运行时函数里的 setjmp 会静默失效/崩溃,实测)。
 // 已知取舍:故障语句的值未用即被轮询截走,无资源风险;多线程/异步块内禁用(进程级标志)。
 // 无活动尝试块时,故障点保持既有行为(返 0/报错退出),两语义并存。
+// 消息约定:可捕异常的消息在 raise 时就把「[文件:行:列] 」嵌进去(#110),捕捉块读到的
+// e["消息"] 自带定位;轮询式路径(除零/溢出等)由运行时直接 xt_exc_raise 常量文案,无位置。
 static int xt_exc_depth = 0;
 static int xt_exc_pending = 0;
 static const char* xt_exc_msg = NULL;
 
 int xt_exc_active(void) { return xt_exc_depth > 0; }
 
-/* 尝试入口:仅深度记账 */
-void xt_exc_begin(void) { xt_exc_depth++; }
+/* 尝试入口:深度记账 + 清空上一次错误位置(#110:防残留位置污染后续异常消息) */
+void xt_exc_begin(void) { xt_exc_depth++; xt_error_clear_site(); }
 
 /* 尝试块正常出口/捕捉块入口:深度回退 */
 void xt_exc_end(void) { if (xt_exc_depth > 0) xt_exc_depth--; }
@@ -1689,17 +1843,17 @@ void xt_exc_end(void) { if (xt_exc_depth > 0) xt_exc_depth--; }
 /* 语句级轮询:本语句内是否有运行时故障被抛出 */
 int xt_exc_poll(void) { return xt_exc_pending; }
 
-/* 捕捉块入口清挂起标志 */
+/* 捕捉块入口清挂起标志(消息保留:捕捉块紧接着要读 xt_exc_message;位置在 raise 时已嵌入消息) */
 void xt_exc_clear(void) { xt_exc_pending = 0; }
 
-/* 运行时故障抛异常(调用方须先查 xt_exc_active);仅置标志,由轮询截走 */
+/* 运行时故障抛异常(调用方须先查 xt_exc_active);仅置标志,由轮询/捕捉块截走 */
 void xt_exc_raise(const char* msg) {
     if (xt_exc_depth <= 0) return;
     xt_exc_msg = msg;
     xt_exc_pending = 1;
 }
 
-/* 捕捉块读取本次异常消息(装箱字符串对象) */
+/* 捕捉块读取本次异常消息(装箱字符串对象;位置已由 raise 方嵌入) */
 XTValue xt_exc_message(void) {
     return (XTValue)xt_string_new(xt_exc_msg ? xt_exc_msg : "未知异常");
 }
@@ -1710,12 +1864,15 @@ void xt_param_type_error(XTValue type_val) {
         XTString* s = (XTString*)type_val;
         if (s->data) t = s->data;
     }
-    // 活动尝试块内:转为可捕捉异常而非直接终止进程
+    // 活动尝试块内:转为可捕捉异常而非直接终止进程(消息内嵌函数定义处位置)
     if (xt_exc_active()) {
-        xt_exc_raise("参数类型不匹配");
+        char _m[256];
+        snprintf(_m, sizeof(_m), "参数类型不匹配——形参注解为 '%s',但传入的是其他类型", t);
+        (void)xt_exc_raise_site(_m);
         return;
     }
-    fprintf(stderr, "运行时错误: 参数类型不匹配——形参注解为 '%s',但传入的是其他类型(如字符串/对象)\n", t);
+    xt_error_prefix();
+    fprintf(stderr, "参数类型不匹配——形参注解为 '%s',但传入的是其他类型(如字符串/对象)\n", t);
     fprintf(stderr, "  提示: 请检查调用处实参类型;若确需混用,去掉形参的类型注解或先显式转换(整()/字())。\n");
     exit(1);
 }
@@ -5641,7 +5798,36 @@ XTValue xt_string_trim_end(XTValue str_val) {
 
 /**
  * @brief JSON 序列化 (递归实现)
+ *
+ * v1 契约(issue #145/#147,详见 GUIDE/关键字/化.md):
+ * · 小数(XTFloat/REAL)输出为合法 JSON 数字,采用**最短可往返**表示(有效数字上界 17 位,
+ *   等价于 %.17g 上界):先用 1~17 位精度找能经 strtod 还原为同一 double 的最短串,
+ *   例如 3.14 → "3.14"、0.1 → "0.1";整数值补 ".0"(1.0 → "1.0"),避免 解 回来变 整;
+ * · NaN/±Inf 在 JSON 里没有字面量,明确报错退出,绝不产出非法 JSON;
+ * · 整 仍按 i64 十进制精确输出(大整数不转 double);
+ * · 键序由哈希表桶序决定(不保证书写顺序);同一对象在未修改前提下多次序列化字节稳定。
  */
+
+// issue #145:JSON 数字格式化。返回 1=成功写入 buf;0=非有限值(调用方 fail-loud)。
+static int xt_json_format_double(double v, char* buf, size_t cap) {
+    if (!isfinite(v)) return 0;
+    // 整数值:走定点短路径并补 ".0"。|v| ≤ 2^53 时才保证定点输出可精确还原该 double。
+    if (v == floor(v) && fabs(v) <= 9007199254740992.0) {
+        int n = snprintf(buf, cap, "%.0f", v);
+        if (n < 0 || (size_t)n + 3 > cap) return 0;
+        buf[n] = '.'; buf[n + 1] = '0'; buf[n + 2] = '\0';
+        return 1;
+    }
+    // 非整数值:精度 1→17 递增,取第一个能经 strtod 精确还原的最短表示。
+    // 17 位有效数字足以对任意 double 往返(C 标准 DBL_DECIMAL_DIG / serde_json 同口径)。
+    for (int prec = 1; prec <= 17; prec++) {
+        snprintf(buf, cap, "%.*g", prec, v);
+        char* end = NULL;
+        double back = strtod(buf, &end);
+        if (end && *end == '\0' && back == v) return 1;
+    }
+    return 0;
+}
 
 // issue #148:型实例在运行时就是字典(xuantie_compiler 编译实例化:xt_dict_new + __类型__
 // + 属性 + 全部方法以 XT_TYPE_FUNCTION 对象存同一字典)。序列化契约定为「纯字段快照」:
@@ -5691,6 +5877,18 @@ XTString* xt_json_serialize(XTValue val) {
             buf[w] = '\0';
             XTString* res = xt_string_new_len(buf, w);
             free(buf); return res;
+        }
+        case XT_TYPE_FLOAT: {
+            // issue #145:小数输出合法 JSON 数字(旧实现落入 default 输出 "object")
+            double fv = ((struct { XTObject header; double value; }*)val)->value;
+            char nbuf[64];
+            if (!xt_json_format_double(fv, nbuf, sizeof(nbuf))) {
+                fprintf(stderr,
+                        "[玄铁运行时错误] 化(): 非有限小数(NaN 或 ±Inf)不能表示为 JSON 数字\n"
+                        "  JSON 规范没有 NaN/Infinity 字面量;本实现选择显式报错,不产出非法 JSON。\n");
+                exit(1);
+            }
+            return xt_string_new(nbuf);
         }
         case XT_TYPE_ARRAY: {
             XTArray* arr = (XTArray*)val;
@@ -5828,31 +6026,97 @@ XTValue xt_json_serialize_with(XTValue val, XTValue opt) {
  */
 
 // --- JSON 递归下降解析器 ---
+//
+// 失败三态契约(issue #145/#146,详见 GUIDE/关键字/解.md):
+//   · 解(文本)                      —— 兼容契约:空串 / 非法 JSON / JSON null 一律返回 空;
+//   · 试解(文本) / xt_json_try_deserialize(文本) —— 返回 结果:成功 .成功=真/.值=解析值;
+//     失败 .成功=假/.错误=明确原因("空输入"/"非法 JSON"/"数值越界")。
+//   合法 null 是**成功**,.值 为 空——这是与失败唯一可靠的区分方式。
+// 解析器内部以返回状态上报错误,不用 XT_NULL 兼作失败哨兵(null 本身是合法值)。
+// JSON 浮点:token 含 . / e / E 时走 strtod 保真(旧实现 atoll 截断,issue #145);
+// 纯整数 token 仍走 i64 精确解析(大整数不转 double);溢出成非有限值 = 整份失败。
 
 static void json_skip_ws(const char** p) {
     while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
 }
 
-// 解析失败粘滞标志:数字越界等「必须让整份 解() 失败」的错误用(issue #150/#153)。
-// 置位后容器解析提前收手,xt_json_deserialize 统一返回 空,不再把坏值当 null 塞进结果。
-// 线程局部:解() 可被多个异步任务并发调用,解析状态不得跨线程串扰。
+// 解析状态(线程局部:解/试解 可被多个异步任务并发调用,状态不得跨线程串扰)。
+// 入口清零;首个失败原因粘滞保存,供 xt_json_try_deserialize 组装 .错误 文案。
+#define JSON_PARSE_OK      0  // 成功
+#define JSON_PARSE_SYNTAX  1  // 非法 JSON(语法错误/尾部多余内容)
+#define JSON_PARSE_RANGE   2  // 数值越界(整域 ±(2^62-1) / double 溢出)
+#define JSON_PARSE_EMPTY   3  // 空输入(空串,或仅含 BOM/空白)
+
 #if defined(_MSC_VER)
-static __declspec(thread) int g_json_parse_failed = 0;
+static __declspec(thread) int g_json_parse_status = JSON_PARSE_OK;
+static __declspec(thread) size_t g_json_parse_err_pos = 0;
+static __declspec(thread) const char* g_json_parse_base = NULL;
+static __declspec(thread) char g_json_parse_err_detail[192];
+static __declspec(thread) int g_json_parse_quiet = 0;
 #else
-static __thread int g_json_parse_failed = 0;
+static __thread int g_json_parse_status = JSON_PARSE_OK;
+static __thread size_t g_json_parse_err_pos = 0;
+static __thread const char* g_json_parse_base = NULL;
+static __thread char g_json_parse_err_detail[192];
+static __thread int g_json_parse_quiet = 0;
 #endif
+
+// 记录首个失败(位置按原文偏移;detail 可为 NULL)。
+static void json_set_failure(int status, const char* at, const char* detail) {
+    if (g_json_parse_status != JSON_PARSE_OK) return;
+    g_json_parse_status = status;
+    g_json_parse_err_pos = (g_json_parse_base && at && at > g_json_parse_base)
+                         ? (size_t)(at - g_json_parse_base) : 0;
+    if (detail) {
+        snprintf(g_json_parse_err_detail, sizeof(g_json_parse_err_detail), "%s", detail);
+    } else {
+        g_json_parse_err_detail[0] = '\0';
+    }
+}
+
+// 数值越界诊断:解() 保留旧行为(stderr 一行诊断,基线 192 钉住);试解 静默,
+// 原因经 .错误 返回(quiet=1),避免 API 调用在 stderr 留噪声。
+static void json_range_failure(const char* at, const char* detail) {
+    if (!g_json_parse_quiet) {
+        fprintf(stderr, "[玄铁运行时错误] 解(): %s\n", detail);
+    }
+    json_set_failure(JSON_PARSE_RANGE, at, detail);
+}
+
+static int json_hex_digit(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
 
 static XTValue json_parse_value(const char** p);
 
 static XTString* json_parse_string(const char** p) {
-    if (**p != '"') return NULL;
+    if (**p != '"') {
+        json_set_failure(JSON_PARSE_SYNTAX, *p, "字符串缺少起始引号");
+        return NULL;
+    }
     (*p)++;
     // 动态缓冲:原 4096 定长缓冲会在长字符串(>4KB)上静默截断→解析失败整包返空
     // (LSP didOpen 全文必超 4KB,实测抓获)。按倍增扩容,长度以 pos 为准(二进制安全)。
     size_t cap = 256, pos = 0;
     char* buf = (char*)malloc(cap);
+    if (!buf) {
+        fprintf(stderr, "[玄铁运行时错误] 解(): 内存不足(字符串解析缓冲分配失败)\n");
+        exit(1);
+    }
     while (**p && **p != '"') {
-        if (pos + 8 >= cap) { cap *= 2; buf = (char*)realloc(buf, cap); }
+        if (pos + 8 >= cap) {
+            char* nb = (char*)realloc(buf, cap * 2);
+            if (!nb) {
+                fprintf(stderr, "[玄铁运行时错误] 解(): 内存不足(字符串解析缓冲扩容失败)\n");
+                free(buf);
+                exit(1);
+            }
+            buf = nb;
+            cap *= 2;
+        }
         if (**p == '\\') {
             (*p)++;
             switch (**p) {
@@ -5865,26 +6129,42 @@ static XTString* json_parse_string(const char** p) {
                 case 'f':  buf[pos++] = '\f'; break;
                 case 'b':  buf[pos++] = '\b'; break;
                 case 'u': {
-                    char hex[5] = {0};
-                    int h = 0;
-                    for (; h < 4 && **p; h++) hex[h] = *((*p)++);
-                    if (h == 4) {
-                        unsigned codepoint = (unsigned)strtol(hex, NULL, 16);
-                        if (codepoint < 0x80) { buf[pos++] = (char)codepoint; }
-                        else if (codepoint < 0x800) { buf[pos++] = (char)(0xC0 | (codepoint >> 6)); buf[pos++] = (char)(0x80 | (codepoint & 0x3F)); }
-                        else { buf[pos++] = (char)(0xE0 | (codepoint >> 12)); buf[pos++] = (char)(0x80 | ((codepoint >> 6) & 0x3F)); buf[pos++] = (char)(0x80 | (codepoint & 0x3F)); }
-                        (*p)--;
+                    // 严格:必须恰好 4 个十六进制位(旧实现遇到不足 4 位时静默吞字符)
+                    unsigned codepoint = 0;
+                    for (int h = 0; h < 4; h++) {
+                        (*p)++;
+                        int d = json_hex_digit(**p);
+                        if (d < 0) {
+                            free(buf);
+                            json_set_failure(JSON_PARSE_SYNTAX, *p, "\\u 转义需要恰好 4 位十六进制数字");
+                            return NULL;
+                        }
+                        codepoint = (codepoint << 4) | (unsigned)d;
                     }
+                    // 编码口径与旧实现一致(U+10000 以上的代理对按单码点 3 字节,已知限制)
+                    if (codepoint < 0x80) { buf[pos++] = (char)codepoint; }
+                    else if (codepoint < 0x800) { buf[pos++] = (char)(0xC0 | (codepoint >> 6)); buf[pos++] = (char)(0x80 | (codepoint & 0x3F)); }
+                    else { buf[pos++] = (char)(0xE0 | (codepoint >> 12)); buf[pos++] = (char)(0x80 | ((codepoint >> 6) & 0x3F)); buf[pos++] = (char)(0x80 | (codepoint & 0x3F)); }
                     break;
                 }
-                default: buf[pos++] = **p; break;
+                default: {
+                    // JSON 只允许 " \ / b f n r t u 八种转义;未知转义是非法 JSON
+                    free(buf);
+                    json_set_failure(JSON_PARSE_SYNTAX, *p, "字符串含非法转义序列");
+                    return NULL;
+                }
             }
         } else {
             buf[pos++] = **p;
         }
         (*p)++;
     }
-    if (**p == '"') (*p)++;
+    if (**p != '"') {
+        free(buf);
+        json_set_failure(JSON_PARSE_SYNTAX, *p, "字符串缺少结束引号");
+        return NULL;
+    }
+    (*p)++;
     XTString* res = xt_string_new_len(buf, pos);
     free(buf);
     return res;
@@ -5918,70 +6198,132 @@ static XTValue json_parse_number(const char** p) {
     const char* start = *p;
     int is_int = 1;   // 纯整数 token(无小数/指数)才走 整 的标记编码域检查
     if (**p == '-') (*p)++;
+    const char* int_part = *p;
     while (**p >= '0' && **p <= '9') (*p)++;
+    if (*p == int_part) {
+        // JSON 数字:可选负号后必须有至少一位整数数字("-.5"/"-" 都不是合法 JSON)
+        json_set_failure(JSON_PARSE_SYNTAX, start, "数字缺少整数部分");
+        *p = start;
+        return XT_NULL;
+    }
     if (**p == '.') {
         is_int = 0;
         (*p)++;
+        const char* frac = *p;
         while (**p >= '0' && **p <= '9') (*p)++;
+        if (*p == frac) {
+            json_set_failure(JSON_PARSE_SYNTAX, start, "小数点后缺少数字");
+            *p = start;
+            return XT_NULL;
+        }
     }
     if (**p == 'e' || **p == 'E') {
         is_int = 0;
         (*p)++;
         if (**p == '+' || **p == '-') (*p)++;
+        const char* exp_part = *p;
         while (**p >= '0' && **p <= '9') (*p)++;
+        if (*p == exp_part) {
+            json_set_failure(JSON_PARSE_SYNTAX, start, "指数部分缺少数字");
+            *p = start;
+            return XT_NULL;
+        }
     }
-    size_t len = *p - start;
-    if (len == 0 || (len == 1 && start[0] == '-')) { *p = start; return XT_NULL; }
+    size_t len = (size_t)(*p - start);
     if (is_int) {
         int64_t iv = 0;
         // issue #150/#153:整 的标记编码域 ±(2^62-1)。越界必须显式诊断并让整份解析失败,
         // 绝不静默 XT_FROM_INT 溢出(旧行为:2^62 读成 -2^62,无任何提示)。
         if (!_xt_json_parse_int64(start, len, &iv) || !XT_INT_IN_TAG_RANGE(iv)) {
             int show = (int)(len > 64 ? 64 : len);
-            fprintf(stderr,
-                    "[玄铁运行时错误] 解(): 整数值超出 整 可表示域 ±(2^62-1): %.*s\n",
-                    show, start);
-            g_json_parse_failed = 1;
+            char detail[96];
+            snprintf(detail, sizeof(detail), "整数值超出 整 可表示域 ±(2^62-1): %.*s", show, start);
+            json_range_failure(start, detail);
             return XT_NULL;
         }
         return XT_FROM_INT(iv);
     }
-    // 浮点/指数 token:保持既有简化语义(不做浮点装箱,issue #145 另行跟踪)
+    // issue #145:浮点/指数 token 必须用 strtod 保真。旧实现 memcpy+atoll:
+    // 0.1→0、1e3→1、3.14→3,与 JSON 数字语义完全脱节。纯整数 token 不会走到这里。
+    if (len >= 128) {
+        char detail[96];
+        snprintf(detail, sizeof(detail), "数值字面量过长(超过 127 字节): %.*s", 48, start);
+        json_range_failure(start, detail);
+        return XT_NULL;
+    }
     char num[128];
-    if (len >= sizeof(num)) len = sizeof(num) - 1;
     memcpy(num, start, len); num[len] = '\0';
-    return XT_FROM_INT((int64_t)atoll(num));
+    errno = 0;
+    char* end = NULL;
+    double dv = strtod(num, &end);
+    if (!end || *end != '\0') {
+        json_set_failure(JSON_PARSE_SYNTAX, start, "数字字面量非法");
+        return XT_NULL;
+    }
+    if (!isfinite(dv)) {
+        // 十进制溢出(如 1e400)→ ±Inf:JSON 里没有 Inf 字面量,不能静默接受
+        char detail[96];
+        snprintf(detail, sizeof(detail), "浮点数值超出 double 可表示范围: %.*s",
+                 (int)(len > 40 ? 40 : len), start);
+        json_range_failure(start, detail);
+        return XT_NULL;
+    }
+    // 下溢(如 1e-400 → 0.0/次正规)按 IEEE 舍入接受:十进制 JSON 无法逐位保真,
+    // 与 Python/serde_json 等常见解析器口径一致;仅上溢/NaN 判失败。
+    return (XTValue)xt_float_new(dv);
 }
 
 static XTValue json_parse_object(const char** p) {
-    if (**p != '{') return XT_NULL;
+    if (**p != '{') {
+        json_set_failure(JSON_PARSE_SYNTAX, *p, "对象缺少起始 '{'");
+        return XT_NULL;
+    }
     (*p)++;
     XTValue dict = xt_dict_new(16);
     json_skip_ws(p);
     if (**p == '}') { (*p)++; return dict; }
     while (1) {
         json_skip_ws(p);
+        if (**p != '"') {
+            json_set_failure(JSON_PARSE_SYNTAX, *p, "对象键必须是字符串");
+            xt_release(dict);
+            return XT_NULL;
+        }
         XTString* key = json_parse_string(p);
         if (!key) { xt_release(dict); return XT_NULL; }
         json_skip_ws(p);
-        if (**p != ':') { xt_release((XTValue)key); xt_release(dict); return XT_NULL; }
+        if (**p != ':') {
+            json_set_failure(JSON_PARSE_SYNTAX, *p, "对象键后缺少 ':'");
+            xt_release((XTValue)key); xt_release(dict);
+            return XT_NULL;
+        }
         (*p)++;
         json_skip_ws(p);
         XTValue val = json_parse_value(p);
-        // issue #150/#153:越界整数等粘滞错误 → 整份解析失败(不把 null 当值塞进结果)
-        if (g_json_parse_failed) { xt_release((XTValue)key); xt_release(dict); return XT_NULL; }
+        // issue #150/#153:越界整数等粘滞错误 → 整份解析失败(不把坏值当 null 塞进结果)
+        if (g_json_parse_status != JSON_PARSE_OK) {
+            xt_release((XTValue)key); xt_release(dict);
+            return XT_NULL;
+        }
         xt_dict_set(dict, (XTValue)key, val);
         xt_release((XTValue)key);
         if (val != XT_NULL && !XT_IS_INT(val)) xt_release(val);
         json_skip_ws(p);
         if (**p == '}') { (*p)++; return dict; }
-        if (**p != ',') { xt_release(dict); return XT_NULL; }
+        if (**p != ',') {
+            json_set_failure(JSON_PARSE_SYNTAX, *p, "对象成员之间缺少 ','");
+            xt_release(dict);
+            return XT_NULL;
+        }
         (*p)++;
     }
 }
 
 static XTValue json_parse_array(const char** p) {
-    if (**p != '[') return XT_NULL;
+    if (**p != '[') {
+        json_set_failure(JSON_PARSE_SYNTAX, *p, "数组缺少起始 '['");
+        return XT_NULL;
+    }
     (*p)++;
     XTValue arr = xt_array_new(16);
     json_skip_ws(p);
@@ -5989,18 +6331,23 @@ static XTValue json_parse_array(const char** p) {
     while (1) {
         json_skip_ws(p);
         XTValue val = json_parse_value(p);
-        if (g_json_parse_failed) { xt_release(arr); return XT_NULL; }   // issue #150/#153
+        if (g_json_parse_status != JSON_PARSE_OK) { xt_release(arr); return XT_NULL; }   // issue #150/#153
         xt_array_append(arr, val);
         if (val != XT_NULL && !XT_IS_INT(val)) xt_release(val);
         json_skip_ws(p);
         if (**p == ']') { (*p)++; return arr; }
-        if (**p != ',') { xt_release(arr); return XT_NULL; }
+        if (**p != ',') {
+            json_set_failure(JSON_PARSE_SYNTAX, *p, "数组元素之间缺少 ','");
+            xt_release(arr);
+            return XT_NULL;
+        }
         (*p)++;
     }
 }
 
 static XTValue json_parse_value(const char** p) {
     json_skip_ws(p);
+    const char* start = *p;
     if (**p == '"') {
         XTString* s = json_parse_string(p);
         return s ? (XTValue)s : XT_NULL;
@@ -6011,7 +6358,53 @@ static XTValue json_parse_value(const char** p) {
     if (strncmp(*p, "true", 4) == 0) { *p += 4; return XT_TRUE; }
     if (strncmp(*p, "false", 5) == 0) { *p += 5; return XT_FALSE; }
     if (strncmp(*p, "null", 4) == 0) { *p += 4; return XT_NULL; }
+    // 未知 token:不是合法 JSON 值。到达结尾时不在这里判错——由调用方按上下文区分
+    // 「空输入」(顶层)与「容器被截断」(语法错误)。
+    if (**p != '\0') json_set_failure(JSON_PARSE_SYNTAX, start, "此处不是合法的 JSON 值");
     return XT_NULL;
+}
+
+// 统一解析入口:返回 JSON_PARSE_* 状态;成功时 *out_val 持有新建值(引用计数 1)。
+// quiet=1 时不向 stderr 打数值越界诊断(试解 把原因放进 .错误)。
+static int xt_json_parse_impl(XTString* json_str, XTValue* out_val, int quiet) {
+    *out_val = XT_NULL;
+    g_json_parse_status = JSON_PARSE_OK;
+    g_json_parse_err_pos = 0;
+    g_json_parse_err_detail[0] = '\0';
+    g_json_parse_quiet = quiet;
+    if (!json_str || json_str->length == 0) {
+        g_json_parse_status = JSON_PARSE_EMPTY;
+        return JSON_PARSE_EMPTY;
+    }
+    const char* base = json_str->data;
+    const char* p = base;
+    // issue #151:入口跳过 UTF-8 BOM(EF BB BF)。解() 的入参是任意字符串,入口容错属入口自身
+    // 责任(Windows 记事本/部分编辑器默认给 UTF-8 加 BOM);文件.读 的字节语义不变。
+    if (json_str->length >= 3
+        && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
+        p += 3;
+    }
+    g_json_parse_base = base;
+    json_skip_ws(&p);
+    if (*p == '\0') {
+        // 空串 / 只有 BOM / 只有空白:归入「空输入」,不是「非法 JSON」
+        g_json_parse_status = JSON_PARSE_EMPTY;
+        return JSON_PARSE_EMPTY;
+    }
+    XTValue result = json_parse_value(&p);
+    if (g_json_parse_status != JSON_PARSE_OK) {
+        if (result != XT_NULL && !XT_IS_INT(result)) xt_release(result);
+        return g_json_parse_status;
+    }
+    json_skip_ws(&p);
+    if (*p != '\0') {
+        // 旧实现静默忽略尾部垃圾("123abc" 解出 123);非法 JSON 必须整份失败
+        json_set_failure(JSON_PARSE_SYNTAX, p, "JSON 文本末尾有多余内容");
+        if (result != XT_NULL && !XT_IS_INT(result)) xt_release(result);
+        return JSON_PARSE_SYNTAX;
+    }
+    *out_val = result;
+    return JSON_PARSE_OK;
 }
 
 XTValue xt_json_deserialize(XTString* json_str) {
@@ -6024,22 +6417,54 @@ XTValue xt_json_deserialize(XTString* json_str) {
         fprintf(stderr, "  提示: 解 只接受字符串;文件.读 等返回 结果 容器,请先 若 r.成功 { 解(r.值) } 再使用。\n");
         exit(1);
     }
-    if (json_str->length == 0) return XT_NULL;
-    const char* p = json_str->data;
-    // issue #151:入口跳过 UTF-8 BOM(EF BB BF)。解() 的入参是任意字符串,入口容错属入口自身
-    // 责任(Windows 记事本/部分编辑器默认给 UTF-8 加 BOM);文件.读 的字节语义不变。
-    if (json_str->length >= 3
-        && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) {
-        p += 3;
-    }
-    g_json_parse_failed = 0;
-    XTValue result = json_parse_value(&p);
-    if (g_json_parse_failed) {
-        // issue #150/#153:数字越界等硬错误 → 整份 解() 返回 空(stderr 已有诊断行)
-        if (result != XT_NULL && !XT_IS_INT(result)) xt_release(result);
-        return XT_NULL;
-    }
+    // 兼容契约(issue #146):空串 / 非法 JSON / JSON null 一律返回 空。这是写死的旧行为;
+    // 需要区分三态请用 xt_json_try_deserialize(见 GUIDE/关键字/解.md)。
+    XTValue result = XT_NULL;
+    if (xt_json_parse_impl(json_str, &result, 0) != JSON_PARSE_OK) return XT_NULL;
     return result;
+}
+
+// issue #146:三态 JSON 反序列化(返回 结果)。
+// 成功: .成功=真,.值=解析值(合法 null → .值=空,仍算成功);
+// 失败: .成功=假,.错误=原因文本,前缀区分 "空输入" / "非法 JSON" / "数值越界"。
+// 语言层 v1 内建:试解(文本);C ABI 符号仍为 xt_json_try_deserialize(i64)。
+XTValue xt_json_try_deserialize(XTValue json_val) {
+    if (!xt_is_real_ptr(json_val) || ((XTObject*)json_val)->type_id != XT_TYPE_STRING) {
+        fprintf(stderr, "运行时错误: 试解(JSON三态反序列化) 收到非字符串输入\n");
+        fprintf(stderr, "  提示: 试解 只接受字符串;文件.读 等返回 结果 容器,请先 若 r.成功 { 试解(r.值) } 再使用。\n");
+        exit(1);
+    }
+    XTString* json_str = (XTString*)json_val;
+    XTValue parsed = XT_NULL;
+    int status = xt_json_parse_impl(json_str, &parsed, 1);
+    if (status == JSON_PARSE_OK) {
+        XTValue res = (XTValue)xt_result_new(1, (void*)parsed, NULL);
+        if (parsed != XT_NULL && !XT_IS_INT(parsed)) xt_release(parsed);  // 结果容器已持有一次引用
+        return res;
+    }
+    char msg[256];
+    switch (status) {
+        case JSON_PARSE_EMPTY:
+            snprintf(msg, sizeof(msg), "空输入: JSON 文本为空或仅含 BOM/空白");
+            break;
+        case JSON_PARSE_RANGE:
+            snprintf(msg, sizeof(msg), "数值越界: %s",
+                     g_json_parse_err_detail[0] ? g_json_parse_err_detail : "JSON 数字超出可表示范围");
+            break;
+        default:
+            if (g_json_parse_err_detail[0]) {
+                snprintf(msg, sizeof(msg), "非法 JSON: %s(第 %llu 字节处)",
+                         g_json_parse_err_detail, (unsigned long long)(g_json_parse_err_pos + 1));
+            } else {
+                snprintf(msg, sizeof(msg), "非法 JSON: 第 %llu 字节处语法不合法",
+                         (unsigned long long)(g_json_parse_err_pos + 1));
+            }
+            break;
+    }
+    XTString* err = xt_string_new(msg);
+    XTValue res = (XTValue)xt_result_new(0, NULL, (void*)err);
+    xt_release((XTValue)err);   // 结果容器已持有一次引用
+    return res;
 }
 
 // --- 通用算术与位运算 Fallback ---
