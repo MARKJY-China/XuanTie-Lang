@@ -7,7 +7,7 @@ dev 通道发布说明模板。
   - dev 的 GitHub Release 正文由 dev.yml 在每次构建时自动生成,不会读取本模板;
   - 本模板用于“需要人工写一份更完整的 dev 说明”的场景:复制为
     release/RELEASE_<dev 版本>.md 并提交(纯文档改动静默不触发 dev 构建,见 dev.yml 的 paths-ignore);
-  - dev 版本号格式:v<当前版本常量>-dev.<YYYYMMDD>.<sha7>;dev.yml 构建前会把版本常量临时 patch 成该版本,所以 -V 与 MANIFEST 都自洽;
+  - dev 版本号格式:v<下一个 rc>-<YYYYMMDD>.<sha7>(如 v1.0-rc.5-20261119.9ce4191);dev.yml 构建前会把版本常量临时 patch 成该版本,所以 -V 与 MANIFEST 都自洽;
     滚动 tag 固定为 `dev`(prerelease),不是版本号;
   - 本模板只解释“这一滚”的差异;版本/提交/日期等事实字段以 latest-dev.json 为准。
 -->

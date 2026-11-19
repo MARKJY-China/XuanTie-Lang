@@ -60,17 +60,23 @@ jobs:
           if [ "$GITHUB_REF_NAME" != "develop" ]; then
             echo "！！ dev 通道只允许从 develop 分支构建(当前: $GITHUB_REF_NAME)"; exit 1
           fi
-          # dev 版本由该常量 + 日期 + 提交推导;build job 会把常量临时 patch 成该版本(仅 CI 工作区,不提交)
-          BASE=$(grep -m1 '版本号 = "' xuantie_compiler/玄铁.xt | grep -oE 'v[0-9][0-9A-Za-z._-]*' | head -1)
-          [ -n "$BASE" ] || { echo "！！ 无法从 xuantie_compiler/玄铁.xt 解析版本号常量"; exit 1; }
-          case "$BASE" in
+          # 版本号唯一真源:xuantie_compiler/玄铁.xt 的「设 版本号 = "v..."」常量(只读)
+          # dev 版本格式(用户指定):v<下一个 rc>-<YYYYMMDD>.<sha7>,如 v1.0-rc.5-20261119.9ce4191。
+          RAW=$(grep -m1 '版本号 = "' xuantie_compiler/玄铁.xt | grep -oE 'v[0-9][0-9A-Za-z._-]*' | head -1)
+          [ -n "$RAW" ] || { echo "！！ 无法从 xuantie_compiler/玄铁.xt 解析版本号常量"; exit 1; }
+          case "$RAW" in
             v[0-9]*) ;;
-            *) echo "！！ 版本号常量格式异常: $BASE"; exit 1 ;;
+            *) echo "！！ 版本号常量格式异常: $RAW"; exit 1 ;;
           esac
+          # 去掉发布 tag 的 -YYYYMMDD.N 后缀;rc 段自增一位作为下一条 dev 线
+          BASE=$(printf '%s' "$RAW" | sed -E 's/-[0-9]{8}\.[0-9]+$//')
+          if [[ "$BASE" =~ ^(.*-rc\.)([0-9]+)$ ]]; then
+            BASE="${BASH_REMATCH[1]}$((BASH_REMATCH[2] + 1))"
+          fi
           DATE_COMPACT=$(date -u +%Y%m%d)
           DATE_ISO=$(date -u +%F)
           SHORT=$(printf '%s' "$GITHUB_SHA" | cut -c1-7)
-          VERSION="${BASE}-dev.${DATE_COMPACT}.${SHORT}"
+          VERSION="${BASE}-${DATE_COMPACT}.${SHORT}"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "date=$DATE_ISO" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -272,7 +278,7 @@ jobs:
 
           **升级方式**:当前先手动下载本页对应平台 `xuantie_*.tar.gz` 解压覆盖;`xtc 升级 --通道 dev` 待升级器改造后接入。
 
-          **口径说明**:本包内 `xtc -V` 的版本/通道来自编译期常量(基版本,通道显示 rc),dev 身份以 `latest-dev.json` 的 `version/commit` 为准(升级器按 commit 自检)。
+          **口径说明**:本包构建前已把版本常量 patch 为 dev 版本,`xtc -V` 应显示 `通道=dev` 与提交;清单 `latest-dev.json` 的 `version/commit` 为最终依据。
 
           **回滚**:重装最近一次 stable/rc 发行包;`xtc 升级 --通道 stable`(改造完成后)。
           DEV_NOTES_EOF
@@ -292,7 +298,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: dev
-          name: dev ${{ needs.meta.outputs.version }}
+          name: ${{ needs.meta.outputs.version }}
           target_commitish: ${{ github.sha }}
           prerelease: true
           make_latest: 'false'

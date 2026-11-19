@@ -30,8 +30,8 @@ v<基版本>-<YYYYMMDD>.<序号>
 ### dev 版本号
 
 ```
-v<基版本>-dev.<YYYYMMDD>.<sha7>
-例：v1.0-rc.5-dev.20261119.f00e409
+v<下一个 rc>-<YYYYMMDD>.<sha7>
+例：v1.0-rc.5-20261119.9ce4191
 ```
 
 - 由 `dev.yml` 的 meta job 从版本常量 + 构建提交推导；build job 在 checkout 后把 `设 版本号` **临时 patch 成该 dev 版本**（仅 CI 工作区，不提交），因此 dev 包内 `-V` 与 MANIFEST 均为 dev 版本。
@@ -71,7 +71,10 @@ hotfix 只允许 P0；不新增工作流、不新增通道清单，发布基础�
 
 ## 3. 通道清单（升级器唯一真源）
 
-地址（ROS 桶根目录，文档站可反代，见 [docs/发布与升级源.md](../docs/发布与升级源.md)）：
+地址：
+
+- **默认**：GitHub Release 资产(`releases/latest/download/latest.json` / `releases/download/dev/latest-dev.json`)；清单内 URL 也指向 GitHub 资产。
+- **国内镜像**：ROS 桶根目录，文档站可反代；ROS 写失败时发布流水线以 `--best-effort` 继续，清单仍由 GitHub 资产提供，不阻塞 Release（见 [docs/发布与升级源.md](../docs/发布与升级源.md)）。
 
 | 通道 | ROS key | 建议文档站地址 |
 |---|---|---|
