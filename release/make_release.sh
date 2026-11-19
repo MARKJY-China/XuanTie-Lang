@@ -10,7 +10,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_WIN="$(cygpath -w "$ROOT")"   # PowerShell 只认 Windows 形式路径(G:\...)
 ISCC=$ROOT/temp/innosetup/ISCC.exe
-VER=v1.0-rc.4
+VER=v1.0-rc.4-20261119.1
 
 [ -f "$ISCC" ] || { echo "错误: 未找到 $ISCC(Inno Setup 便携版)"; exit 1; }
 
