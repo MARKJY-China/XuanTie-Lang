@@ -173,13 +173,29 @@ async function put(key, body, contentType) {
     console.log(`  [dry-run] PUT ${key} (${body.length} 字节)`)
     return
   }
-  const { url, headers } = signS3('PUT', key, body)
-  const res = await fetch(url, { method: 'PUT', headers: { ...headers, 'Content-Type': contentType, 'Content-Length': String(body.length) }, body })
-  if (!res.ok) {
+  const maxAttempts = 6
+  let lastErr = ''
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const { url, headers } = signS3('PUT', key, body)
+    const res = await fetch(url, { method: 'PUT', headers: { ...headers, 'Content-Type': contentType, 'Content-Length': String(body.length) }, body })
+    if (res.ok) {
+      console.log(`  已上传 ${key}`)
+      return
+    }
     const text = await res.text().catch(() => '')
-    throw new Error(`PUT ${key} 失败: HTTP ${res.status} ${text.slice(0, 300)}`)
+    lastErr = `HTTP ${res.status} ${text.slice(0, 300)}`
+    // 雨云 ROS 在短时间内连续写多个大对象时会返回 503 SlowDown / 429;
+    // 指数退避 + jitter,单对象最多重试 6 次(约 2+4+8+16+32s)。
+    if (res.status === 429 || res.status >= 500) {
+      const retryAfter = parseInt(res.headers.get('retry-after') || '0', 10)
+      const delay = retryAfter > 0 ? retryAfter * 1000 : Math.min(32000, 2000 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 500)
+      console.log(`  ${key} 上传失败(${lastErr});${Math.round(delay / 1000)}s 后重试 ${attempt}/${maxAttempts}`)
+      if (attempt < maxAttempts) await new Promise((r) => setTimeout(r, delay))
+      continue
+    }
+    break
   }
-  console.log(`  已上传 ${key}`)
+  throw new Error(`PUT ${key} 失败: ${lastErr}`)
 }
 
 console.log(`通道: ${CHANNEL}  版本: ${VERSION}  发布 tag: ${TAG}  清单: ${MANIFEST_NAME}`)
