@@ -66,6 +66,7 @@
     设 检查模式 // --检查:语义错误收集模式(记录后继续编译,不即退;供 LSP 全文件诊断)
     设 语义错误列表 // 检查模式下收集的错误消息(每条已含定位串)
     设 库模式 // 库编译模式(-lib/--库):不发射 @main 入口桩,只产出 .o 对象供多对象链接
+    设 C导出列表 // issue #164:C ABI 导出函数元数据(函数名/导出名/参数类型/返回类型)
     设 变量语言类型表 // 语言级类型推断(字/整/小数/布尔/...),仅作自拼接等启发;""/缺省=未知
 
     设 查到可见性
@@ -147,6 +148,7 @@
         此.当前命名空间 = ""
         此.检查模式 = 假
         此.库模式 = 假
+        此.C导出列表 = []
         此.语义错误列表 = []
         此.变量语言类型表 = {}
         此.成员挂载痕迹 = {}
@@ -1346,11 +1348,11 @@
         此.写出("declare %XTString* @\"xt_string_new_len\"(i8*, i64)")
         此.写出("declare %XTString* @\"xt_obj_to_string\"(i64)")
         此.写出("declare %XTString* @\"xt_string_concat\"(%XTString*, %XTString*)")
-        此.写出("declare i64 @\"xt_add\"(i64, i64)")
-        此.写出("declare i64 @\"xt_sub\"(i64, i64)")
-        此.写出("declare i64 @\"xt_mul\"(i64, i64)")
-        此.写出("declare i64 @\"xt_div\"(i64, i64)")
-        此.写出("declare i64 @\"xt_mod\"(i64, i64)")
+        此.写出("declare i64 @\"xt_rt_add\"(i64, i64)")
+        此.写出("declare i64 @\"xt_rt_sub\"(i64, i64)")
+        此.写出("declare i64 @\"xt_rt_mul\"(i64, i64)")
+        此.写出("declare i64 @\"xt_rt_div\"(i64, i64)")
+        此.写出("declare i64 @\"xt_rt_mod\"(i64, i64)")
         // issue #153:静态整数内联路径的带域检查原生运算(入参/返回 raw i64)
         此.写出("declare i64 @\"xt_int_add_raw\"(i64, i64)")
         此.写出("declare i64 @\"xt_int_sub_raw\"(i64, i64)")
@@ -1371,7 +1373,7 @@
         此.写出("declare i32 @\"xt_exc_poll\"()")
         此.写出("declare void @\"xt_exc_clear\"()")
         此.写出("declare i64 @\"xt_exc_message\"()")
-        // P3 浮点 raw 除零路径:活动尝试块查询 + 可捕捉异常抛投(与装箱 xt_div 同约定)
+        // P3 浮点 raw 除零路径:活动尝试块查询 + 可捕捉异常抛投(与装箱 xt_rt_div 同约定)
         此.写出("declare i32 @\"xt_exc_active\"()")
         此.写出("declare void @\"xt_exc_raise\"(i8*)")
         // 批次一:核心支持库扩充
@@ -1571,6 +1573,9 @@
         此.写出("declare i64 @\"xt_bytes_to_string\"(i64)")
         此.写出("")
         
+        // issue #164:C ABI 包装(库模式 + 为 "..." 导出)
+        此.生成C导出包装()
+
         // 输出外部函数声明
         遍历 外部 于 此.外部函数输出列表 {
             此.写出(外部)
@@ -2549,7 +2554,13 @@
         此.寄存器数 = 0
         此.是全局 = 假
         
-        设 函数名 = "@\"" & 节点.函数名 & "\""
+        设 _内部符号名 = 节点.函数名
+        若 此.库模式 且 节点.导出名 != "" {
+            // C ABI 导出函数的内部符号也用 ASCII,避免 nm 出现中文符号;
+            // C 调用方只认 wrapper 的 ASCII 名。
+            _内部符号名 = "__xt_cabi_" & 节点.导出名
+        }
+        设 函数名 = "@\"" & _内部符号名 & "\""
 
         // 嵌套函数(定义在 循/若/块 内)必须先在当前符号表里登记自己,否则函数体内自调用
         // 报「未知标识符」——顶层函数靠预扫描先注册,块内函数走不到预扫描。
@@ -2652,6 +2663,26 @@
         }
         // 登记参数个数,供调用处做参数个数校验(S4 诊断强化)
         此.函数参数数量表[节点.函数名] = 节点.参数列表.长度
+
+        // issue #164:C ABI 导出元数据。参数类型来自注解(未注解视为整,与既有隐式标量行为一致)。
+        若 节点.导出名 != "" {
+            设 _参数信息 = []
+            遍历 _导出参 于 节点.参数列表 {
+                设 _注解 = "整"
+                若 _导出参.推导类型 != "" 且 _导出参.推导类型 != "未知" { _注解 = _导出参.推导类型 }
+                _参数信息.追加({"名": _导出参.标识符名称, "类型": _注解})
+            }
+            设 _返回注解 = "空"
+            若 节点.返回类型 != "" { _返回注解 = 节点.返回类型 }
+            此.C导出列表.追加({
+                "函数名": 节点.函数名,
+                "内部符号": _内部符号名,
+                "导出名": 节点.导出名,
+                "参数": _参数信息,
+                "返回": _返回注解,
+                "行": 节点.节点行
+            })
+        }
         
         此.编译语句(节点.函数体块)
         
@@ -7936,8 +7967,8 @@
                     此.写出("  store i64 " & _pfO & ", i64* " & _pfRes)
                     此.写出("  br label %" & _pfMergeL)
                     此.写出(_pf零L & ":")
-                    设 _pfFd = "xt_div"
-                    若 _pf码 == "srem" { _pfFd = "xt_mod" }
+                    设 _pfFd = "xt_rt_div"
+                    若 _pf码 == "srem" { _pfFd = "xt_rt_mod" }
                     设 _pfRz = 此.取新寄存器()
                     此.写出("  " & _pfRz & " = call i64 @\"" & _pfFd & "\"(i64 " & _lXt2 & ", i64 " & _rXt2 & ")")
                     此.写出("  store i64 " & _pfRz & ", i64* " & _pfRes)
@@ -8389,12 +8420,12 @@
         // 加法的运行时分派(根治字符串拼接堆损坏):到此处说明静态无法确证纯整数
         // (5992 推导类型=="整" 的静态路径早已退),boxed i64 可能是字符串指针——
         // 内联 add 会把指针当整数加(指针算术产出野指针,release 即堆损坏)。
-        // xt_add 运行时按对象类型分派:任一侧字符串→拼接,否则数值加。
+        // xt_rt_add 运行时按对象类型分派:任一侧字符串→拼接,否则数值加。
         若 指令 == "add" {
             设 _aXt = 此.符(此.确保I64(左寄存器, 左类型))
             设 _bXt = 此.符(此.确保I64(右寄存器, 右类型))
             设 _addRes = 此.取新寄存器()
-            此.写出("  " & _addRes & " = call i64 @xt_add(i64 " & _aXt & ", i64 " & _bXt & ")")
+            此.写出("  " & _addRes & " = call i64 @xt_rt_add(i64 " & _aXt & ", i64 " & _bXt & ")")
             此.写_释放_xt(左寄存器, 左类型)
             此.写_释放_xt(右寄存器, 右类型)
             设 _radd = [_addRes, "i64"]
@@ -8403,8 +8434,8 @@
 
         // 除/模一律走运行时:除零约定(返 0;有活动尝试块则抛可捕捉异常),与操作数形态无关
         若 指令 == "sdiv" 或 指令 == "srem" {
-            设 _fd = "xt_div"
-            若 指令 == "srem" { _fd = "xt_mod" }
+            设 _fd = "xt_rt_div"
+            若 指令 == "srem" { _fd = "xt_rt_mod" }
             设 _aD = 此.符(此.确保I64(左寄存器, 左类型))
             设 _bD = 此.符(此.确保I64(右寄存器, 右类型))
             设 _arD = 此.取新寄存器()
@@ -8417,11 +8448,11 @@
 
         // 装箱安全分派:两侧同为 raw_i64 才允许内联整数指令;任一 i64 装箱值可能挟带浮点
         // (或字符串)指针——内联 mul/sub 前 ashr 截位指针即垃圾(浮点算术曾因此全线产出野值)。
-        // 运行时 xt_sub/xt_mul 内含浮点对象分派(整/浮混合提升),整数仅多一次调用。
+        // 运行时 xt_rt_sub/xt_rt_mul 内含浮点对象分派(整/浮混合提升),整数仅多一次调用。
         若 指令 == "sub" 或 指令 == "mul" {
             若 左类型 != "raw_i64" 或 右类型 != "raw_i64" {
-                设 _fn = "xt_sub"
-                若 指令 == "mul" { _fn = "xt_mul" }
+                设 _fn = "xt_rt_sub"
+                若 指令 == "mul" { _fn = "xt_rt_mul" }
                 设 _aX = 此.符(此.确保I64(左寄存器, 左类型))
                 设 _bX = 此.符(此.确保I64(右寄存器, 右类型))
                 设 _ar = 此.取新寄存器()
@@ -9098,6 +9129,205 @@
         若 此.类型表.含?(清理) { 返 清理 }
         返 ""
     }
+
+
+    // ============================================================
+    // issue #164:C ABI 导出(实验)
+    // ============================================================
+    函 C导出类型(注解) {
+        若 注解 == "整" 或 注解 == "整数" { 返 "i64" }
+        若 注解 == "布尔" { 返 "i32" }
+        若 注解 == "字" 或 注解 == "字符串" { 返 "i8*" }
+        若 注解 == "空" 或 注解 == "" { 返 "void" }
+        返 ""
+    }
+
+    函 C头文件类型(注解) {
+        若 注解 == "整" 或 注解 == "整数" { 返 "int64_t" }
+        若 注解 == "布尔" { 返 "int32_t" }
+        若 注解 == "字" 或 注解 == "字符串" { 返 "char*" }
+        若 注解 == "空" 或 注解 == "" { 返 "void" }
+        返 ""
+    }
+
+    函 C导出名合法(名) {
+        若 名 == "" { 返 假 }
+        设 _头 = 名.截取(0, 1)
+        若 非 "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_".包含?(_头) { 返 假 }
+        设 _i = 1
+        当 _i < 名.字符数 {
+            设 _c = 名.截取(_i, _i + 1)
+            若 非 "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_0123456789".包含?(_c) { 返 假 }
+            _i = _i + 1
+        }
+        返 真
+    }
+
+    函 生成C导出包装() {
+        若 非 此.库模式 { 返 }
+        若 此.C导出列表.长度 == 0 { 返 }
+        // 边界转换运行时
+        此.外部函数输出列表.追加("declare i64 @\"xt_cabi_string_new\"(i8*)")
+        此.外部函数输出列表.追加("declare i8* @\"xt_cabi_string_copy\"(i64)")
+        设 cabi_seen = {}
+        设 cabi_alias = ""
+        设 cabi_internal = ""
+        设 cabi_ret = ""
+        设 cabi_sig = []
+        设 cabi_conv = []
+        设 cabi_args = []
+        设 cabi_i = 0
+        设 cabi_bad = 假
+        设 cabi_lines = []
+        设 cabi_call = ""
+        设 cabi_arg = ""
+        设 cabi_tag = ""
+        设 cabi_init = []
+
+        遍历 _导出 于 此.C导出列表 {
+            cabi_alias = _导出["导出名"]
+            cabi_internal = _导出["内部符号"]
+            若 非 此.C导出名合法(cabi_alias) {
+                此.语义错误列表.追加("C ABI 导出名 '" & cabi_alias & "' 不是合法 ASCII C 标识符(函数 " & cabi_internal & ",行 " & _导出["行"] & ")")
+                续
+            }
+            若 cabi_seen.含?(cabi_alias) {
+                此.语义错误列表.追加("C ABI 导出名 '" & cabi_alias & "' 重复(函数 " & cabi_internal & ")")
+                续
+            }
+            cabi_seen[cabi_alias] = 真
+            cabi_ret = 此.C导出类型(_导出["返回"])
+            若 cabi_ret == "" {
+                此.语义错误列表.追加("C ABI 暂不支持返回类型 '" & _导出["返回"] & "'(函数 " & cabi_internal & ")")
+                续
+            }
+            cabi_sig = []
+            cabi_conv = []
+            cabi_args = []
+            cabi_bad = 假
+            遍历 _参 于 _导出["参数"] {
+                若 此.C导出类型(_参["类型"]) == "" 或 此.C导出类型(_参["类型"]) == "void" {
+                    此.语义错误列表.追加("C ABI 暂不支持参数类型 '" & _参["类型"] & "'(函数 " & cabi_internal & ")")
+                    cabi_bad = 真
+                    断
+                }
+                cabi_arg = "%arg" & cabi_i
+                cabi_tag = "%xt" & cabi_i
+                cabi_sig.追加(此.C导出类型(_参["类型"]) & " " & cabi_arg)
+                若 此.C导出类型(_参["类型"]) == "i64" {
+                    cabi_conv.追加("  %sh" & cabi_i & " = shl i64 " & cabi_arg & ", 1")
+                    cabi_conv.追加("  " & cabi_tag & " = or i64 %sh" & cabi_i & ", 1")
+                } 抑 此.C导出类型(_参["类型"]) == "i32" {
+                    cabi_conv.追加("  %b" & cabi_i & " = icmp ne i32 " & cabi_arg & ", 0")
+                    cabi_conv.追加("  " & cabi_tag & " = select i1 %b" & cabi_i & ", i64 4, i64 2")
+                } 否 {
+                    cabi_conv.追加("  " & cabi_tag & " = call i64 @\"xt_cabi_string_new\"(i8* " & cabi_arg & ")")
+                }
+                cabi_args.追加("i64 " & cabi_tag)
+                cabi_i = cabi_i + 1
+            }
+            若 cabi_bad { 续 }
+            cabi_lines = []
+            cabi_lines.追加("define " & cabi_ret & " @\"" & cabi_alias & "\"(" & cabi_sig.连接(", ") & ") {")
+            cabi_lines.追加("entry:")
+            遍历 _转 于 cabi_conv { cabi_lines.追加(_转) }
+            cabi_call = "  call i64 @\"" & cabi_internal & "\"(" & cabi_args.连接(", ") & ")"
+            若 cabi_ret == "void" {
+                cabi_lines.追加(cabi_call)
+                cabi_lines.追加("  ret void")
+            } 否 {
+                cabi_lines.追加("  %ret = call i64 @\"" & cabi_internal & "\"(" & cabi_args.连接(", ") & ")")
+                若 cabi_ret == "i64" {
+                    cabi_lines.追加("  %unbox = ashr i64 %ret, 1")
+                    cabi_lines.追加("  ret i64 %unbox")
+                } 抑 cabi_ret == "i32" {
+                    cabi_lines.追加("  %isTrue = icmp eq i64 %ret, 4")
+                    cabi_lines.追加("  %asC = zext i1 %isTrue to i32")
+                    cabi_lines.追加("  ret i32 %asC")
+                } 否 {
+                    cabi_lines.追加("  %cs = call i8* @\"xt_cabi_string_copy\"(i64 %ret)")
+                    cabi_lines.追加("  ret i8* %cs")
+                }
+            }
+            cabi_lines.追加("}")
+            此.函数输出列表.追加(cabi_lines.连接("\n"))
+        }
+        // C 侧显式初始化入口(内部调 xt_init)
+        cabi_init = []
+        cabi_init.追加("define void @xt_lib_init() {")
+        cabi_init.追加("entry:")
+        cabi_init.追加("  call void @xt_init()")
+        cabi_init.追加("  ret void")
+        cabi_init.追加("}")
+        此.函数输出列表.追加(cabi_init.连接("\n"))
+    }
+
+
+}
+
+
+// C ABI 类型映射(自由函数,供 --emit-header 使用;方法版供包装生成)
+函 C头文件类型(注解) {
+    若 注解 == "整" 或 注解 == "整数" { 返 "int64_t" }
+    若 注解 == "布尔" { 返 "int32_t" }
+    若 注解 == "字" 或 注解 == "字符串" { 返 "char*" }
+    若 注解 == "空" 或 注解 == "" { 返 "void" }
+    返 ""
+}
+
+函 生成C头文件(编译器, 导出列表, 头路径) {
+
+    设 h_exports = 导出列表
+    若 h_exports.长度 == 0 {
+        编译器.语义错误列表.追加("--emit-header: 没有任何 为 \"...\" 的 C ABI 导出函数")
+        返 假
+    }
+    设 hcabi_lines = []
+    设 hcabi_ret = ""
+    设 hcabi_hsig = []
+    设 hcabi_i = 0
+    设 hcabi_doc = ""
+    设 hcabi_wr = 空
+    hcabi_lines.追加("/* 玄铁 C ABI 导出(实验,issue #164)。由 xtc -lib --emit-header 生成 */")
+    hcabi_lines.追加("#ifndef XT_C_ABI_H")
+    hcabi_lines.追加("#define XT_C_ABI_H")
+    hcabi_lines.追加("#include <stdint.h>")
+    hcabi_lines.追加("#include <stddef.h>")
+    hcabi_lines.追加("#ifdef __cplusplus")
+    hcabi_lines.追加("extern \"C\" {")
+    hcabi_lines.追加("#endif")
+    hcabi_lines.追加("")
+    hcabi_lines.追加("/* 首次调用任何导出函数前调用一次 */")
+    hcabi_lines.追加("void xt_lib_init(void);")
+    hcabi_lines.追加("/* 释放字符串返回值(所有权移交调用方) */")
+    hcabi_lines.追加("void xt_cabi_string_free(char* p);")
+    hcabi_lines.追加("")
+    遍历 _h导出 于 h_exports {
+        hcabi_ret = C头文件类型(_h导出["返回"])
+        若 hcabi_ret == "" { 续 }
+        hcabi_hsig = []
+        hcabi_i = 0
+        遍历 _h参 于 _h导出["参数"] {
+            若 C头文件类型(_h参["类型"]) == "" 或 C头文件类型(_h参["类型"]) == "void" { hcabi_hsig.追加("/* unsupported */ int64_t arg" & hcabi_i) }
+            抑 C头文件类型(_h参["类型"]) == "char*" { hcabi_hsig.追加("const char* arg" & hcabi_i) }
+            否 { hcabi_hsig.追加(C头文件类型(_h参["类型"]) & " arg" & hcabi_i) }
+            hcabi_i = hcabi_i + 1
+        }
+        hcabi_lines.追加("/* 玄铁函数: " & _h导出["函数名"] & " */")
+        hcabi_lines.追加(hcabi_ret & " " & _h导出["导出名"] & "(" & hcabi_hsig.连接(", ") & ");")
+        hcabi_lines.追加("")
+    }
+    hcabi_lines.追加("#ifdef __cplusplus")
+    hcabi_lines.追加("}")
+    hcabi_lines.追加("#endif")
+    hcabi_lines.追加("#endif")
+    hcabi_doc = hcabi_lines.连接("\n") & "\n"
+    hcabi_wr = 文件.写(头路径, hcabi_doc)
+    若 非 hcabi_wr.成功 {
+        编译器.语义错误列表.追加("C 头文件写入失败: " & 头路径 & " [" & hcabi_wr.错误 & "]")
+        返 假
+    }
+    返 真
 
 }
 

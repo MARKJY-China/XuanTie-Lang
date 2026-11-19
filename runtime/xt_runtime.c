@@ -2388,7 +2388,7 @@ int xt_string_ends_with(XTString* s, XTString* p) {
  * @brief 字符串拼接核心逻辑
  */
 // data/len 级拼接核心(concat 与字面量直拼共用)
-// maxrc = 原地追加的引用计数阈值:xt_add 等"load+retain"路径传 2(槽位+临时引用);
+// maxrc = 原地追加的引用计数阈值:xt_rt_add 等"load+retain"路径传 2(槽位+临时引用);
 // xt_string_append 自拼接路径(load 不 retain)传 1。超过即共享,走慢路径新建,不污染共享者。
 static XTString* xt_concat_raw(XTString* s1, const char* d2, size_t len2, uint32_t maxrc) {
     size_t len1 = s1 ? s1->length : 0;
@@ -6045,7 +6045,7 @@ XTValue xt_json_deserialize(XTString* json_str) {
 // --- 通用算术与位运算 Fallback ---
 
 /**
- * @brief 自拼接专用追加(s = s + X 的编译落点):字符串情形原地追加优先,其余回退 xt_add。
+ * @brief 自拼接专用追加(s = s + X 的编译落点):字符串情形原地追加优先,其余回退 xt_rt_add。
  * 契约:不消耗 a/b 的引用;原地复用 a 时先 retain 预支(调用方随后 release a 一次,净平衡)。
  */
 XTValue xt_string_append(XTValue a, XTValue b) {
@@ -6061,7 +6061,7 @@ XTValue xt_string_append(XTValue a, XTValue b) {
         if (sbOwned) xt_release((XTValue)sb);
         return (XTValue)r;
     }
-    return xt_add(a, b);
+    return xt_rt_add(a, b);
 }
 
 /* issue #153:整的标记编码域为 ±(2^62-1)。加法/减法/乘法/位移/位运算都可能把结果
@@ -6117,7 +6117,7 @@ int64_t xt_int_mul_raw(int64_t a, int64_t b) {
 }
 
 int64_t xt_int_div_raw(int64_t a, int64_t b) {
-    if (b == 0) return 0;   /* 编译器快路径零除数已分流到 xt_div;这里兜底返 0 */
+    if (b == 0) return 0;   /* 编译器快路径零除数已分流到 xt_rt_div;这里兜底返 0 */
     if (a == INT64_MIN && b == -1) { xt_int_overflow("除"); return 0; }
     return xt_int_raw_checked("除", a / b);
 }
@@ -6144,7 +6144,7 @@ int64_t xt_int_shr_raw(int64_t a, int64_t sh) {
     return xt_int_raw_checked("右移", a >> (unsigned)sh);
 }
 
-XTValue xt_add(XTValue a, XTValue b) {
+XTValue xt_rt_add(XTValue a, XTValue b) {
     // 字符串拼接分派:任一侧为字符串对象 → 字符串化拼接(与 & 运算符、GSC 解释器语义一致)。
     // 编译器对静态不可证纯整数的 boxed i64 一律落到这里——boxed 可能是字符串指针,
     // 绝不可按整数内联 add(指针算术产出野指针,release 即堆损坏)。
@@ -6183,7 +6183,7 @@ XTValue xt_add(XTValue a, XTValue b) {
     }
 }
 
-XTValue xt_sub(XTValue a, XTValue b) {
+XTValue xt_rt_sub(XTValue a, XTValue b) {
     if (XT_IS_INT(a) && XT_IS_INT(b)) {
         int64_t r;
         if (__builtin_sub_overflow(XT_TO_INT(a), XT_TO_INT(b), &r)) { xt_int_overflow("减"); return XT_FROM_INT(0); }
@@ -6204,7 +6204,7 @@ XTValue xt_sub(XTValue a, XTValue b) {
     }
 }
 
-XTValue xt_mul(XTValue a, XTValue b) {
+XTValue xt_rt_mul(XTValue a, XTValue b) {
     if (XT_IS_INT(a) && XT_IS_INT(b)) {
         int64_t r;
         if (__builtin_mul_overflow(XT_TO_INT(a), XT_TO_INT(b), &r)) { xt_int_overflow("乘"); return XT_FROM_INT(0); }
@@ -6225,7 +6225,7 @@ XTValue xt_mul(XTValue a, XTValue b) {
     }
 }
 
-XTValue xt_div(XTValue a, XTValue b) {
+XTValue xt_rt_div(XTValue a, XTValue b) {
     // 浮点分派(除零与整数路径同约定:无尝试块时返 0.0;有活动尝试块则抛可捕捉异常)
     {
         double _da, _db;
@@ -6251,7 +6251,7 @@ XTValue xt_div(XTValue a, XTValue b) {
      }
  }
 
- XTValue xt_mod(XTValue a, XTValue b) {
+ XTValue xt_rt_mod(XTValue a, XTValue b) {
     {
         double _da, _db;
         int _af = XT_IS_REAL_PTR(a) && ((XTObject*)a)->type_id == XT_TYPE_FLOAT;
@@ -6455,4 +6455,35 @@ void xt_run_inherit_exit(XTValue exe_val, XTValue args_val, XTValue cleanup_val)
     }
     fflush(NULL);
     exit(code);
+}
+
+
+/* ============================================================
+ * C ABI 边界辅助(issue #164,实验)
+ * 只服务编译器生成的 ASCII wrapper;不属于玄铁语言内建 API。
+ * ============================================================ */
+int64_t xt_cabi_string_new(const char* s) {
+    XTString* str = xt_string_new(s ? s : "");
+    return (int64_t)(uintptr_t)str;
+}
+
+char* xt_cabi_string_copy(int64_t val) {
+    if (!xt_is_real_ptr((XTValue)val)) return NULL;
+    XTObject* o = (XTObject*)(uintptr_t)val;
+    if (o->type_id != XT_TYPE_STRING) {
+        /* 非字符串返回值:明确返回 NULL;调用方头文件说明字符串返回值才用 */
+        return NULL;
+    }
+    XTString* s = (XTString*)o;
+    size_t n = (size_t)s->length;
+    char* p = (char*)malloc(n + 1);
+    if (!p) return NULL;
+    if (n) memcpy(p, s->data, n);
+    p[n] = '\0';
+    xt_release((XTValue)val);
+    return p;
+}
+
+void xt_cabi_string_free(char* p) {
+    free(p);
 }

@@ -330,11 +330,11 @@ func (c *LLVMCompiler) Compile() string {
 	res.WriteString("declare void @xt_release(i64)\n")
 	res.WriteString("declare i64 @xt_to_int(i64)\n")
 	res.WriteString("declare i32 @xt_compare(i64, i64)\n")
-	res.WriteString("declare i64 @xt_add(i64, i64)\n")
-	res.WriteString("declare i64 @xt_sub(i64, i64)\n")
-	res.WriteString("declare i64 @xt_mul(i64, i64)\n")
-	res.WriteString("declare i64 @xt_div(i64, i64)\n")
-	res.WriteString("declare i64 @xt_mod(i64, i64)\n")
+	res.WriteString("declare i64 @xt_rt_add(i64, i64)\n")
+	res.WriteString("declare i64 @xt_rt_sub(i64, i64)\n")
+	res.WriteString("declare i64 @xt_rt_mul(i64, i64)\n")
+	res.WriteString("declare i64 @xt_rt_div(i64, i64)\n")
+	res.WriteString("declare i64 @xt_rt_mod(i64, i64)\n")
 	res.WriteString("declare i64 @xt_bit_and(i64, i64)\n")
 	res.WriteString("declare i64 @xt_bit_or(i64, i64)\n")
 	res.WriteString("declare i64 @xt_bit_xor(i64, i64)\n")
@@ -2725,15 +2725,15 @@ func (c *LLVMCompiler) compileExpression(expr ast.Expression) (string, string, s
 			rtFunc := ""
 			switch e.Operator {
 			case "+", "加":
-				rtFunc = "xt_add"
+				rtFunc = "xt_rt_add"
 			case "-", "减":
-				rtFunc = "xt_sub"
+				rtFunc = "xt_rt_sub"
 			case "*", "乘":
-				rtFunc = "xt_mul"
+				rtFunc = "xt_rt_mul"
 			case "/", "除":
-				rtFunc = "xt_div"
+				rtFunc = "xt_rt_div"
 			case "%", "取模":
-				rtFunc = "xt_mod"
+				rtFunc = "xt_rt_mod"
 			case "位与":
 				rtFunc = "xt_bit_and"
 			case "位或":

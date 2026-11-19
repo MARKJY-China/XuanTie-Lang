@@ -571,6 +571,11 @@ XTValue xt_execute(XTValue cmd_val);
 /// 执(命令, 超时毫秒):超时毫秒为 0/缺省走 xt_execute;>0 超时终止整棵子进程树并返回失败。
 XTValue xt_execute_timeout(XTValue cmd_val, XTValue timeout_val);
 
+/// C ABI 边界辅助(issue #164):C 字符串 ↔ XTString;字符串返回值由调用方 free
+int64_t xt_cabi_string_new(const char* s);
+char* xt_cabi_string_copy(int64_t val);
+void xt_cabi_string_free(char* p);
+
 /**
  * @brief 继承本进程控制台运行可执行文件并等待结束(编译器 `跑`/`pao` 指令用)
  *        与 执 的区别:不建管道、不隐藏窗口,子进程与本进程共用 stdin/stdout/stderr,可交互;返回退出码。
@@ -597,15 +602,15 @@ XTValue xt_file_write(XTValue path, XTValue content);
 XTValue xt_file_exists(XTValue path);
 
 // --- 算术与位运算接口 (用于 Fallback/多态/重载支持) ---
-XTValue xt_add(XTValue a, XTValue b);
-/// 自拼接专用(s = s + X):字符串原地追加优先,其余回退 xt_add
+XTValue xt_rt_add(XTValue a, XTValue b);
+/// 自拼接专用(s = s + X):字符串原地追加优先,其余回退 xt_rt_add
 XTValue xt_string_append(XTValue a, XTValue b);
 /// 字面量直拼(s = s + "字面量"):零对象分配追加
 XTValue xt_string_append_lit(XTValue a, const char* d, int64_t len);
-XTValue xt_sub(XTValue a, XTValue b);
-XTValue xt_mul(XTValue a, XTValue b);
-XTValue xt_div(XTValue a, XTValue b);
-XTValue xt_mod(XTValue a, XTValue b);
+XTValue xt_rt_sub(XTValue a, XTValue b);
+XTValue xt_rt_mul(XTValue a, XTValue b);
+XTValue xt_rt_div(XTValue a, XTValue b);
+XTValue xt_rt_mod(XTValue a, XTValue b);
 XTValue xt_bit_and(XTValue a, XTValue b);
 XTValue xt_bit_or(XTValue a, XTValue b);
 XTValue xt_bit_xor(XTValue a, XTValue b);

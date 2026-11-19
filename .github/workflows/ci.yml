@@ -139,6 +139,12 @@ jobs:
           PYTHONIOENCODING: "utf-8"
         run: python tools/check_abi_lib.py --xtc build/xtc_s4.exe
 
+      - name: "C ABI 导出门禁(issue #164:ASCII 符号/头文件/C demo)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: python tools/check_c_abi.py --xtc build/xtc_s4.exe
+
       - name: 失败时上传回归日志
         if: failure()
         uses: actions/upload-artifact@v4
@@ -268,6 +274,12 @@ jobs:
       - name: 自举链 + DDC 门禁(linux:硬判逐字节一致)
         shell: bash
         run: bash tools/bootstrap_check.sh
+
+      - name: "C ABI 导出门禁(issue #164:ASCII 符号/头文件/C demo)"
+        env:
+          PYTHONUTF8: "1"
+          PYTHONIOENCODING: "utf-8"
+        run: python tools/check_c_abi.py --xtc build/xtc_s4.exe
 
       # 字符流库门禁(linux):编译冒烟 + Unix pty 用例(示例全事件 / C1 读字节超时)。
       # pty 用例带 --require-pty:该平台必须有 pty,静默跳过视为失败。
