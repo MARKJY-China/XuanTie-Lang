@@ -1,0 +1,345 @@
+# 玄铁 dev 通道滚动构建 —— push develop 即产出发行包
+#
+# 四通道模型(四分支 → 通道 → tag):
+#   develop → dev    : 本工作流;滚动 prerelease tag `dev` + latest-dev.json
+#                      (绝不碰 latest.json,也不影响 GitHub /releases/latest)
+#   master  → rc     : release.yml + tag v<基版本>-<YYYYMMDD>.<序号>;预发布阶段写 latest.json,
+#                      v1.0.0 起写 latest-rc.json
+#   stable  → stable : release.yml + tag v1.0.x;写 latest.json(channel=stable,stable/hotfix 独占)
+#   hotfix  → stable : P0 热修短分支,从 stable 切出、回合 stable 并同步 master;同样走 release.yml
+#                      的 v1.0.x tag,写 latest.json(channel=stable)
+#
+# 构建范围与 release.yml 的 lang 矩阵一致:语言包 tar.gz × 3 平台
+# (windows_amd64 / linux_x86_64 / darwin_arm64);
+# dev 通道不产安装器、不签名、不发 arm64 / 铸造厂 IDE —— 那些仍只走 release.yml。
+# hotfix 短分支不触发 dev 构建(dev 只认 develop)。
+#
+# 保留策略:
+#   - GitHub:滚动 tag `dev` 只保留最近一次构建(每次先删旧 release+tag 再重建,不新建 latest);
+#   - ROS:每次写入 releases/<dev 版本>/,按“最近 14 天或最近 5 个”策略清理(本工作流暂不自动删除,见 release/RELEASE_README.md);
+#   - 清单:latest-dev.json(ROS 桶根目录 + 本 Release 附件)是 dev 通道升级的唯一真源。
+name: dev 滚动构建
+
+on:
+  push:
+    branches: [ develop ]
+    # 与 ci.yml 同口径:纯文档/展示资源改动不产 dev 包
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '**/*.png'
+      - '**/*.jpg'
+      - '**/*.ico'
+      - '**/*.ttf'
+      - '**/*.icns'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-rolling-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  meta:
+    name: 解析 dev 版本号
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      base: ${{ steps.meta.outputs.base }}
+      date: ${{ steps.meta.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: meta
+        name: 从源码版本常量推导 dev 版本
+        run: |
+          set -e
+          if [ "$GITHUB_REF_NAME" != "develop" ]; then
+            echo "！！ dev 通道只允许从 develop 分支构建(当前: $GITHUB_REF_NAME)"; exit 1
+          fi
+          # dev 版本由该常量 + 日期 + 提交推导;build job 会把常量临时 patch 成该版本(仅 CI 工作区,不提交)
+          BASE=$(grep -m1 '版本号 = "' xuantie_compiler/玄铁.xt | grep -oE 'v[0-9][0-9A-Za-z._-]*' | head -1)
+          [ -n "$BASE" ] || { echo "！！ 无法从 xuantie_compiler/玄铁.xt 解析版本号常量"; exit 1; }
+          case "$BASE" in
+            v[0-9]*) ;;
+            *) echo "！！ 版本号常量格式异常: $BASE"; exit 1 ;;
+          esac
+          DATE_COMPACT=$(date -u +%Y%m%d)
+          DATE_ISO=$(date -u +%F)
+          SHORT=$(printf '%s' "$GITHUB_SHA" | cut -c1-7)
+          VERSION="${BASE}-dev.${DATE_COMPACT}.${SHORT}"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "date=$DATE_ISO" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "dev 版本: $VERSION(基准 $BASE,提交 $GITHUB_SHA)"
+
+  build:
+    name: 构建 dev 包 (${{ matrix.slug }})
+    needs: meta
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            plat: windows
+            slug: windows_amd64
+          - os: ubuntu-latest
+            plat: linux
+            slug: linux_x86_64
+          - os: macos-15
+            plat: darwin
+            slug: darwin_arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    env:
+      DEV_VERSION: ${{ needs.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 将版本常量临时 patch 为 dev 版本(仅构建 checkout,不提交)
+        shell: bash
+        run: |
+          set -e
+          f=xuantie_compiler/玄铁.xt
+          grep -q '设 版本号 =' "$f"
+          sed -i.bak -E 's/(设 版本号 = ")[^"]*(")/\1'"$DEV_VERSION"'\2/' "$f"
+          grep -m1 '设 版本号 =' "$f"
+          grep -q '设 版本号 = "'"$DEV_VERSION"'"' "$f"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: "准备工具链(Windows: LLVM + MinGW 并探测布局)"
+        if: matrix.plat == 'windows'
+        shell: bash
+        run: |
+          set -e
+          if ! command -v clang >/dev/null 2>&1; then
+            if [ ! -f "/c/Program Files/LLVM/bin/clang.exe" ]; then
+              choco install llvm -y --no-progress
+            fi
+            echo 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          fi
+          choco install mingw -y --no-progress || true
+          # MinGW 安装位置随 choco 版本而异;逐候选探测,命中后写下 TDM_DIR/TDM_VER 供 make_pkg 抽取内嵌工具链;
+          # 全缺则显式失败并打印现场
+          MINGW64=""
+          for cand in "/c/ProgramData/mingw64/mingw64"                       "/c/ProgramData/chocolatey/lib/mingw/tools/install/mingw64"                       "/c/ProgramData/chocolatey/lib/mingw/tools/install"; do
+            if [ -f "$cand/bin/gcc.exe" ]; then MINGW64="$cand"; break; fi
+          done
+          if [ -z "$MINGW64" ]; then
+            echo "!! 未找到 MinGW gcc.exe,候选路径全缺;现场目录如下(据此调参):"
+            ls /c/ProgramData/ 2>/dev/null || true
+            ls /c/ProgramData/chocolatey/lib/mingw/tools/install 2>/dev/null || true
+            exit 1
+          fi
+          echo "MinGW 命中: $MINGW64"
+          VER=$(ls "$MINGW64/libexec/gcc/x86_64-w64-mingw32/" 2>/dev/null | head -1 || true)
+          if [ -n "$VER" ]; then echo "TDM_VER=$VER" >> "$GITHUB_ENV"; fi
+          echo "TDM_DIR=$MINGW64" >> "$GITHUB_ENV"
+          # LLVM 根:runner 预装 clang 的位置不固定,从 command -v 反推(与 make_pkg 同口径)
+          _cb=$(command -v clang 2>/dev/null || true)
+          for _cand in "$(dirname "$(dirname "$_cb")" 2>/dev/null)" "$(dirname "$_cb" 2>/dev/null)"; do
+            if [ -n "$_cand" ] && [ -f "$_cand/bin/clang.exe" ]; then
+              echo "LLVM_DIR=$_cand" >> "$GITHUB_ENV"
+              echo "LLVM 根: $_cand"
+              break
+            fi
+          done
+
+      - name: 构建种子编译器 GSC
+        run: go build -o xt_gsc.exe .
+
+      - name: 自举链 + DDC 门禁(相邻两级逐字节一致)
+        shell: bash
+        run: bash tools/bootstrap_check.sh
+
+      - name: 构建 tiepm 与 xt_lsp(各平台本机产物;tiepm.exe 未入库需现编)
+        shell: bash
+        run: |
+          set -e
+          # 链顶动态取自举链最高级(与 make_pkg 同口径)
+          TOP_N=0
+          for f in build/xtc_s*.exe; do
+            [ -f "$f" ] || continue
+            n=${f##*/xtc_s}; n=${n%.exe}
+            case "$n" in ''|*[!0-9]*) continue ;; esac
+            [ "$n" -gt "$TOP_N" ] && TOP_N=$n
+          done
+          XTC="./build/xtc_s$TOP_N.exe"
+          echo "链顶编译器: $XTC"
+          if [ "${{ matrix.plat }}" = "windows" ]; then
+            # Windows 分支产物名(与 make_pkg 的查找路径一致)
+          "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm.exe
+          else
+            "$XTC" 铁 tiepm/铁铺.xt -sc tiepm/tiepm
+            "$XTC" 铁 lsp/xt_lsp.xt -sc lsp/xt_lsp
+            ls -la tiepm/tiepm lsp/xt_lsp
+          fi
+
+      - name: 构建 VSCode 插件 vsix(Windows;make_pkg 内嵌插件,缺则打包失败)
+        if: matrix.plat == 'windows'
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File extensions/xuantie-syntax/build.ps1
+
+      - name: 组装发行包(release/make_pkg.sh)
+        shell: bash
+        run: bash release/make_pkg.sh
+
+      - name: 打压缩包 + 收拢产物(文件名带 dev 版本,便于追溯)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p out
+          cd temp/pkg_test
+          tar -czf "../../out/xuantie_${DEV_VERSION}_${{ matrix.slug }}.tar.gz" XuanTie
+          cd ../..
+          cp temp/pkg_test/XuanTie/MANIFEST.txt "out/MANIFEST_${{ matrix.slug }}.txt"
+          ls -la out/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dev-lang-${{ matrix.slug }}
+          path: out/
+          if-no-files-found: error
+
+  publish:
+    name: 发布 dev 滚动 Release + latest-dev.json
+    needs: [meta, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: dev-lang-*
+          merge-multiple: true
+
+      - name: 列出 dev 产物
+        run: ls -la artifacts/
+
+      - name: dev 指纹校验(MANIFEST 提交 == 本次构建;版本 == 源码版本常量)
+        run: |
+          set -e
+          BASE="${{ needs.meta.outputs.base }}"
+          echo "构建提交: $GITHUB_SHA;版本基准: $BASE"
+          ok=1
+          for f in artifacts/MANIFEST_*.txt; do
+            echo "── $f"
+            grep -m1 '^提交: ' "$f" || { echo "缺「提交:」行"; ok=0; }
+            grep -q "^提交: $GITHUB_SHA" "$f" || { echo "！！ MANIFEST 提交与本次构建不一致 —— 拒绝发布"; ok=0; }
+            grep -q "^版本: ${BASE}$" "$f" || { echo "！！ MANIFEST 版本与源码版本常量($BASE)不一致 —— 拒绝发布"; ok=0; }
+          done
+          [ "$ok" = "1" ] || exit 1
+          echo "dev 指纹校验通过"
+
+      - name: 生成 dev 清单(本地,不上传;先写一份供 Release 附件,ROS 上传在 Release 之后另跑)
+        run: |
+          node tools/publish-ros.mjs \
+            --dir artifacts \
+            --version "${{ needs.meta.outputs.version }}" \
+            --channel dev \
+            --commit "$GITHUB_SHA" \
+            --date "${{ needs.meta.outputs.date }}" \
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev" \
+            --dry-run
+
+      - name: 校验 dev 清单字段
+        run: |
+          jq -e --arg v "${{ needs.meta.outputs.version }}" --arg c "$GITHUB_SHA" \
+            '.channel == "dev" and .version == $v and .commit == $c and (.assets | length) > 0 and (.platforms | length) > 0' latest-dev.json
+          jq -r '"清单: channel=\(.channel) version=\(.version) commit=\(.commit) date=\(.date) 平台=\(.assets | keys | join(","))"' latest-dev.json
+
+      - name: 生成 dev Release 正文
+        run: |
+          cat > dev-release-body.md <<'DEV_NOTES_EOF'
+          ## dev 通道滚动构建
+
+          - 版本: `${{ needs.meta.outputs.version }}`
+          - 提交: `${{ github.sha }}`
+          - 构建日期: ${{ needs.meta.outputs.date }}
+          - 清单: `latest-dev.json`(本 Release 附件;ROS 桶根目录同名文件是升级器读取的唯一真源)
+
+          **通道说明**:dev 是 `develop` 分支的最新快照,滚动更新、**不签名**、**不保证稳定**,仅供提前试用与报 bug 定位。
+          本 Release 是 GitHub **prerelease** 的滚动 tag `dev`,不会出现在 `/releases/latest`;stable/rc 的 `latest.json` 不受影响。
+
+          **升级方式**:当前先手动下载本页对应平台 `xuantie_*.tar.gz` 解压覆盖;`xtc 升级 --通道 dev` 待升级器改造后接入。
+
+          **口径说明**:本包内 `xtc -V` 的版本/通道来自编译期常量(基版本,通道显示 rc),dev 身份以 `latest-dev.json` 的 `version/commit` 为准(升级器按 commit 自检)。
+
+          **回滚**:重装最近一次 stable/rc 发行包;`xtc 升级 --通道 stable`(改造完成后)。
+          DEV_NOTES_EOF
+
+      - name: 删除旧滚动 release 与 tag(只保留一个 dev Release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete dev --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            echo "已删除旧 dev release 与 tag"
+          else
+            echo "尚无旧 dev release(首次运行)"
+          fi
+
+      - name: 发布到 GitHub prerelease 滚动 tag dev
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          name: dev ${{ needs.meta.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: 'false'
+          body_path: dev-release-body.md
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: |
+            artifacts/*.tar.gz
+            artifacts/MANIFEST_*.txt
+            latest-dev.json
+
+      - name: 校验 releases/latest 未被 dev 影响
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          LATEST=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/latest" | jq -r '.tag_name // ""')
+          echo "GitHub releases/latest = $LATEST"
+          if [ "$LATEST" = "dev" ]; then
+            echo "！！ dev 被标记为 latest,违反通道纪律"; exit 1
+          fi
+
+      - name: 上传 dev 包到雨云 ROS 并刷新 latest-dev.json
+        env:
+          ROS_ENDPOINT: ${{ secrets.ROS_ENDPOINT }}
+          ROS_BUCKET: ${{ secrets.ROS_BUCKET }}
+          ROS_ACCESS_KEY: ${{ secrets.ROS_ACCESS_KEY }}
+          ROS_SECRET_KEY: ${{ secrets.ROS_SECRET_KEY }}
+          ROS_PUBLIC_BASE: ${{ secrets.ROS_PUBLIC_BASE }}
+        run: |
+          node tools/publish-ros.mjs \
+            --dir artifacts \
+            --version "${{ needs.meta.outputs.version }}" \
+            --channel dev \
+            --commit "$GITHUB_SHA" \
+            --date "${{ needs.meta.outputs.date }}" \
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev"
+
+      - name: 校验 stable latest.json 未被 dev 覆盖(尽力而为)
+        env:
+          ROS_PUBLIC_BASE: ${{ secrets.ROS_PUBLIC_BASE }}
+        run: |
+          if [ -z "${ROS_PUBLIC_BASE:-}" ]; then echo "未配置 ROS_PUBLIC_BASE,跳过"; exit 0; fi
+          if ! curl -fsS --max-time 20 "$ROS_PUBLIC_BASE/latest.json" -o /tmp/stable-latest.json; then
+            echo "⚠ 取不到 stable 清单(可能尚未发布或网络受限),跳过比对"; exit 0
+          fi
+          CH=$(jq -r '.channel // "(旧版清单无 channel 字段)"' /tmp/stable-latest.json)
+          VER=$(jq -r '.version // "?"' /tmp/stable-latest.json)
+          echo "stable 清单: version=$VER channel=$CH"
+          if [ "$CH" = "dev" ]; then echo "！！ latest.json 被 dev 覆盖"; exit 1; fi

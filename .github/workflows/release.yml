@@ -1,14 +1,27 @@
-# 玄铁多平台发布流水线:玄铁语言包(Windows / Linux x86_64 / macOS arm64)+ 铸造厂 IDE(Windows)
+# 玄铁发行流水线:rc / stable 通道(tag 触发),产出多平台发行包
 #
-# 触发方式(三选一):
-#   1. 打 tag 推送:      git tag v1.0-rc.3 && git push github v1.0-rc.3   → 构建并创建 GitHub Release
+# 四通道模型(四分支;见 release/RELEASE_README.md;dev 通道由 dev.yml 负责):
+#   develop → dev    : dev.yml;prerelease 滚动 tag `dev` + latest-dev.json(不碰 latest.json / releases/latest)
+#   master  → rc     : 本工作流;tag 形如 v1.0-rc.4-20261119.1(基版本 + 日期 + 序号)
+#   stable  → stable : 本工作流;tag 形如 v1.0.0 / v1.0.1(hotfix 同,stable/hotfix 独占 latest.json)
+#   hotfix  → stable : P0 热修短分支(从 stable 切出);修完回合 stable 并同步 master,再打 v1.0.x tag
+#
+# 触发方式:
+#   1. 打 tag 推送:      git tag v1.0-rc.4-20261119.1 && git push origin v1.0-rc.4-20261119.1
+#                        → 构建多平台发行包 + 上传雨云 ROS + 生成 latest.json + 创建 GitHub Release
 #   2. 手动触发(网页 Actions 页 "Run workflow",或 gh workflow run 发布)
-#      —— 只构建并上传 artifacts(不建 Release),用于发布前预演
-#   3. 本工作流与既有 CI 门禁(ci.yml)互补:CI 管"改动是否过关",本工作流管"发行物生产"
+#      —— 只构建并上传 artifacts(不建 Release、不上 ROS),用于发布前预演
+#
+# 清单与通道纪律:
+#   - 本工作流写 latest.json(channel=stable):预发布阶段 rc tag 也写它;v1.0.0 起 rc tag 改走
+#     `--channel rc` → latest-rc.json,latest.json 由 stable/hotfix 独占;dev 永远不写这两个文件;
+#   - 发布说明:存在 release/RELEASE_<tag>.md 时作为 Release 正文(再由 GitHub 追加自动差异说明),
+#     否则走 generate_release_notes;模板见 release/RELEASE_TEMPLATE_stable.md。
 #
 # 发布纪律(与仓库 AGENTS.md 的「发布指纹 & 同名 tag」一致,并在本流水线中自动化校验):
 #   - 发行包内 MANIFEST.txt 必须记录构建提交,且 == 本次 tag 指向的提交,否则拒绝发布;
-#   - tag 名中的版本(vX.Y.Z…)必须与 MANIFEST「编译器自述」的版本行一致,否则拒绝发布。
+#   - tag 全名(含 -YYYYMMDD.N 或 v1.0.0)必须 == 版本号常量 == MANIFEST「版本:」行;
+#     publish job 按完整 tag 校验,不在流水线里剥基版本。
 name: 发布
 
 on:
@@ -338,15 +351,30 @@ jobs:
           if-no-files-found: error
 
   publish:
-    # 汇总 + 发布纪律硬校验 + 建 Release(tag 触发时)
+    # 汇总 + 发布纪律硬校验 + 写通道清单 + 建 Release(tag 触发)
     needs: [lang, lang_arm64, foundry]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: 校验版本标签
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -e
+          TAG="$GITHUB_REF_NAME"
+          case "$TAG" in
+            v*) ;;
+            *) echo "！！ 发布 tag 必须以 v 开头: $TAG"; exit 1 ;;
+          esac
+          # 完整 tag（含 -YYYYMMDD.N）就是版本常量与 MANIFEST「版本:」行的值；
+          # 不在流水线里剥基版本，避免资产名/升级器自检与 tag 脱节。
+          echo "发布 tag: $TAG"
+
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
 
-      - name: 指纹校验(MANIFEST 提交 == 本次构建提交;版本行 == tag 名)
+      - name: 指纹校验(MANIFEST 提交 == 本次构建提交;版本 == tag 全名)
         run: |
           set -e
           echo "构建提交: $GITHUB_SHA"
@@ -354,18 +382,17 @@ jobs:
           for f in artifacts/lang-*/MANIFEST_*.txt; do
             echo "── $f"
             grep -m1 '^提交: ' "$f" || { echo "缺「提交:」行"; ok=0; }
-            if ! grep -q "^提交: $GITHUB_SHA" "$f"; then
-              echo "！！ MANIFEST 记录的提交与本次构建不一致 —— 按发布纪律拒绝"; ok=0
-            fi
-            if [ -n "${GITHUB_REF_NAME:-}" ]; then
-              case "$GITHUB_REF_NAME" in
-                v*)
-                  if ! grep -q "^版本: ${GITHUB_REF_NAME}$" "$f"; then
-                    echo "！！ MANIFEST 版本行与 tag($GITHUB_REF_NAME)不一致 —— 按发布纪律拒绝"; ok=0
-                  fi
-                  ;;
-              esac
-            fi
+            grep -q "^提交: $GITHUB_SHA" "$f" || { echo "！！ MANIFEST 记录的提交与本次构建不一致 —— 按发布纪律拒绝"; ok=0; }
+            case "$GITHUB_REF" in
+              refs/tags/*)
+                # 版本常量/包内 MANIFEST 必须等于完整 tag(含 -YYYYMMDD.N),
+                # 不能只等于基版本;否则资产名/升级器自检会与 tag 脱节。
+                grep -q "^版本: ${GITHUB_REF_NAME}$" "$f" || { echo "！！ MANIFEST 版本行与 tag($GITHUB_REF_NAME)不一致 —— 按发布纪律拒绝"; ok=0; }
+                ;;
+              *)
+                echo "（手动预演:无 tag,跳过版本行比对,仅校验提交指纹）"
+                ;;
+            esac
           done
           [ "$ok" = "1" ] || exit 1
           echo "指纹校验通过"
@@ -377,6 +404,19 @@ jobs:
         with:
           node-version: 20
 
+      - name: 选择发布说明正文(模板)
+        id: notes
+        run: |
+          set -e
+          f="release/RELEASE_${GITHUB_REF_NAME}.md"
+          if [ -f "$f" ]; then
+            echo "path=$f" >> "$GITHUB_OUTPUT"
+            echo "使用发布说明: $f"
+          else
+            echo "path=" >> "$GITHUB_OUTPUT"
+            echo "未找到 $f,Release 正文由 GitHub 自动生成"
+          fi
+
       - name: 上传到雨云 ROS 并生成 latest.json(tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')
         env:
@@ -386,7 +426,22 @@ jobs:
           ROS_SECRET_KEY: ${{ secrets.ROS_SECRET_KEY }}
           ROS_PUBLIC_BASE: ${{ secrets.ROS_PUBLIC_BASE }}
         run: |
-          node tools/publish-ros.mjs --dir artifacts --version "$GITHUB_REF_NAME"
+          # 通道:现行预发布阶段 rc/stable 都用 stable 通道写 latest.json;
+          # v1.0.0 起 rc tag 改 `--channel rc`(写 latest-rc.json,stable/hotfix 独占 latest.json)。
+          node tools/publish-ros.mjs \
+            --dir artifacts \
+            --version "$GITHUB_REF_NAME" \
+            --channel stable \
+            --commit "$GITHUB_SHA" \
+            --date "$(date -u +%F)" \
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+
+      - name: 校验 latest.json 通道与指纹(tag 触发)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          jq -e --arg v "$GITHUB_REF_NAME" --arg c "$GITHUB_SHA" \
+            '.channel == "stable" and .version == $v and .commit == $c and (.assets | length) > 0' latest.json
+          jq -r '"latest.json: channel=\(.channel) version=\(.version) commit=\(.commit) 平台=\(.assets | keys | join(","))"' latest.json
 
       - name: 创建 Release 并上传(tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')
@@ -397,10 +452,14 @@ jobs:
             artifacts/lang-*/MANIFEST_*.txt
             artifacts/foundry-windows/*.exe
             latest.json
+          body_path: ${{ steps.notes.outputs.path }}
           generate_release_notes: true
+          # 通道按 tag 判断:dev 滚动 tag 由 dev.yml 发布(prerelease);本工作流只处理 v* 正式/候选 tag,
+          # rc / stable 均默认 non-prerelease(与现行 latest=rc.4 口径一致);意外带 -dev. 的 tag 才标记 prerelease。
+          prerelease: ${{ contains(github.ref_name, '-dev.') }}
 
-      - name: 手动触发预演(不建 Release)
+      - name: 手动触发预演(不建 Release、不上 ROS)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          echo "手动触发:产物已上传为 artifacts(lang-* / foundry-windows),供发布前预演。"
-          echo "正式发布: git tag <版本> && git push github <版本> —— 本流水线将自动创建 Release。"
+          echo "手动触发:产物已上传为 artifacts(lang-* / lang-arm64-* / foundry-windows),供发布前预演。"
+          echo "正式发布: git tag <基版本>-<YYYYMMDD>.<序号> && git push origin <tag> —— 本流水线将上传 ROS、生成 latest.json 并创建 Release。"
