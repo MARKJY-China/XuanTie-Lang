@@ -440,6 +440,15 @@ export function defaultWidget(widget: string, stateParam: string): DesignNode {
     case '图片':
     case '图标按钮':
       return leaf([{ t: 'str', raw: '"图片.png"', v: '图片.png' }], box(100, 100));
+    case '图标':
+      // 内置图标(v1.8.0):默认给一个库里一定有的常用图标;改图走属性面板「选图标」
+      return leaf(
+        [{ t: 'str', raw: '"搜索"', v: '搜索' }],
+        [
+          { key: '图标尺寸', value: numVal(24) },
+          { key: '图标色', value: { t: 'colorConst', key: '浅灰' } },
+        ],
+      );
     case '输入栏':
       return leaf([{ t: 'idRef', name: stateParam }, { t: 'str', raw: '"输入"', v: '输入' }], box(200, 32));
     case '多行编辑':

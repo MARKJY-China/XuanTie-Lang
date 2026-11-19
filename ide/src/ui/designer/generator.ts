@@ -11,6 +11,14 @@ function esc(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\t/g, '\\t');
 }
 
+/**
+ * 字符串实参构造:写回源文本时按最小转义集生成 raw。
+ * 中文名(含 `·`,如 更多·横向)原样保留;只有引号/反斜杠/换行/制表符需要转义。
+ */
+export function strVal(s: string): Extract<Val, { t: 'str' }> {
+  return { t: 'str', raw: '"' + esc(s) + '"', v: s };
+}
+
 export function valText(v: Val): string {
   switch (v.t) {
     case 'str': return v.raw;

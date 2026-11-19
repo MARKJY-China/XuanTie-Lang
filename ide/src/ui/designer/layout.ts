@@ -134,6 +134,12 @@ function intrinsic(node: DesignNode, m: Measure): { w: number; h: number } {
       return { w: 0, h: 0 };
     case '图标按钮':
       return { w: 28, h: 28 };
+    case '图标': {
+      // 内置图标(v1.8.0):默认 24×24;图标尺寸 > 0 时固有边长取该值(显式 宽/高 仍由 resolvedSize 优先)
+      const 图标尺寸 = numOpt(node, '图标尺寸') ?? 0;
+      const side = 图标尺寸 > 0 ? 图标尺寸 : 24;
+      return { w: side, h: side };
+    }
     case '图片':
       return { w: 100, h: 100 }; // 占位:设计期读不到纹理真实尺寸
     case '输入栏':

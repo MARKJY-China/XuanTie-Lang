@@ -40,7 +40,7 @@ import {
 } from './ui/dialogs';
 import { TerminalPane } from './term/terminal';
 import { Runner } from './run/run';
-import { Tiepm } from './tiepm/tiepm';
+import { openTiepmWindow, cmpVer, loadTiepmIndex, tiepmInstallStart, type TiepmDonePayload } from './tiepm/tiepm';
 import { PROJECT_TEMPLATES, createProject } from './templates';
 import { basename, copyText, dirname, relativeTo } from './util';
 import { ENCODINGS, defaultSettings, type AccountState, type FileNode, type TreeDisplay } from './types';
@@ -174,7 +174,6 @@ const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outpu
 // 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
 term.onRunState = (running) => setRunButton(running);
 const runner = new Runner(term, () => workspace);
-const tiepm = new Tiepm(term, () => workspace);
 
 // ---- 智器对话(右侧 dock,Trae 式全高;会话按工程区持久化) ----
 let aiDockOpen = false;
@@ -311,6 +310,8 @@ const designerPanel = new DesignerPanel(L.designerHost, {
     return true;
   },
   copy: (text) => copyText(text),
+  // 「初始化渲染窗口」:生成 UI.应用 入口后保存并运行(运行前 saveAll 已由 runActive 负责)
+  run: () => runActive(),
 });
 
 /** 设计器模式开关:整个编辑器区在 代码编辑器 ⇄ 界面设计器 间切换(小屏也够用) */
@@ -2393,51 +2394,27 @@ function accountModal(): Promise<void> {
   });
 }
 
-// ---- 铁铺(列表走 UI,清理走 Toast;安装/搜索保留终端) ----
-// ---- 铁铺更新检查(远程索引为 {包名:{版本:{…}}} 两层字典;最新版按 3 段数字取最大) ----
-const TIEPM_INDEX_URL = 'https://tiepm.xt.markjy.com/api/index';
-
-function cmpVer(a: string, b: string): number {
-  const pa = a.split('.').map((x) => parseInt(x, 10) || 0);
-  const pb = b.split('.').map((x) => parseInt(x, 10) || 0);
-  for (let i = 0; i < 3; i++) {
-    const n1 = pa[i] ?? 0;
-    const n2 = pb[i] ?? 0;
-    if (n1 > n2) return 1;
-    if (n1 < n2) return -1;
+// ---- 铁铺:安装/搜索走独立窗口(tiepm.html);这里只管已装列表与更新标记 ----
+// "tiepm-done" 广播给所有窗口:主窗口「更新铁器」队列按包名等它,不等终端退出码。
+const tiepmDoneWaiters = new Map<string, (ok: boolean) => void>();
+void listen<TiepmDonePayload>('tiepm-done', (e) => {
+  const wait = tiepmDoneWaiters.get(e.payload.name);
+  if (wait) {
+    tiepmDoneWaiters.delete(e.payload.name);
+    wait(e.payload.ok);
   }
-  return 0;
-}
-
-async function fetchLatestVersions(): Promise<Record<string, string>> {
-  const r = await backend.httpJson('GET', TIEPM_INDEX_URL, null);
-  let idx: Record<string, Record<string, unknown>> = {};
-  try {
-    idx = JSON.parse(r.body) as Record<string, Record<string, unknown>>;
-  } catch {
-    throw new Error(`索引响应不是合法 JSON(HTTP ${r.status})`);
-  }
-  const latest: Record<string, string> = {};
-  for (const [name, versions] of Object.entries(idx)) {
-    let best = '';
-    for (const v of Object.keys(versions)) {
-      if (!best || cmpVer(v, best) > 0) best = v;
-    }
-    latest[name] = best;
-  }
-  return latest;
-}
+});
 
 /** 比对本地已装版本与远程索引,返回「可更新:包名 → 最新版」;同时给列表行打橙色标记 */
-async function checkTiepmUpdates(tiepm: string): Promise<Record<string, string>> {
-  const [pkgs, latest] = await Promise.all([backend.tiepmPackages(tiepm), fetchLatestVersions()]);
+async function checkTiepmUpdates(tiepmPath: string): Promise<Record<string, string>> {
+  const [pkgs, index] = await Promise.all([backend.tiepmPackages(tiepmPath), loadTiepmIndex()]);
   const updates: Record<string, string> = {};
   for (const p of pkgs) {
     if (p.builtin || p.version === '?') continue;
-    const up = latest[p.name];
-    if (up && cmpVer(up, p.version) > 0) {
-      updates[p.name] = up;
-      markPkgUpdate(p.name, up);
+    const latest = index.get(p.name)?.latest;
+    if (latest && cmpVer(latest, p.version) > 0) {
+      updates[p.name] = latest;
+      markPkgUpdate(p.name, latest);
     }
   }
   return updates;
@@ -2611,24 +2588,19 @@ function tiepmListModal(): Promise<unknown> {
           });
       };
 
-      // 升一个包:tiepm az <名> 就是覆盖安装,退出码 0 视为成功
+      // 升一个包:tiepm az <名> 就是覆盖安装;成败由 Rust 事件流回报(不再占终端标签)
       const installOne = (name: string): Promise<boolean> =>
         new Promise<boolean>((resolve) => {
-          let settled = false;
-          const done = (v: boolean): void => {
-            if (settled) return;
-            settled = true;
-            resolve(v);
-          };
-          tiepm
-            .install(name, (code) => done(code === 0))
-            .then(() => {
-              // 兜底:进程没起来时 onExit 永远不会来(比如 exe 不可用),别让更新队列卡死
-              setTimeout(() => {
-                if (!term.isRunning()) done(false);
-              }, 400);
-            })
-            .catch(() => done(false));
+          if (tiepmDoneWaiters.has(name)) {
+            resolve(false);
+            return;
+          }
+          tiepmDoneWaiters.set(name, resolve);
+          tiepmInstallStart(name).catch((err: unknown) => {
+            tiepmDoneWaiters.delete(name);
+            setStatus(`启动安装失败: ${String(err)}`);
+            resolve(false);
+          });
         });
 
       // 成功后把行内版本号就地改成新版并摘掉橙色标记(不必整页重读)
@@ -2640,21 +2612,20 @@ function tiepmListModal(): Promise<unknown> {
         row.querySelector('.pkg-upd')?.remove();
       };
 
-      // 逐个更新(全部或单个都走这里),每步进度写进状态行,安装输出进「终端」
+      // 逐个更新(全部或单个都走这里):进度写状态行,成败由 Rust 事件流回报
       const updateMany = async (names: string[]): Promise<void> => {
         if (busy || names.length === 0) return;
         busy = true;
         syncCheckButton();
-        // 安装过程走「终端」:把底部面板切出来,关掉弹窗就能看到实时输出
-        setBottomVisible(true);
-        setBottomTab('term');
+        // 进度输出在铁铺窗口(已开则聚焦);窗口会通过 tiepm-start 自动接管
+        void openTiepmWindow().catch(() => undefined);
         let ok = 0;
         const failed: string[] = [];
         for (let i = 0; i < names.length; i++) {
           const name = names[i];
           const latest = updatable[name] ?? '';
           setStatus(
-            `正在更新 ${name}${latest ? ` → v${latest}` : ''}(${i + 1}/${names.length}),安装输出见「终端」…`,
+            `正在更新 ${name}${latest ? ` → v${latest}` : ''}(${i + 1}/${names.length}),详细输出在「铁铺」窗口…`,
           );
           const done = await installOne(name);
           if (done) {
@@ -3104,19 +3075,11 @@ function bindUi(): void {
     const el = (e.target as HTMLElement | null)?.closest('.dd-item') as HTMLElement | null;
     if (!el || !tiepmMenu.contains(el)) return;
     const act = el.dataset.act ?? '';
-    const run = (p: Promise<void>): void => {
-      setBottomVisible(true);
-      setBottomTab('term');
-      p.catch((err: unknown) => showToast(String(err), 'err'));
-    };
-    if (act === 'install') {
-      void promptText('铁铺 · 安装包', '包名').then((name) => {
-        if (name) run(tiepm.install(name));
-      });
-    } else if (act === 'search') {
-      void promptText('铁铺 · 搜索', '关键词').then((kw) => {
-        if (kw) run(tiepm.search(kw));
-      });
+    if (act === 'install' || act === 'search') {
+      // 安装/搜索统一进独立铁铺窗口:同一个输入框,搜索看结果,安装直接把输入当包名
+      void openTiepmWindow().catch((err: unknown) =>
+        showToast(`打开铁铺窗口失败: ${String(err)}`, 'err'),
+      );
     } else if (act === 'list') {
       void tiepmListModal();
     } else if (act === 'clean') {

@@ -1301,7 +1301,38 @@ body.ds-col-resize, body.ds-col-resize * { cursor: col-resize; }
 .ds-guide-line { position: absolute; background: var(--accent); opacity: 0.85; pointer-events: none; z-index: 9; }
 .ds-guide-x { width: 1px; }
 .ds-guide-y { height: 1px; }
-.ds-tip { color: var(--fg-dim); font-size: 11.5px; opacity: 0.85; }
+/* 控件库拖拽:落点节点虚线高亮 / 画布空白处高亮整框 */
+.ds-node.ds-drop { outline: 2px dashed var(--accent) !important; outline-offset: -1px; background: rgba(232, 132, 44, 0.10); }
+.ds-frame.ds-drop-root { outline: 2px dashed var(--accent); outline-offset: -1px; }
+/* 控件树(Godot 场景树式):缩进 + 折叠箭头 + 图标 + 名称 */
+.ds-tree {
+  flex: none; width: 188px; display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-panel); border-right: 1px solid var(--border);
+}
+.ds-tree-head {
+  display: flex; align-items: center; gap: 6px; padding: 7px 10px;
+  border-bottom: 1px solid var(--border); color: var(--fg); font-size: 12px; font-weight: 600;
+}
+.ds-tree-body { flex: 1; overflow: auto; padding: 4px 0 12px; }
+.ds-trow {
+  display: flex; align-items: center; gap: 5px; height: 22px; padding-right: 8px;
+  cursor: pointer; font-size: 12px; color: var(--fg);
+  border-left: 2px solid transparent; white-space: nowrap;
+}
+.ds-trow:hover { background: var(--bg-hover); }
+.ds-trow.sel { background: var(--bg-active); border-left-color: var(--accent); }
+.ds-tw { flex: none; width: 12px; font-size: 11px; color: var(--fg-dim); }
+.ds-tico { flex: none; font-size: 12px; color: var(--fg-dim); }
+.ds-trow.sel .ds-tico { color: var(--accent); }
+.ds-tlabel { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ds-tline { flex: none; color: var(--fg-dim); font-size: 10.5px; }
+.ds-tree-empty { color: var(--fg-dim); font-size: 12px; padding: 10px; }
+/* 初始化渲染窗口:强调按钮(设计稿 → 可运行窗口) */
+.ds-init {
+  border: 1px solid var(--accent-dim); border-radius: 4px;
+  padding: 2px 9px; color: var(--accent); font-size: 12px; background: transparent;
+}
+.ds-init:hover { background: var(--accent-dim); color: #fff; }
 /* 自绘下拉(替代原生 select:WebView2 的原生弹层不跟随 color-scheme,暗色下是亮块) */
 .ds-dd {
   display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
@@ -1372,7 +1403,6 @@ body.ds-col-resize, body.ds-col-resize * { cursor: col-resize; }
 .ds-guide-tag { position: absolute; right: 2px; bottom: 0; font-size: 10px; color: rgba(255, 255, 255, 0.35); }
 .ds-empty { color: var(--fg-dim); font-size: 13px; white-space: pre-wrap; padding: 24px; }
 .ds-empty-btns { display: flex; gap: 8px; margin-top: 14px; }
-.ds-note { position: sticky; left: 0; bottom: 0; margin-top: 10px; color: var(--fg-dim); font-size: 11.5px; }
 .ds-insp {
   width: 320px; flex: none; overflow: auto; padding: 8px 0 14px;
   font-size: 12px; line-height: 1.5;
@@ -1395,6 +1425,8 @@ body.ds-col-resize, body.ds-col-resize * { cursor: col-resize; }
 }
 .ds-lib-item:hover { background: var(--bg-hover); border-color: var(--accent-dim); color: var(--accent); }
 .ds-lib-item:active { background: var(--bg-active); }
+.ds-lib-item { cursor: grab; }
+.ds-lib-item:active { cursor: grabbing; }
 /* ---- 检视:节点标题 / 筛选 / 分组 / 属性行 ---- */
 .ds-nhead { display: flex; align-items: center; gap: 8px; padding: 6px 0 10px; flex-wrap: wrap; }
 .ds-chip { background: var(--accent-dim); color: #fff; border-radius: 4px; padding: 2px 8px; font-size: 12px; font-weight: 600; }
@@ -1439,6 +1471,47 @@ body.ds-col-resize, body.ds-col-resize * { cursor: col-resize; }
 .ds-issues { padding: 8px 14px 0; max-height: 140px; overflow: auto; border-top: 1px solid var(--border); }
 .ds-issues-head { color: var(--warn); font-size: 12.5px; margin-bottom: 4px; }
 .ds-issue { color: var(--fg-dim); font-size: 12px; padding: 1px 0; }
+/* ---- 图标控件(lib/UI v1.8.0):画布内联 SVG / 属性面板「选图标」/ 选择器弹层 ---- */
+/* 画布:图标按 图标尺寸 缩放并绝对居中;颜色走 CSS currentColor(数据里 stroke/fill 已是 currentColor) */
+.ds-icon {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: block; pointer-events: none; overflow: hidden;
+}
+.ds-icon svg { display: block; width: 100%; height: 100%; }
+/* 属性面板:图标源行的小预览 + 「选图标」按钮 */
+.ds-icon-prev {
+  flex: none; width: 20px; height: 20px; display: inline-flex;
+  align-items: center; justify-content: center; color: var(--fg);
+}
+.ds-icon-prev svg { width: 18px; height: 18px; display: block; }
+.ds-icon-prev.empty { color: var(--fg-dim); font-size: 14px; }
+.ds-icon-pickbtn {
+  flex: none; border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 8px; font-size: 12px; color: var(--fg-dim);
+}
+.ds-icon-pickbtn:hover { border-color: var(--accent-dim); color: var(--accent); background: var(--bg-hover); }
+/* 选择器弹层:搜索框 + 计数 + 可滚动网格(每项 内联 SVG + 中文名,title 给英文 ID) */
+.ds-icon-picker { display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+.ds-icon-search { width: 100%; height: 30px; }
+.ds-icon-count { color: var(--fg-dim); font-size: 11.5px; }
+.ds-icon-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px; max-height: 46vh; overflow: auto; padding: 2px; align-content: start;
+}
+.ds-icon-cell {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 7px 4px 5px; background: var(--bg-deep); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  cursor: pointer; font: inherit; overflow: hidden;
+}
+.ds-icon-cell:hover { border-color: var(--accent); background: var(--bg-hover); }
+.ds-icon-cell.sel { border-color: var(--accent); background: var(--bg-active); }
+.ds-icon-cell-svg { display: inline-flex; width: 22px; height: 22px; color: var(--fg); }
+.ds-icon-cell-svg svg { width: 100%; height: 100%; display: block; }
+.ds-icon-cell-name {
+  width: 100%; text-align: center; color: var(--fg-dim); font-size: 11px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 /* 滚动条统一 */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: #424242; border-radius: 5px; }

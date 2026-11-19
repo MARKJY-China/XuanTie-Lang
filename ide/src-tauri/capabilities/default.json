@@ -1,10 +1,11 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "铸造厂主窗口默认能力:核心事件、文件/文件夹选择对话框、自绘标题栏窗口控制与拖拽;ai-console 为开发者控制台(事件订阅+应用内命令)",
+  "description": "铸造厂主窗口默认能力:核心事件、文件/文件夹选择对话框、自绘标题栏窗口控制与拖拽;ai-console 为开发者控制台,tiepm-window 为铁铺独立窗口(事件订阅+应用内命令)",
   "windows": [
     "main",
-    "ai-console"
+    "ai-console",
+    "tiepm-window"
   ],
   "permissions": [
     "core:default",

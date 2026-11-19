@@ -2,7 +2,7 @@
 // 运行: npm run test:designer   (esbuild 打包 + node 执行;无新增依赖)
 // 判定: 往返幂等 / 生成确定性(规范序、无尾随逗号) / 区外零改动(含 CRLF 保持) / 非子集→只读
 import { parseDesignFunction, type DesignNode } from './parser';
-import { generateDesignFunction, CANONICAL_KEYS } from './generator';
+import { generateDesignFunction, strVal, CANONICAL_KEYS } from './generator';
 import { findRegions, replaceRegion, appendRegion, regionText } from './region';
 import { layoutTree, type Measure } from './layout';
 import {
@@ -25,7 +25,18 @@ import {
   snapResize,
   MIN_SIZE,
 } from './edit';
-import { COLOR_PALETTE, TOOLBOX, specOf } from './props';
+import { COLOR_PALETTE, TOOLBOX, WIDGET_KEYS, specOf } from './props';
+import { WIDGETS } from './spec';
+import { ICON_CATALOG, findIcon } from './iconCatalog';
+import { iconEntryByName } from './paint';
+import {
+  appendEntry,
+  buildRenderEntry,
+  collectStateKeys,
+  ensureUiImport,
+  hasRenderEntry,
+  uiAliasOf,
+} from './runentry';
 
 /** 与 lib/UI/UI.xt:99-110 的 色彩 键逐字一致(改库色板必须同步改这里与 props.ts) */
 const PALETTE_CHECK = ['白', '黑', '红', '绿', '蓝', '黄', '灰', '深灰', '浅灰', '透明', '主题', '强调'];
@@ -96,13 +107,14 @@ const EXPECT_A = [
 /** 解析用样例(与 SAMPLE_A 相同;名字保留以区分"解析输入/生成期望"两种角色) */
 const CLEAN_A = SAMPLE_A;
 
-// ------- 样例 B:全 14 控件覆盖 -------
+// ------- 样例 B:全 15 控件覆盖 -------
 const SAMPLE_B = [
   '函 全控件(s) {',
   '    设 绝对区 = UI.绝对([',
   '        UI.矩形({"x": 0, "y": 0, "宽": 10, "高": 10}),',
   '        UI.图片("logo.png", {}),',
-  '        UI.图标按钮("i.png", {})',
+  '        UI.图标按钮("i.png", {}),',
+  '        UI.图标("搜索", {"图标尺寸": 24})',
   '    ], {})',
   '    设 叠层 = UI.叠([',
   '        绝对区,',
@@ -157,7 +169,7 @@ t('生成文本不含尾随逗号', () => {
   ok(!/,\s*[\]}]/.test(g1), '不得出现 ,] 或 ,} 形式');
 });
 
-t('样例B(全14控件) 解析通过+覆盖齐14个构造器', () => {
+t('样例B(全15控件) 解析通过+覆盖齐15个构造器', () => {
   const r = parseDesignFunction(SAMPLE_B);
   eq(r.ok, true, 'ok 应为 true;issues=' + JSON.stringify(r.issues));
   const seen = new Set<string>();
@@ -166,7 +178,7 @@ t('样例B(全14控件) 解析通过+覆盖齐14个构造器', () => {
     for (const c of n.children as never[]) walk(c);
   };
   walk(r.root as never);
-  eq(seen.size, 14, '控件种类数(实际: ' + [...seen].join(',') + ')');
+  eq(seen.size, 15, '控件种类数(实际: ' + [...seen].join(',') + ')');
 });
 
 t('样例B 往返幂等', () => {
@@ -581,7 +593,7 @@ t('属性写入:setInsets 数字↔子字典升降级与清除', () => {
 });
 
 t('工具箱:默认节点逐个控件可生成且可再解析(形状合法)', () => {
-  const WIDGET_LIST = ['行', '列', '叠', '绝对', '滚动容器', '文本', '按钮', '矩形', '图片', '图标按钮', '输入栏', '多行编辑', '空白', '弹性'];
+  const WIDGET_LIST = ['行', '列', '叠', '绝对', '滚动容器', '文本', '按钮', '矩形', '图片', '图标按钮', '图标', '输入栏', '多行编辑', '空白', '弹性'];
   const root = rootOf(EDIT_SAMPLE);
   for (const w of WIDGET_LIST) {
     const host = w === '行' || w === '列' || w === '叠' || w === '绝对' || w === '滚动容器' ? root : root;
@@ -623,8 +635,8 @@ t('属性元数据:调色板键与库一致、未知键只读、工具箱覆盖�
   eq(PALETTE_CHECK.every((k) => (COLOR_PALETTE as readonly string[]).includes(k)), true, '调色板键与 lib/UI/UI.xt 的 色彩 键一致');
   eq(specOf('不存在的键').kind, 'readonly', '未知键 → 只读');
   const boxWidgets = TOOLBOX.flatMap((g) => [...g.widgets]);
-  eq(boxWidgets.length, 14, '工具箱列出全部 14 个构造器');
-  eq(boxWidgets.includes('滚动容器') && boxWidgets.includes('弹性'), true, '容器与特殊叶子都在列');
+  eq(boxWidgets.length, 15, '工具箱列出全部 15 个构造器');
+  eq(boxWidgets.includes('滚动容器') && boxWidgets.includes('弹性') && boxWidgets.includes('图标'), true, '容器与特殊叶子都在列');
   eq(specOf('底色').kind, 'color', '底色 → 颜色编辑器');
   eq(specOf('主轴对齐').kind, 'enum', '主轴对齐 → 枚举编辑器');
 });
@@ -694,6 +706,215 @@ t('字叉对齐(库 v1.5.7):解析/生成往返,枚举归一,规范序排在 字
   eq(specOf('字叉对齐').kind, 'enum', '属性面板按枚举编辑');
   eq(specOf('字叉对齐').enums?.length, 3, '三档:始/中/末');
   ok(CANONICAL_KEYS.indexOf('字叉对齐') > CANONICAL_KEYS.indexOf('字对齐'), '追加在 字对齐 之后(不插乱既有顺序)');
+});
+
+t('渲染入口:补 UI 引入 / 生成 UI.应用 调用 / 按文件行尾追加', () => {
+  eq(uiAliasOf('引 "UI" 予 UI\n'), 'UI', '识别 UI 别名');
+  eq(uiAliasOf('引 "UI" 予 界面\n'), '界面', '识别自定义别名');
+  eq(uiAliasOf('设 A = 1\n'), null, '没有引入');
+  const imported = ensureUiImport('函 主界面(s) {\n    返 空\n}\n');
+  ok(imported.startsWith('引 "UI" 予 UI\n\n'), '自动补引入');
+  eq(ensureUiImport(imported), imported, '已引入不重复补');
+
+  const entry = buildRenderEntry({
+    alias: 'UI', funcName: '主界面', stateParam: 's', title: '主界面', width: 800, height: 560,
+    stateKeys: ['计数', '开关'],
+  });
+  ok(
+    entry.includes('UI.应用(界面状态, 函(s) { 返 主界面(s) }, {"宽": 800, "高": 560, "标题": "主界面"})'),
+    '应用调用形态',
+  );
+  ok(entry.includes('{"计数": 0, "开关": 0}'), '态取键预置为 0');
+  ok(hasRenderEntry(entry), '入口自带标记');
+  ok(hasRenderEntry('设 状态 = UI.造状态({})\nR.初始化窗口(1, 2, "x")'), '用户自写初始化也算已有入口');
+  ok(!hasRenderEntry('函 主界面(s) { 返 空 }'), '纯函数不算入口');
+
+  const lf = appendEntry('设 A = 1', entry);
+  ok(lf.startsWith('设 A = 1\n\n'), '追加前留空行');
+  ok(lf.endsWith('"标题": "主界面"})\n'), '入口在文件末尾');
+  const crlf = appendEntry('设 A = 1\r\n', entry);
+  ok(crlf.includes('\r\n') && !/[^\r]\n/.test(crlf), 'CRLF 文件保持 CRLF');
+
+  // 设计树里 态取 的键要被收集(普通字符串不算)
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.列([',
+    '        UI.文本(UI.态取(s, "计数"), {}),',
+    '        UI.文本("说明", {})',
+    '    ], {})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  eq(collectStateKeys(root).join(','), '计数', '只收 态取 键');
+});
+
+// ---------------- 切片 5:图标控件与图标选择器(lib/UI v1.8.0) ----------------
+
+t('图标数据:ICON_CATALOG 2359 个、按常用度排序、全为 currentColor', () => {
+  eq(ICON_CATALOG.length, 2359, '内嵌图标数量(与 lib/UI/图标表.xt 对应)');
+  eq(ICON_CATALOG[0].zh + '/' + ICON_CATALOG[0].en, '搜索/search', '首个 = 最常用(搜索/search)');
+  eq(ICON_CATALOG.every((it, i) => it.rank === i + 1), true, 'rank 从 1 连续递增(即常用度序)');
+  eq(ICON_CATALOG.every((it) => it.svg.includes('currentColor')), true, '白色已换成 currentColor(画布用 CSS 着色)');
+  eq(new Set(ICON_CATALOG.map((it) => it.en)).size, 2359, '英文 ID 无重复');
+  eq(new Set(ICON_CATALOG.map((it) => it.zh)).size, 2359, '中文名无重复');
+});
+
+t('图标选择器:findIcon 中文/英文即时过滤,空查询给前 240 个', () => {
+  eq(findIcon('').length, 240, '空查询返回前 240 个');
+  eq(findIcon('')[0].zh, '搜索', '空查询按常用度序(搜索第一)');
+  ok(findIcon('搜').some((it) => it.zh === '搜索'), '中文子串「搜」→ 含 搜索');
+  ok(findIcon('search').some((it) => it.en === 'search'), '英文子串「search」→ search');
+  ok(findIcon('更多·横向').some((it) => it.en === 'more-horizontal'), '含 · 的中文名可精确搜');
+  eq(findIcon('不存在的图标名xyz').length, 0, '无命中返回空');
+});
+
+t('图标控件:spec 形态(叶子/src+options)、工具箱、可写键与 图片/图标按钮 同套', () => {
+  eq(WIDGETS['图标'].kind, 'leaf', 'kind = leaf');
+  eq(WIDGETS['图标'].args.join(','), 'src,options', '首参 src + options');
+  const widgets = TOOLBOX.flatMap((g) => [...g.widgets]);
+  eq(widgets.includes('图标'), true, '控件库含 图标');
+  eq(WIDGET_KEYS['图标'].join(','), WIDGET_KEYS['图片'].join(','), '可写键与 图片 同套');
+  eq(WIDGET_KEYS['图标'].join(','), WIDGET_KEYS['图标按钮'].join(','), '可写键与 图标按钮 同套');
+  eq(WIDGET_KEYS['图标'].includes('图标尺寸') && WIDGET_KEYS['图标'].includes('图标色'), true, '含 图标尺寸/图标色');
+});
+
+t('图标控件:默认节点形状合法(搜索 + 图标尺寸 24 + UI.色彩[浅灰]),可直接生成', () => {
+  const fresh = defaultWidget('图标', 's');
+  eq(fresh.widget, '图标', '控件名');
+  eq(fresh.kind, 'leaf', '叶子');
+  eq(fresh.args.length, 1, '一个位置实参(src)');
+  eq(fresh.args[0].t === 'str' ? fresh.args[0].v : '', '搜索', '默认源 = 搜索');
+  eq(numOpt(fresh, '图标尺寸'), 24, '默认 图标尺寸 24');
+  const color = fresh.options.find((o) => o.key === '图标色')?.value;
+  eq(color?.t === 'colorConst' ? color.key : '', '浅灰', '默认 图标色 = UI.色彩["浅灰"]');
+  const root = rootOf(EDIT_SAMPLE);
+  ok(insertNode(root, root, fresh, 'child'), '插入应成功');
+  const rt = roundTrip(root);
+  eq(rt.text.includes('UI.图标("搜索", {"图标尺寸": 24, "图标色": UI.色彩["浅灰"]})'), true, '生成默认节点\n' + rt.text);
+});
+
+t('图标控件:可生成/可再解析(中文名与英文 ID 等价,选项按规范序)', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.绝对([',
+    '        UI.图标("搜索", {"图标尺寸": 24, "图标色": UI.色彩["浅灰"]}),',
+    '        UI.图标("more-horizontal", {})',
+    '    ], {"宽": 200, "高": 60})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  eq(root.children.length, 2, '两个图标子项');
+  const first = root.children[0];
+  eq(first.widget, '图标', '控件名');
+  eq(first.args[0].t === 'str' ? first.args[0].v : '', '搜索', '中文名 src');
+  const rt = roundTrip(root);
+  eq(rt.text.includes('UI.图标("搜索", {"图标尺寸": 24, "图标色": UI.色彩["浅灰"]})'), true, '生成文本(键按规范序)\n' + rt.text);
+  eq(rt.text.includes('UI.图标("more-horizontal", {})'), true, '英文 ID 原样回写');
+  const second = rt.root.children[1];
+  eq(second.widget + ':' + (second.args[0].t === 'str' ? second.args[0].v : ''), '图标:more-horizontal', '往返保真');
+});
+
+t('图标源写入:strVal 最小转义(更多·横向 原样;引号/反斜杠/换行转义),写回后可解析', () => {
+  eq(strVal('更多·横向').raw, '"更多·横向"', '· 不需转义');
+  eq(strVal('a"b').raw, '"a\\"b"', '双引号转义');
+  eq(strVal('a\\b').raw, '"a\\\\b"', '反斜杠转义');
+  eq(strVal('a\nb').raw, '"a\\nb"', '换行转义');
+  eq(strVal('a\tb').raw, '"a\\tb"', '制表符转义');
+  // 模拟选择器写回:默认 图标 节点的 src 换成含 · 的中文名 → 生成 → 再解析
+  const root = rootOf(EDIT_SAMPLE);
+  const fresh = defaultWidget('图标', 's');
+  fresh.args[0] = strVal('更多·横向');
+  ok(insertNode(root, root, fresh, 'child'), '插入应成功');
+  const rt = roundTrip(root);
+  ok(rt.text.includes('UI.图标("更多·横向",'), '生成文本把中文名写入字符串\n' + rt.text);
+  const re = parseDesignFunction(rt.text);
+  eq(re.ok, true, '写回文本应可再解析;issues=' + JSON.stringify(re.issues));
+  const found = re.root!.children.find((c) => c.widget === '图标');
+  eq(found?.args[0].t === 'str' ? found.args[0].v : '', '更多·横向', '源值往返保真');
+});
+
+t('图标预览:画布按源名解析(中文↔英文),非内置名回落占位', () => {
+  eq(iconEntryByName('搜索')?.en, 'search', '中文名 → search');
+  eq(iconEntryByName('search')?.zh, '搜索', '英文 ID → 搜索');
+  eq(iconEntryByName('more-horizontal')?.zh, '更多·横向', '含 · 的中文名');
+  eq(iconEntryByName('图片.png'), undefined, '图片路径不是内置图标名(预览画占位)');
+  eq(iconEntryByName(''), undefined, '空源 → 占位');
+});
+
+t('布局:图标默认 24×24 固有尺寸;图标尺寸 可指定;显式 宽/高 优先', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.绝对([',
+    '        UI.图标("搜索", {}),',
+    '        UI.图标("菜单", {"图标尺寸": 40}),',
+    '        UI.图标("设置", {"宽": 48, "高": 32, "图标尺寸": 20})',
+    '    ], {"宽": 400, "高": 80})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const laid = layoutTree(rootOf(src), MEASURE);
+  const icons = laid.boxes.filter((b) => b.node.widget === '图标');
+  eq(icons.length, 3, '三个图标盒');
+  eq([icons[0].w, icons[0].h], [24, 24], '默认 24×24');
+  eq([icons[1].w, icons[1].h], [40, 40], '图标尺寸 决定固有尺寸');
+  eq([icons[2].w, icons[2].h], [48, 32], '显式 宽/高 优先于 图标尺寸');
+});
+
+// ---------------- 切片 6:R-08 输入能力(库 v1.8.0;属性面板可写键) ----------------
+
+t('输入能力:属性元数据 行距/自动增高/最小高/最大高/提交 的编辑器形态与分组', () => {
+  eq(specOf('行距').kind, 'num', '行距 → 数值编辑器');
+  eq(specOf('行距').group, '文字', '行距 属文字组');
+  eq(specOf('行距').min, 0, '行距 min 0');
+  eq(specOf('自动增高').kind, 'bool', '自动增高 → 布尔编辑器');
+  eq(specOf('最小高').kind === 'num' && specOf('最小高').min === 0, true, '最小高 → 数值,min 0');
+  eq(specOf('最大高').kind === 'num' && specOf('最大高').min === 0, true, '最大高 → 数值,min 0');
+  eq(specOf('提交').kind, 'readonly', '提交 与 点击 同款只读(回调名手写,面板不改写)');
+  eq(CANONICAL_KEYS.includes('行距') && CANONICAL_KEYS.includes('自动增高') && CANONICAL_KEYS.includes('提交'), true, '新键已入规范序');
+  ok(CANONICAL_KEYS.indexOf('行距') > CANONICAL_KEYS.indexOf('首按延迟'), '新键追加在既有规范序之后(不插乱既有键序)');
+});
+
+t('输入能力:WIDGET_KEYS 按库读取点分发(输入栏不吃 行距/自动增高/最小高/最大高)', () => {
+  const has = (w: string, k: string): boolean => (WIDGET_KEYS[w] ?? []).includes(k);
+  eq(has('文本', '行距'), true, '文本 读 行距(多行文本排版)');
+  eq(
+    has('多行编辑', '行距') && has('多行编辑', '自动增高') && has('多行编辑', '最小高') && has('多行编辑', '最大高') && has('多行编辑', '提交'),
+    true,
+    '多行编辑 五项齐全',
+  );
+  eq(has('输入栏', '提交'), true, '输入栏 读 提交(回车回调)');
+  eq(has('输入栏', '行距') || has('输入栏', '自动增高') || has('输入栏', '最小高') || has('输入栏', '最大高'), false, '输入栏 不读 行距/自动增高/最小高/最大高(不进可写键矩阵,不骗人)');
+  eq(has('文本', '提交') || has('按钮', '提交'), false, '文本/按钮 无 提交');
+});
+
+t('输入能力:解析/生成往返(行距·自动增高·最小高/最大高·提交回调)', () => {
+  const src = [
+    '函 界面(s) {',
+    '    设 根 = UI.行([',
+    '        UI.文本("多行文本", {"行距": 6}),',
+    '        UI.多行编辑(s, "正文", {"行距": 4, "自动增高": 真, "最小高": 40, "最大高": 240, "提交": 发送}),',
+    '        UI.输入栏(s, "名字", {"提交": 发送})',
+    '    ], {"宽": 500, "高": 300})',
+    '    返 根',
+    '}',
+    '',
+  ].join('\n');
+  const root = rootOf(src);
+  const rt = roundTrip(root);
+  eq(rt.text.includes('"行距": 6'), true, '文本 行距 回写\n' + rt.text);
+  eq(rt.text.includes('"行距": 4'), true, '多行编辑 行距 回写');
+  eq(rt.text.includes('"自动增高": 真'), true, '自动增高 布尔回写');
+  eq(rt.text.includes('"最小高": 40'), true, '最小高 回写');
+  eq(rt.text.includes('"最大高": 240'), true, '最大高 回写');
+  eq(rt.text.includes('"提交": 发送'), true, '提交 回调按具名引用回写');
+  const editor = rt.root.children[1];
+  eq(editor.options.find((o) => o.key === '自动增高')?.value.t, 'bool', '往返后 自动增高 仍为布尔');
+  eq(editor.options.find((o) => o.key === '提交')?.value.t, 'fnRef', '往返后 提交 仍为回调引用');
 });
 
 console.log('\n设计器自检: 通过 ' + pass + ' / 失败 ' + fail);

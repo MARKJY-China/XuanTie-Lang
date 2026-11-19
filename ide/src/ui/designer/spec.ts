@@ -38,6 +38,8 @@ export const KEY_ORDER: readonly string[] = [
   '悬浮', '按下', '禁用', '悬底色', '按底色', '禁底色', '悬字色', '按字色', '禁字色',
   // 行为
   '点击', '触发', '连发间隔', '首按延迟',
+  // 输入能力(R-08,库 v1.8.0;新键按纪律追加在既有键之后):行距/自动增高/最小高/最大高/提交
+  '行距', '自动增高', '最小高', '最大高', '提交',
 ];
 
 /** 未知键(null = 不在规范序中)在生成时排在规范序键之后、按源出现序保留 */
@@ -55,7 +57,7 @@ export interface WidgetSpec {
 }
 
 /**
- * 控件形态表(对齐 UI 库 v1.5.3 的 14 个构造器)。
+ * 控件形态表(对齐 UI 库 v1.8.0 的 15 个构造器;图标 为 v1.8.0 新增)。
  * 'children' 槽只收 [叶子调用 | 容器名引用];'state' 槽收标识符;'key' 槽收字符串。
  */
 export const WIDGETS: Readonly<Record<string, WidgetSpec>> = {
@@ -69,6 +71,7 @@ export const WIDGETS: Readonly<Record<string, WidgetSpec>> = {
   '矩形':     { kind: 'leaf', args: ['options'] },
   '图片':     { kind: 'leaf', args: ['src', 'options'] },
   '图标按钮': { kind: 'leaf', args: ['src', 'options'] },
+  '图标':     { kind: 'leaf', args: ['src', 'options'] },
   '输入栏':   { kind: 'leaf', args: ['state', 'key', 'options'] },
   '多行编辑': { kind: 'leaf', args: ['state', 'key', 'options'] },
   '空白':     { kind: 'leaf', args: ['options'] },

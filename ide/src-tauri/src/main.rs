@@ -14,6 +14,7 @@ mod menubar;
 mod preflight;
 mod pty;
 mod scaffold;
+mod tiepmwin;
 mod tools;
 
 use std::collections::HashMap;
@@ -209,6 +210,9 @@ fn main() {
                     if let Some(console) = window.app_handle().get_webview_window("ai-console") {
                         let _ = console.close();
                     }
+                    if let Some(tw) = window.app_handle().get_webview_window("tiepm-window") {
+                        let _ = tw.close();
+                    }
                 }
             }
         })
@@ -284,6 +288,11 @@ fn main() {
             tools::tiepm_packages,
             tools::tiepm_remove,
             tools::tiepm_clean,
+            tiepmwin::open_tiepm_window,
+            tiepmwin::tiepm_install_start,
+            tiepmwin::tiepm_install_cancel,
+            tiepmwin::tiepm_install_busy,
+            tiepmwin::tiepm_install_current,
             http::http_json,
             http::http_stream,
             http::http_stream_abort,

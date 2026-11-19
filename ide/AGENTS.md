@@ -226,6 +226,9 @@ v0.3 验收标准不变:"能用设计器拖出一个完整小应用" = UI 库毕
   禁止分发;`npx tauri build` 会自动带 custom-protocol 并内嵌前端,不要再手工拼 cargo 参数。
   前端资源是编译期内嵌的:改前端后直接 `npx tauri build` 即可(其内部会先跑 `npm run build`)。
   重编报 `os error 5 拒绝访问` = 旧 exe 还在运行(Windows 文件锁),关掉铸造厂再编。
-- **发行构建由用户执行**(2026-10-02 用户立):AI 不在会话里跑 `npx tauri build` / `cargo build`;
-  AI 侧的验证边界 = `npx tsc --noEmit`(前端类型) + `cargo test`(src-tauri 单测),
-  发行构建与实机冒烟由用户自行执行。
+- **发行构建与投放**(2026-11-13 用户立,取代 2026-10-02「由用户执行」):每次改完铸造厂,
+  AI 都要用 `ide\build.cmd` 出 Release——安装包在
+  `src-tauri\target\release\bundle\nsis\玄铁铸造厂_<版本>_x64-setup.exe`(同名 `.sig` 成对),
+  并把 `src-tauri\target\release\xuantie-foundry.exe` 与 `WebView2Loader.dll` 复制到
+  `build\dist\ide\`(发行包收录位置;`build/` 已 gitignore,复制不进提交)。
+  构建前确认铸造厂没在运行(exe 被锁会报 `os error 5 拒绝访问`);实机冒烟仍由用户执行。

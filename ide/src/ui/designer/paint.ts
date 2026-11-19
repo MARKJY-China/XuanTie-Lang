@@ -1,9 +1,11 @@
 // 铸造厂可视化 UI 设计器 —— 画布绘制(纯 DOM,不依赖玄铁运行时)
 // 以嵌套 div 复刻 UI 库观感:底色/圆角/边框/字号字色/不透明度/裁剪/淡显(可视=假)。
-// 文本与输入栏用文案/占位显示;状态绑定以 {键} 形式标出(斜体强调);图片/图标按钮为占位块。
+// 文本与输入栏用文案/占位显示;状态绑定以 {键} 形式标出(斜体强调);图片为占位块;
+// 图标/图标按钮 用 ICON_CATALOG 内联 SVG 画真实图标(颜色走 CSS currentColor)。
 // 命中:每个盒子带 data-ix;点击由 panel 统一处理。
 import type { DesignNode, Val } from './parser';
 import type { LayoutBox, LayoutResult } from './layout';
+import { ICON_CATALOG, type IconEntry } from './iconCatalog';
 
 /** UI.色彩 12 色板(与 lib/UI/UI.xt 同步;库改色板须同步此处) */
 const PALETTE: Record<string, string> = {
@@ -30,6 +32,74 @@ function numOf(node: DesignNode, key: string): number | undefined {
 }
 function colorOf(v: Val | undefined): string | undefined {
   return v && v.t === 'colorConst' ? PALETTE[v.key] : undefined;
+}
+
+// ---------------------------------------------------------------- 内置图标(v1.8.0)
+// 源名(英文 ID / 中文名)→ 条目。名字表来自 lib/UI 的内嵌 Lucide 图标集(2359 个);
+// 数据是生成文件(iconCatalog.ts),设计器只读不写。
+const ICON_BY_NAME = new Map<string, IconEntry>();
+for (const it of ICON_CATALOG) {
+  ICON_BY_NAME.set(it.en, it);
+  ICON_BY_NAME.set(it.zh, it);
+}
+
+/** 源名 → 图标条目(英文 ID 与中文名等价;非内置名如 .png/.svg 路径返 undefined) */
+export function iconEntryByName(name: string): IconEntry | undefined {
+  return ICON_BY_NAME.get(name);
+}
+
+/** 图标色 → CSS 颜色(比通用 colorOf 多认 hex16/rgba:属性面板可写自定义色);透明返 undefined */
+function iconColorCss(v: Val | undefined): string | undefined {
+  if (!v) return undefined;
+  if (v.t === 'colorConst') return v.key === '透明' ? undefined : PALETTE[v.key];
+  if (v.t === 'hex16') return /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(v.v) ? v.v : undefined;
+  if (v.t === 'rgba') {
+    const ch = v.channels.map((c) => Math.max(0, Math.min(255, Number(c) || 0)));
+    if (ch.length === 4 && ch[3] === 0) return undefined;
+    return `rgba(${ch[0]},${ch[1]},${ch[2]},${ch.length === 4 ? ch[3] / 255 : 1})`;
+  }
+  return undefined;
+}
+
+/** 图标源实参(src 槽:图标/图标按钮/图片 的一号实参);态取等动态源不解析 */
+function srcName(node: DesignNode): string | undefined {
+  const v = node.args[0];
+  return v && v.t === 'str' ? v.v : undefined;
+}
+
+/** 内边距的左边值(数字或四边子字典);未设时用库默认值 */
+function insetLeft(node: DesignNode, fallback: number): number {
+  const v = optVal(node, '内边距');
+  if (!v) return fallback;
+  if (v.t === 'num') return Number(v.raw) || 0;
+  if (v.t === 'dict') {
+    const e = v.entries.find((x) => x.key === '左');
+    return e && e.value.t === 'num' ? Number(e.value.raw) || 0 : 0;
+  }
+  return fallback;
+}
+
+/**
+ * 画一个内联 SVG 图标:svg 里的 stroke/fill 是 currentColor,颜色由外层 color 继承;
+ * 尺寸写在外层盒(宽高 100%,源码 SVG 的 24×24 属性不参与布局)。
+ * 找不到条目(自定义图片路径/空源)或尺寸为 0 → 占位方框。
+ */
+function iconNode(entry: IconEntry | undefined, size: number, color: string | undefined): HTMLElement {
+  if (!entry || size <= 0) {
+    const ph = document.createElement('span');
+    ph.className = 'ds-label ds-ph';
+    ph.textContent = '▣';
+    if (!entry && size > 0) ph.title = '不是内置图标名(可能是图片路径)';
+    return ph;
+  }
+  const wrap = document.createElement('span');
+  wrap.className = 'ds-icon';
+  wrap.style.width = size + 'px';
+  wrap.style.height = size + 'px';
+  wrap.style.color = color ?? 'rgba(220,220,220,1)'; // 库默认 图标色 = 白;画布暗底上用近白
+  wrap.title = `${entry.zh} · ${entry.en}`;
+  wrap.innerHTML = entry.svg;
+  return wrap;
 }
 
 function textNode(host: HTMLElement, text: string, node: DesignNode, center: boolean): void {
@@ -153,12 +223,32 @@ export function paintDesign(host: HTMLElement, laid: LayoutResult, selected: Des
         el.appendChild(s);
         break;
       }
-      case '图片':
-      case '图标按钮': {
+      case '图片': {
+        // 图片依赖真实纹理,设计期读不到 → 占位块(图标按钮若填图片路径也走这里)
         const s = document.createElement('span');
         s.className = 'ds-label ds-ph';
         s.textContent = '▣';
         el.appendChild(s);
+        break;
+      }
+      case '图标按钮': {
+        // 库语义:图标按 图标尺寸 缩放后居中;0 = 自动 = 净区最大边(默认内边距 4,见 lib/UI 图标按钮)
+        const entry = iconEntryByName(srcName(node) ?? '');
+        const bw = b ? b.w : 28;
+        const bh = b ? b.h : 28;
+        const edge = Math.min(bw, bh);
+        const optSize = numOf(node, '图标尺寸') ?? 0;
+        const size = optSize > 0 ? optSize : Math.max(0, edge - insetLeft(node, 4) * 2);
+        el.appendChild(iconNode(entry, size, iconColorCss(optVal(node, '图标色'))));
+        break;
+      }
+      case '图标': {
+        // 库语义:尺寸 0 = 取盒较小边;图标尺寸 超出盒时夹到盒边(lib/UI 图标)
+        const entry = iconEntryByName(srcName(node) ?? '');
+        const edge = b ? Math.min(b.w, b.h) : 0;
+        const optSize = numOf(node, '图标尺寸') ?? 0;
+        const size = optSize > 0 ? Math.min(optSize, edge) : edge;
+        el.appendChild(iconNode(entry, size, iconColorCss(optVal(node, '图标色'))));
         break;
       }
       case '弹性': {

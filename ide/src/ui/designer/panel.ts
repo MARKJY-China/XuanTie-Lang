@@ -7,10 +7,19 @@
 import { parseDesignFunction, type DesignNode, type ParseResult, type Val } from './parser';
 import { findRegions, regionText, replaceRegion, type RegionRef } from './region';
 import { layoutTree, type Measure } from './layout';
-import { paintDesign, type PaintResult } from './paint';
-import { valText, generateDesignFunction } from './generator';
+import { paintDesign, iconEntryByName, type PaintResult } from './paint';
+import { generateDesignFunction, strVal, valText } from './generator';
+import {
+  appendEntry,
+  buildRenderEntry,
+  collectStateKeys,
+  ensureUiImport,
+  hasRenderEntry,
+  uiAliasOf,
+} from './runentry';
 import { markBegin, markEnd } from './spec';
 import { COLOR_PALETTE, GROUP_ORDER, PROP_SPECS, TOOLBOX, WIDGET_KEYS, specOf, type PropGroup } from './props';
+import { ICON_CATALOG, findIcon } from './iconCatalog';
 import {
   CONTEXT_SEP,
   dropdownButton as ddButton,
@@ -33,6 +42,7 @@ import {
   lockedAxes,
   moveMode,
   nodeAtPath,
+  numOpt,
   numVal,
   removeNode,
   removeOpt,
@@ -55,6 +65,8 @@ export interface DesignerDeps {
   replaceAll(oldText: string, newText: string): boolean;
   /** 复制文本到剪贴板 */
   copy(text: string): Promise<boolean>;
+  /** 保存并运行当前文件(生成渲染入口后调用);未接则提示用户按 F5 */
+  run?: () => Promise<void>;
 }
 
 /** 吸附阈值(画布像素)与拖拽启动阈值 */
@@ -107,6 +119,29 @@ function colorPreview(v: Val | undefined): string | undefined {
   return undefined;
 }
 
+/** 控件 → codicon(控件树行首图标) */
+function widgetIcon(widget: string): string {
+  switch (widget) {
+    case '文本': return 'codicon-symbol-string';
+    case '按钮': case '图标按钮': return 'codicon-symbol-event';
+    case '矩形': case '图片': case '图标': return 'codicon-symbol-color';
+    case '输入栏': case '多行编辑': return 'codicon-symbol-field';
+    case '弹性': return 'codicon-arrow-both';
+    case '空白': return 'codicon-blank';
+    case '行': case '列': case '叠': case '绝对': case '滚动容器': return 'codicon-layout';
+    default: return 'codicon-symbol-structure';
+  }
+}
+
+/** 控件树行文字:容器显示变量名,叶子带首参摘要 */
+function treeLabel(node: DesignNode): string {
+  if (node.kind === 'container') return node.varName ?? node.widget;
+  const a = node.args[0];
+  const brief = a && a.t === 'str' ? a.v : a && a.t === 'num' ? a.raw : '';
+  const text = brief.length > 14 ? brief.slice(0, 14) + '…' : brief;
+  return text ? `${node.widget} "${text}"` : node.widget;
+}
+
 interface DragState {
   kind: 'move' | 'resize';
   node: DesignNode;
@@ -134,7 +169,17 @@ export class DesignerPanel {
   private split: HTMLElement;
   private insp: HTMLElement;
   private libPanel: HTMLElement;
+  private treePanel: HTMLElement;
+  private treeBody: HTMLElement;
   private issuesEl: HTMLElement;
+  /** 控件树里被折叠的容器(键 = 树路径,如 "0/1/2";默认全展开) */
+  private treeCollapsed = new Set<string>();
+  /** 正在从控件库拖拽的控件名(HTML5 DnD) */
+  private dragWidget: string | null = null;
+  /** 当前高亮的拖放落点 */
+  private dropEl: HTMLElement | null = null;
+  /** 当前落点节点(dragover 高频触发:目标没变就不重画) */
+  private dropNode: DesignNode | null = null;
 
   private regions: RegionRef[] = [];
   private regionIdx = 0;
@@ -172,6 +217,7 @@ export class DesignerPanel {
           this.regionIdx = i;
           this.selected = null;
           this.selPath = null;
+          this.treeCollapsed.clear();
           this.reparse();
         },
       })),
@@ -184,10 +230,18 @@ export class DesignerPanel {
     refresh.title = '重新读取当前文件';
     refresh.innerHTML = '<i class="codicon codicon-refresh"></i>';
     refresh.addEventListener('click', () => this.open());
-    bar.append(this.sub, this.picker, el('span', 'ds-tip', '拖动移动 · 角柄缩放 · 吸附对齐 · Ctrl+Z 撤销'), this.badge, refresh);
+    const btnInit = el('button', 'ds-btn ds-init', '初始化渲染窗口');
+    btnInit.title = '生成 UI.应用 入口(缺 引 "UI" 时自动补),保存并运行:按设计稿直接渲染窗口';
+    btnInit.addEventListener('click', () => void this.initRenderWindow());
+    bar.append(this.sub, this.picker, btnInit, this.badge, refresh);
 
-    // 主体:画布 | 控件库(独立面板) | 宽度可拖的分隔条 | 检视
+    // 主体:控件树 | 画布 | 控件库(独立面板) | 宽度可拖的分隔条 | 检视
     const body = el('div', 'ds-body');
+    this.treePanel = el('div', 'ds-tree');
+    const treeHead = el('div', 'ds-tree-head');
+    treeHead.append(el('i', 'codicon codicon-type-hierarchy'), el('span', '', '控件树'));
+    this.treeBody = el('div', 'ds-tree-body');
+    this.treePanel.append(treeHead, this.treeBody);
     this.canvasHost = el('div', 'ds-canvas');
     this.libPanel = el('div', 'ds-lib');
     const libHead = el('div', 'ds-lib-head');
@@ -196,8 +250,20 @@ export class DesignerPanel {
     for (const g of TOOLBOX) {
       libList.appendChild(el('div', 'ds-lib-group', g.group));
       for (const w of g.widgets) {
-        const b = el('button', 'ds-lib-item', w);
-        b.title = '添加到选中的容器(选中叶子则插在其后)';
+        const b = el('button', 'ds-lib-item', w) as HTMLButtonElement;
+        b.title = '拖到画布放入容器;或先选中容器再点击(选中叶子则插在其后)';
+        b.draggable = true;
+        b.addEventListener('dragstart', (e) => {
+          this.dragWidget = w;
+          if (e.dataTransfer) {
+            e.dataTransfer.setData('text/plain', w);
+            e.dataTransfer.effectAllowed = 'copy';
+          }
+        });
+        b.addEventListener('dragend', () => {
+          this.dragWidget = null;
+          this.clearDropTarget();
+        });
         b.addEventListener('click', () => this.addWidget(w));
         libList.appendChild(b);
       }
@@ -206,7 +272,7 @@ export class DesignerPanel {
     this.split = el('div', 'ds-split');
     this.split.title = '拖动调整属性面板宽度';
     this.insp = el('div', 'ds-insp');
-    body.append(this.canvasHost, this.libPanel, this.split, this.insp);
+    body.append(this.treePanel, this.canvasHost, this.libPanel, this.split, this.insp);
 
     this.issuesEl = el('div', 'ds-issues');
     host.append(bar, body, this.issuesEl);
@@ -227,6 +293,27 @@ export class DesignerPanel {
       true,
     );
 
+    // 从控件库拖入:HTML5 DnD;落点 = 指针下的节点(容器则加入其子项,叶子则插在其后)
+    this.canvasHost.addEventListener('dragover', (e) => {
+      if (!this.dragWidget) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      this.showDropTarget(this.nodeFromEvent(e));
+    });
+    this.canvasHost.addEventListener('dragleave', (e) => {
+      const to = e.relatedTarget as Node | null;
+      if (!to || !this.canvasHost.contains(to)) this.clearDropTarget();
+    });
+    this.canvasHost.addEventListener('drop', (e) => {
+      const w = this.dragWidget;
+      if (!w) return;
+      e.preventDefault();
+      const target = this.nodeFromEvent(e);
+      this.dragWidget = null;
+      this.clearDropTarget();
+      this.insertWidgetAt(w, target);
+    });
+
     // 分隔条:拖动改属性面板宽(仅本次会话)
     this.split.addEventListener('pointerdown', (e) => this.splitDown(e));
 
@@ -246,6 +333,90 @@ export class DesignerPanel {
       }
       this.showNodeMenu(e.clientX, e.clientY, n);
     });
+  }
+
+  // ---------------------------------------------------------------- 控件树(Godot 场景树式)
+
+  /** 重绘控件树:缩进 + 折叠箭头 + 图标 + 名称;点击选中,右键出层级/复制/删除 */
+  private renderTree(): void {
+    this.treeBody.innerHTML = '';
+    const root = this.parsed?.root;
+    if (!root) {
+      this.treeBody.appendChild(el('div', 'ds-tree-empty', '没有可显示的控件'));
+      return;
+    }
+    const walk = (n: DesignNode, depth: number, path: string): void => {
+      const hasKids = n.children.length > 0;
+      const open = !this.treeCollapsed.has(path);
+      const row = el('div', 'ds-trow' + (n === this.selected ? ' sel' : ''));
+      row.style.paddingLeft = `${6 + depth * 12}px`;
+      if (hasKids) {
+        const ar = el('i', 'codicon ds-tw ' + (open ? 'codicon-chevron-down' : 'codicon-chevron-right'));
+        ar.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (open) this.treeCollapsed.add(path);
+          else this.treeCollapsed.delete(path);
+          this.renderTree();
+        });
+        row.appendChild(ar);
+      } else {
+        row.appendChild(el('span', 'ds-tw'));
+      }
+      row.appendChild(el('i', 'codicon ds-tico ' + widgetIcon(n.widget)));
+      row.appendChild(el('span', 'ds-tlabel', treeLabel(n)));
+      row.appendChild(el('span', 'ds-tline', `L${n.line}`));
+      row.title = `${n.widget}${n.varName ? ' · ' + n.varName : ''}(第 ${n.line} 行)`;
+      row.addEventListener('click', () => this.pick(n));
+      row.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.pick(n);
+        if (this.parsed?.ok) this.showNodeMenu(e.clientX, e.clientY, n);
+        else this.hint('本区含非子集内容,只读(不能增删改)');
+      });
+      this.treeBody.appendChild(row);
+      if (hasKids && open) {
+        n.children.forEach((ch, i) => walk(ch, depth + 1, `${path}/${i}`));
+      }
+    };
+    walk(root, 0, '0');
+    const sel = this.treeBody.querySelector('.ds-trow.sel') as HTMLElement | null;
+    sel?.scrollIntoView({ block: 'nearest' });
+  }
+
+  // ---------------------------------------------------------------- 拖放落点
+
+  private nodeFromEvent(e: DragEvent): DesignNode | null {
+    const eln = (e.target as HTMLElement | null)?.closest('[data-ix]') as HTMLElement | null;
+    if (!eln || !this.painted) return this.parsed?.root ?? null;
+    return this.painted.nodes[Number(eln.dataset.ix)] ?? this.parsed?.root ?? null;
+  }
+
+  /** 画出拖放落点:容器/叶子都高亮该节点;空白处高亮整个窗口框 */
+  private showDropTarget(n: DesignNode | null): void {
+    if (n === this.dropNode) return; // dragover 每帧都来:落点没换就不重画,避免闪烁
+    this.clearDropTarget();
+    this.dropNode = n;
+    if (!this.painted) return;
+    if (!n) {
+      this.painted.frame.classList.add('ds-drop-root');
+      return;
+    }
+    const i = this.painted.nodes.indexOf(n);
+    const e = this.painted.els[i];
+    if (e) {
+      e.classList.add('ds-drop');
+      this.dropEl = e;
+    } else {
+      this.painted.frame.classList.add('ds-drop-root');
+    }
+  }
+
+  private clearDropTarget(): void {
+    this.dropEl?.classList.remove('ds-drop');
+    this.dropEl = null;
+    this.dropNode = null;
+    this.painted?.frame.classList.remove('ds-drop-root');
   }
 
   /** 控件右键菜单:层级四连 + 复制/删除(与属性面板的工具箱同源) */
@@ -282,7 +453,10 @@ export class DesignerPanel {
       this.renderEmpty('没有打开的文件', false);
       return;
     }
-    if (cur.path !== this.filePath) this.selPath = null; // 换页:选中不跨文件
+    if (cur.path !== this.filePath) {
+      this.selPath = null; // 换页:选中不跨文件
+      this.treeCollapsed.clear(); // 控件树折叠状态也不跨文件
+    }
     this.filePath = cur.path;
     this.fileText = cur.text;
     this.regions = findRegions(this.fileText);
@@ -319,6 +493,7 @@ export class DesignerPanel {
     this.renderHead();
     this.renderIssues();
     this.renderCanvas();
+    this.renderTree();
     this.renderInspector();
   }
 
@@ -342,6 +517,8 @@ export class DesignerPanel {
       d.appendChild(btns);
     }
     this.canvasHost.appendChild(d);
+    this.treeBody.innerHTML = '';
+    this.treeBody.appendChild(el('div', 'ds-tree-empty', '没有可显示的控件'));
     this.insp.innerHTML = '';
     this.issuesEl.textContent = '';
   }
@@ -397,9 +574,6 @@ export class DesignerPanel {
     }
     const laid = layoutTree(root, measure);
     this.painted = paintDesign(this.canvasHost, laid, this.selected, (n) => this.pick(n));
-    if (laid.notes.length > 0) {
-      this.canvasHost.appendChild(el('div', 'ds-note', laid.notes.join(';')));
-    }
     this.canvasHost.scrollLeft = sl;
     this.canvasHost.scrollTop = st;
   }
@@ -409,6 +583,7 @@ export class DesignerPanel {
     const root = this.parsed?.root;
     this.selPath = root ? findPath(root, node) : null;
     this.renderCanvas();
+    this.renderTree();
     this.renderInspector();
   }
 
@@ -455,7 +630,9 @@ export class DesignerPanel {
     if (n.args.length > 0) {
       this.section('实参', 'args', () => {
         n.args.forEach((a, i) => {
-          if (editable && (a.t === 'str' || a.t === 'num')) this.propTextRow(`#${i + 1}`, a);
+          const iconSrc = i === 0 && (n.widget === '图标' || n.widget === '图标按钮') && a.t === 'str';
+          if (editable && iconSrc) this.propIconRow(`#${i + 1}`, a);
+          else if (editable && (a.t === 'str' || a.t === 'num')) this.propTextRow(`#${i + 1}`, a);
           else {
             const r = el('div', 'ds-prow');
             r.append(el('span', 'ds-pk', `#${i + 1}`), el('span', 'ds-pv', valText(a)));
@@ -795,6 +972,118 @@ export class DesignerPanel {
     this.filterRows.push({ key: label, elm: row, title: '实参 ' + label });
   }
 
+  /**
+   * 图标源实参:文本框 + 「选图标」按钮(写回的是中文名;库中中文名与英文 ID 等价)。
+   * 行首小预览显示当前图标;非内置名(如 .png 路径)显示占位方框,仍可手改或挑选。
+   */
+  private propIconRow(label: string, cur: Val): void {
+    const node = this.selected;
+    if (!node || cur.t !== 'str') return;
+    const idx = Number(label.slice(1)) - 1;
+    const row = el('div', 'ds-prow');
+    row.appendChild(el('span', 'ds-pk', label + ' 源'));
+    const box = el('span', 'ds-pctl');
+    const entry = iconEntryByName(cur.v);
+    const prev = el('span', 'ds-icon-prev');
+    if (entry) {
+      prev.innerHTML = entry.svg;
+      prev.title = `${entry.zh} · ${entry.en}`;
+    } else {
+      prev.classList.add('empty');
+      prev.textContent = '▣';
+      prev.title = cur.v === '' ? '未设置图标' : `不是内置图标名:「${cur.v}」(可能是图片路径)`;
+    }
+    const inp = document.createElement('input');
+    inp.className = 'ds-in ds-text';
+    inp.type = 'text';
+    inp.value = cur.v;
+    inp.placeholder = '中文名 / 英文 ID,如 搜索 / search';
+    inp.addEventListener('change', () => {
+      const v = inp.value.trim();
+      this.editTree((_r, n2) => {
+        const a = n2.args[idx];
+        if (!a || a.t !== 'str') return false;
+        n2.args[idx] = strVal(v);
+        return true;
+      }, `${label} 已改`);
+    });
+    const pick = el('button', 'ds-btn ds-icon-pickbtn', '选图标') as HTMLButtonElement;
+    pick.type = 'button';
+    pick.title = '打开图标选择器:搜索中文名/英文 ID,点击即写回该图标中文名';
+    pick.addEventListener('click', () => void this.pickIcon(idx));
+    box.append(prev, inp, pick);
+    row.appendChild(box);
+    this.row(row);
+    this.filterRows.push({ key: label, elm: row, title: `图标源 ${label} ${cur.v}` });
+  }
+
+  /**
+   * 图标选择器弹层(复用 IDE 模态框,不引入新依赖):
+   * 顶部搜索框(中文/英文即时过滤 findIcon)+ 下方可滚动网格(内联 SVG + 中文名,title 给英文 ID),
+   * 顺序 = ICON_CATALOG 常用度;点击一项即把中文名写回 src 并关闭。
+   * 数据与 lib/UI 内嵌图标集同源(2359 个,UI 库 v1.8.0)。
+   */
+  private async pickIcon(argIdx: number): Promise<void> {
+    const node = this.selected;
+    if (!node || !this.parsed?.ok) return;
+    const cur = node.args[argIdx];
+    const current = cur && cur.t === 'str' ? cur.v : '';
+    const currentEntry = iconEntryByName(current);
+    const initialQuery = currentEntry ? currentEntry.zh : '';
+    const picked = await showCustomModal(
+      '选择图标',
+      (body, close) => {
+        const wrap = el('div', 'ds-icon-picker');
+        const search = document.createElement('input');
+        search.type = 'text';
+        search.className = 'ds-in ds-icon-search';
+        search.placeholder = '搜索中文名 / 英文 ID,如 搜索 / search';
+        search.value = initialQuery;
+        search.spellcheck = false;
+        const count = el('div', 'ds-icon-count');
+        const grid = el('div', 'ds-icon-grid');
+        const render = (q: string): void => {
+          grid.innerHTML = '';
+          const list = findIcon(q);
+          count.textContent = `${list.length} 个(共 ${ICON_CATALOG.length} 个,按常用度排序)`;
+          for (const it of list) {
+            const cell = document.createElement('button');
+            cell.type = 'button';
+            cell.className = 'ds-icon-cell' + (currentEntry && it.en === currentEntry.en ? ' sel' : '');
+            cell.title = `${it.zh} · ${it.en}`;
+            const svg = el('span', 'ds-icon-cell-svg');
+            svg.innerHTML = it.svg;
+            cell.append(svg, el('span', 'ds-icon-cell-name', it.zh));
+            cell.addEventListener('click', () => close(it.zh));
+            grid.appendChild(cell);
+          }
+        };
+        search.addEventListener('input', () => render(search.value));
+        search.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            const first = findIcon(search.value)[0];
+            if (first) close(first.zh);
+          } else if (e.key === 'Escape') {
+            close(undefined);
+          }
+        });
+        wrap.append(search, count, grid);
+        body.appendChild(wrap);
+        render(initialQuery);
+        window.setTimeout(() => search.focus(), 0);
+      },
+      '中文名 / 英文 ID 等价;点击图标即写回中文名(如 搜索 ↔ search)',
+      true,
+    );
+    if (typeof picked !== 'string' || picked === '') return;
+    this.editTree((_r, n2) => {
+      const a = n2.args[argIdx];
+      if (!a || a.t !== 'str') return false;
+      n2.args[argIdx] = strVal(picked);
+      return true;
+    }, `图标已改为「${picked}」`);
+  }
+
   /** 自定义颜色输入(走 IDE 自己的弹窗,不用 window.prompt —— WebView2 内不可靠) */
   private async pickHex(key: string, cur: Val): Promise<void> {
     const initial = cur.t === 'hex16' ? cur.v : '#3B82F6';
@@ -833,15 +1122,29 @@ export class DesignerPanel {
   // ---------------------------------------------------------------- 工具箱
 
   private addWidget(widget: string): void {
-    const root = this.parsed?.root;
     const n = this.selected;
-    if (!root || !n || !this.parsed?.ok) {
+    if (!n) {
       this.hint('先选中一个控件或容器');
       return;
     }
+    this.insertWidgetAt(widget, n);
+  }
+
+  /** 在指定节点处插入新控件:容器 → 追加子项;叶子/未指定 → 插在其后(或根末尾) */
+  private insertWidgetAt(widget: string, target: DesignNode | null): void {
+    const root = this.parsed?.root;
+    if (!root) {
+      this.hint('先在代码里生成设计区');
+      return;
+    }
+    if (!this.parsed?.ok) {
+      this.hint('本区含非子集内容,只读(不能增删改)');
+      return;
+    }
+    const ref = target && findPath(root, target) ? target : root;
     const fresh = defaultWidget(widget, this.parsed.stateParam ?? 's');
-    const pos: 'child' | 'after' = n.kind === 'container' ? 'child' : 'after';
-    if (!insertNode(root, n, fresh, pos)) {
+    const pos: 'child' | 'after' = ref.kind === 'container' ? 'child' : 'after';
+    if (!insertNode(root, ref, fresh, pos)) {
       this.hint('添加失败:该位置不可插入');
       return;
     }
@@ -918,6 +1221,58 @@ export class DesignerPanel {
     if (!this.deps.replaceAll(this.fileText, next)) return false;
     this.fileText = next;
     return true;
+  }
+
+  // ---------------------------------------------------------------- 渲染入口
+
+  /**
+   * 初始化渲染窗口:设计区只有 `函 界面(s)`,单独运行不会开窗。
+   * 这里补 `引 "UI"` + `UI.应用(…)` 入口(已有则复用),然后保存并运行 —— 不写一行代码就能看到成品窗口。
+   */
+  private async initRenderWindow(): Promise<void> {
+    const root = this.parsed?.root;
+    const func = this.parsed?.funcName;
+    if (!root || !func) {
+      this.hint('没有可初始化的设计区');
+      return;
+    }
+    if (!this.parsed?.ok) {
+      this.hint('本区含非子集内容,只读(不能生成入口)');
+      return;
+    }
+    let next = this.fileText;
+    const alias = uiAliasOf(next) ?? 'UI';
+    if (!uiAliasOf(next)) next = ensureUiImport(next);
+    if (!hasRenderEntry(next)) {
+      const width = numOpt(root, '宽') ?? 800;
+      const height = numOpt(root, '高') ?? 560;
+      const entry = buildRenderEntry({
+        alias,
+        funcName: func,
+        stateParam: this.parsed.stateParam ?? 's',
+        title: this.regions[this.regionIdx]?.name ?? func,
+        width,
+        height,
+        stateKeys: collectStateKeys(root),
+      });
+      next = appendEntry(next, entry);
+    }
+    if (next !== this.fileText) {
+      if (!this.deps.replaceAll(this.fileText, next)) {
+        this.hint('生成入口失败:编辑器内容已变化,请重试', 'warn');
+        return;
+      }
+      this.fileText = next;
+      this.open();
+      this.hint('已生成渲染入口,正在运行…', 'ok');
+    } else {
+      this.hint('已有渲染入口,正在运行…', 'ok');
+    }
+    if (this.deps.run) {
+      void this.deps.run().catch((err: unknown) => this.hint(`运行失败: ${String(err)}`, 'warn'));
+    } else {
+      this.hint('已初始化渲染入口:按 F5 运行', 'ok');
+    }
   }
 
   /** 层级操作:改树 → 写回;失败或越界都不静默 —— 徽标给话 */

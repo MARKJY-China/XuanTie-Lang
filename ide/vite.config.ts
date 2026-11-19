@@ -49,6 +49,7 @@ export default defineConfig({
       input: {
         main: fileURLToPath(new URL('./index.html', import.meta.url)),
         console: fileURLToPath(new URL('./console.html', import.meta.url)),
+        tiepm: fileURLToPath(new URL('./tiepm.html', import.meta.url)),
       },
     },
   },

@@ -368,7 +368,7 @@ function parseUiCall(c: Cursor): CallResult | undefined {
   const widget = nameTok.v;
   const spec = WIDGETS[widget];
   if (!spec) {
-    bad(c, `未知控件 '${widget}'(设计区只认 UI 库 14 个构造器之一;如需新控件请先扩充规范与元数据表)`, nameTok.line);
+    bad(c, `未知控件 '${widget}'(设计区只认 UI 库 15 个构造器之一;如需新控件请先扩充规范与元数据表)`, nameTok.line);
     return undefined;
   }
   const node: DesignNode = {

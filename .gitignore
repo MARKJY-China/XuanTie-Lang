@@ -93,6 +93,8 @@ INVESTIGATION_xt.md
 *.tmp
 玄铁.配置.toml
 /offline-docs/
+/ide/dist
+/ide/src-tauri/target-alt
 
 # 句读:源码/测试/文档入库;build 产物除外(其下 *.exe 已被全局规则覆盖)
 !/句读/
