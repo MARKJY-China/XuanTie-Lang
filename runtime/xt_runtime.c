@@ -3506,12 +3506,45 @@ XTValue xt_get_temp_path() {
             if (len > 0 && (path[len-1] == '\\' || path[len-1] == '/')) {
                 path[len-1] = '\0';
             }
-            XTString* s = xt_string_new(path);
+            int ascii = 1;
+            for (size_t i = 0; i < len; i++) {
+                if ((unsigned char)path[i] >= 0x80) { ascii = 0; break; }
+            }
+            if (ascii) {
+                XTString* s = xt_string_new(path);
+                free(path);
+                return (XTValue)s;
+            }
             free(path);
-            return (XTValue)s;
         }
     }
-    return (XTValue)xt_string_new("C:\\temp");
+    /* issue #162:MinGW gcc/ld 的窄字符 argv 无法可靠处理非 ASCII 路径。
+       编译器缓存/中间产物必须放在 ASCII 路径;TEMP 是中文时退回 PUBLIC
+       (C:\Users\Public 通常 ASCII 且普通用户可写),再退回 C:\Windows\Temp。
+       只影响编译器内部缓存,不改变用户 TEMP 语义。 */
+    {
+        wchar_t public_path[MAX_PATH];
+        DWORD n = GetEnvironmentVariableW(L"PUBLIC", public_path, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            wchar_t fallback[MAX_PATH];
+            _snwprintf(fallback, MAX_PATH, L"%ls\\XuanTieTemp", public_path);
+            fallback[MAX_PATH - 1] = 0;
+            char* path = xt_utf16_to_utf8(fallback);
+            if (path) {
+                int ascii = 1;
+                for (char* p = path; *p; p++) {
+                    if ((unsigned char)*p >= 0x80) { ascii = 0; break; }
+                }
+                if (ascii) {
+                    XTString* s = xt_string_new(path);
+                    free(path);
+                    return (XTValue)s;
+                }
+                free(path);
+            }
+        }
+    }
+    return (XTValue)xt_string_new("C:\\Windows\\Temp\\XuanTieTemp");
 #else
     const char* tmp = getenv("TMPDIR");
     if (!tmp) tmp = "/tmp";
@@ -3582,155 +3615,72 @@ static int xt_pclose_nowindow(FILE* f, HANDLE hProc) {
 #endif
 
 XTValue xt_execute(XTValue cmd_val) {
-    // 失败契约:结果.值 一律给空串,绝不交 NULL——语言层存在对 结果.值 直接调字符串方法
-    // 的调用点(如 编译.xt 规范化绝对路径),NULL 会段错误;空串可安全参与字符串运算。
-    // (实测:收窄 PATH 下 执("cmd /c cd") 管道打开失败,旧实现交 NULL 致编译期段错误)
-    if (!XT_IS_REAL_PTR(cmd_val)) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("指令无效"));
-    XTObject* obj = (XTObject*)cmd_val;
-    if (obj->type_id != XT_TYPE_STRING) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("指令无效"));
+    return xt_execute_timeout(cmd_val, XT_FROM_INT(0));
+}
+
+static XTValue _xt_execute_failure(const char* msg) {
+    return (XTValue)xt_result_new(0, (void*)xt_string_new(""),
+                                  (void*)xt_string_new(msg ? msg : "执行失败"));
+}
+
+/**
+ * 执() 的统一实现(issue #162):Windows 直接 CreateProcessW + 管道,
+ * 不再写临时 .bat;POSIX fork/exec + 进程组。输出倍增缓冲、可选超时。
+ */
+XTValue xt_execute_timeout(XTValue cmd_val, XTValue timeout_val) {
+    if (!XT_IS_REAL_PTR(cmd_val) || ((XTObject*)cmd_val)->type_id != XT_TYPE_STRING) {
+        return _xt_execute_failure("指令无效");
+    }
+    if (!XT_IS_INT(timeout_val)) return _xt_execute_failure("超时毫秒必须是整数");
+    int64_t timeout_ms = XT_TO_INT(timeout_val);
+    if (timeout_ms < 0) return _xt_execute_failure("超时毫秒不能为负");
+    if (timeout_ms > 24LL * 60 * 60 * 1000) timeout_ms = 24LL * 60 * 60 * 1000;
+
     XTString* cmd = (XTString*)cmd_val;
-
-#ifdef _WIN32
-    // Windows 下 _wpopen 存在严重的引号剥离 (Quote Stripping) 问题
-    // 解决方案：将指令写入临时 .bat 文件执行
-    char temp_path[MAX_PATH];
-    char bat_path[MAX_PATH];
-    DWORD dwRet = GetTempPathA(MAX_PATH, temp_path);
-    if (dwRet == 0 || dwRet > MAX_PATH) {
-        char err_msg[128];
-        snprintf(err_msg, sizeof(err_msg), "获取临时路径失败, Error: %lu", GetLastError());
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
-    }
-    
-    // 创建 XuanTie 临时目录
-    if (strlen(temp_path) + 10 >= MAX_PATH) {
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("临时路径过长"));
-    }
-    strcat(temp_path, "XuanTie");
-    if (!CreateDirectoryA(temp_path, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        char err_msg[256];
-        snprintf(err_msg, sizeof(err_msg), "创建临时目录失败, Path: %s, Error: %lu", temp_path, GetLastError());
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
+    char* out = NULL;
+    size_t out_len = 0;
+    int exit_code = 0;
+    int timed_out = 0;
+    char err[512];
+    if (!xt_process_exec_capture(cmd->data, timeout_ms, &out, &out_len,
+                                  &exit_code, &timed_out, err, sizeof(err))) {
+        free(out);
+        return _xt_execute_failure(err[0] ? err : "执行失败");
     }
 
-    // P2: 使用 PID + TickCount 消除命名碰撞
-    if (snprintf(bat_path, MAX_PATH, "%s\\xt_exec_%lu_%llu.bat", 
-            temp_path, 
-            GetCurrentProcessId(), 
-            (unsigned long long)GetTickCount64()) >= MAX_PATH) {
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("临时批处理路径过长"));
-    }
-    
-    FILE* fbat = NULL;
-#ifdef _WIN32
-    wchar_t* wbat_path_init = xt_utf8_to_utf16(bat_path);
-    if (wbat_path_init) {
-        fbat = _wfopen(wbat_path_init, L"w");
-        free(wbat_path_init);
-    }
-#else
-    fbat = fopen(bat_path, "w");
-#endif
-
-    if (!fbat) return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("创建临时批处理失败"));
-    
-    // 写入指令并确保获取正确的退出码，同时将 stderr 重定向到 stdout 以便捕获错误信息
-    // chcp 65001: bat 文件内容是 UTF-8,而 cmd 默认按系统代码页(中文 Windows 为 GBK)解析 bat,
-    // 含中文路径/参数的指令会被读乱导致静默失败;先切 UTF-8 代码页再执行(标准解法)
-    fprintf(fbat, "@echo off\nchcp 65001 >nul\n%s 2>&1\nexit /b %%ERRORLEVEL%%\n", cmd->data);
-    fclose(fbat);
-
-    // P0: 扩充缓冲区并增加长度校验报错
-    wchar_t wcmd[1024]; 
-    wchar_t* wbat = xt_utf8_to_utf16(bat_path);
-    if (!wbat) {
-        remove(bat_path);
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("路径转换失败"));
+    if (timed_out) {
+        size_t need = out_len + 160;
+        char* msg = (char*)malloc(need);
+        if (msg) {
+            snprintf(msg, need, "执行超时(> %lld 毫秒),已终止子进程树。输出: %.*s",
+                     (long long)timeout_ms, (int)(out_len > 16384 ? 16384 : out_len),
+                     out ? out : "");
+        }
+        XTValue r = _xt_execute_failure(msg ? msg : "执行超时");
+        free(msg);
+        free(out);
+        return r;
     }
 
-    int required = _snwprintf(wcmd, 1024, L"\"\"%ls\"\"", wbat);
-    free(wbat);
-
-    if (required < 0 || required >= 1024) {
-        remove(bat_path);
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行指令路径过长，超出了运行时缓冲区限制"));
+    if (exit_code != 0) {
+        /* 错误消息要带诊断输出,但不能把 64MiB 全塞进错误对象:保留前 16KiB。 */
+        size_t show = out_len > 16384 ? 16384 : out_len;
+        size_t need = show + 192;
+        char* msg = (char*)malloc(need);
+        if (msg) {
+            snprintf(msg, need, "执行失败 (退出码: %d). 输出: %.*s%s",
+                     exit_code, (int)show, out ? out : "",
+                     out_len > show ? "…(输出已截断)" : "");
+        }
+        XTValue r = _xt_execute_failure(msg ? msg : "执行失败");
+        free(msg);
+        free(out);
+        return r;
     }
 
-    HANDLE hProc = NULL;
-    FILE* pipe = xt_popen_nowindow(wcmd, &hProc);
-    if (!pipe) {
-        remove(bat_path);
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行管道打开失败"));
-    }
-
-    char buffer[1024]; // 增大缓冲区
-    XTString* res = xt_string_new("");
-    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
-        XTString* temp = res;
-        XTString* buf_str = xt_string_new(buffer);
-        res = xt_string_concat(res, buf_str);
-        xt_release((XTValue)temp);
-        xt_release((XTValue)buf_str);
-    }
-
-    int status = xt_pclose_nowindow(pipe, hProc);
-    
-    // 如果执行失败，尝试通过 remove 清理临时文件，若 remove 也失败则可能是文件锁导致挂起
-    if (remove(bat_path) != 0) {
-        // 记录日志或忽略
-    }
-
-    if (status != 0 && status != -1) {
-        // 缓冲从 1024 放大到 16384:编译器/链接器失败时输出常达数千字节(gcc 警告刷屏),
-        // 1024 会把真正的 error 行截掉——实测 CI 上"MinGW 链接失败"只留下警告,真因被埋,
-        // 排查被迫多绕一轮。此为诊断能力(不改变成功路径)。
-        char err_msg[16384];
-        snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", status, res->data);
-        xt_release((XTValue)res);
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
-    }
+    XTString* res = xt_string_new_len(out ? out : "", out_len);
+    free(out);
     return (XTValue)xt_result_new(1, (void*)res, NULL);
-
-#else
-    // Linux/Unix 下 popen 表现相对稳定，同样重定向 stderr
-    // issue #125:原实现用 char[2048] + snprintf，超长命令(长路径+长参数)被静默截断成残废命令，
-    // 执行结果不可预期且无提示。改为按实际长度分配，不再有上限；真超长由 popen/shell 自己报错。
-    size_t _cmd_len = strlen(cmd->data);
-    char* cmd_with_stderr = (char*)malloc(_cmd_len + 7);   // " 2>&1" + NUL
-    if (!cmd_with_stderr) {
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行失败: 内存不足"));
-    }
-    snprintf(cmd_with_stderr, _cmd_len + 7, "%s 2>&1", cmd->data);
-    FILE* pipe = popen(cmd_with_stderr, "r");
-    if (!pipe) {
-        free(cmd_with_stderr);
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new("执行失败"));
-    }
-    
-    char buffer[1024];
-    XTString* res = xt_string_new("");
-    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
-        XTString* temp = res;
-        XTString* buf_str = xt_string_new(buffer);
-        res = xt_string_concat(res, buf_str);
-        xt_release((XTValue)temp);
-        xt_release((XTValue)buf_str);
-    }
-    int status = pclose(pipe);
-    free(cmd_with_stderr);   // popen/pclose 已用完命令行(issue #125)
-    if (status != 0) {
-        // POSIX wait 状态归一化: exit(n) 编码为 n<<8;被信号终止为 128+信号号
-        // ——与 Windows 基线一致报"退出码: N",否则 darwin 报 256 而非 1(issue #30)
-        int code = status;
-        if (WIFEXITED(status)) { code = WEXITSTATUS(status); }
-        else if (WIFSIGNALED(status)) { code = 128 + WTERMSIG(status); }
-        char err_msg[16384];
-        snprintf(err_msg, sizeof(err_msg), "执行失败 (退出码: %d). 输出: %s", code, res->data);
-        xt_release((XTValue)res);
-        return (XTValue)xt_result_new(0, (void*)xt_string_new(""), (void*)xt_string_new(err_msg));
-    }
-    return (XTValue)xt_result_new(1, (void*)res, NULL);
-#endif
 }
 
 /**

@@ -1564,6 +1564,7 @@
         此.写出("declare i32 @\"xt_socket_write_fiber\"(i64, i64, i64*)")
         此.写出("declare i32 @\"xt_socket_connect_fiber\"(i64, i64*)")
         此.写出("declare i64 @\"xt_execute\"(i64)")
+        此.写出("declare i64 @\"xt_execute_timeout\"(i64, i64)")
         此.写出("declare i64 @\"xt_input\"(i64)")
         此.写出("declare i64 @\"xt_url_encode\"(i64)")
         此.写出("declare i64 @\"xt_url_decode\"(i64)")
@@ -4159,7 +4160,15 @@
                         函数名 = "xt_listen"
                     }
                     "连" -> { 函数名 = "xt_connect" }
-                    "执" -> { 函数名 = "xt_execute" }
+                    "执" -> {
+                        // issue #162:执(命令[, 超时毫秒])。第二参可选,默认 0=不超时;
+                        // 实参个数错误明确报错,不生成畸形调用。
+                        设 _执个数 = 节点.参数列表.长度
+                        若 _执个数 < 1 或 _执个数 > 2 {
+                            此.报告错误(此.定位串(节点) & "执 的参数个数应为 1 或 2(命令[, 超时毫秒]),实际给了 " & _执个数, "例: 执(\"echo ok\");带超时: 执(\"ping ...\", 500)")
+                        }
+                        若 _执个数 == 2 { 函数名 = "xt_execute_timeout" } 否 { 函数名 = "xt_execute" }
+                    }
                     "输" -> { 函数名 = "xt_input" }
                     "选" -> { 函数名 = "xt_channel_select_array" ; 返回类型 = "i32" }
                 }

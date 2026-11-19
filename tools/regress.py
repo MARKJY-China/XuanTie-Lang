@@ -261,9 +261,11 @@ def main():
             "PASS" if mem_ok else "FAIL", "内存泄漏预检(含?守卫)", note, time.time() - t0))
         if not mem_ok:
             bad += 1
+    # --skip 按文件名前缀匹配(不是子串):否则 "96_" 会误伤 196_/296_ 等新测试,
+    # CI 里 96/97/98 弹窗类跳过会静默吞掉 197/198 等高编号用例(issue #162 发现)。
     xts = sorted(f for f in os.listdir(TESTDIR)
                  if re.match(r"^\d+_.*\.xt$", f) and (only is None or only in f)
-                 and not any(s in f for s in skip))
+                 and not any(f.startswith(s) for s in skip))
     if not xts:
         print("无匹配测试"); return 2
     print("编译器: %s" % XTC)

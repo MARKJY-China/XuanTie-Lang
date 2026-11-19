@@ -118,6 +118,21 @@ jobs:
           PYTHONIOENCODING: "utf-8"
         run: python tools/regress.py --xtc build/xtc_s4.exe --skip 96_,97_,98_,77_
 
+      - name: "执() 中文 TEMP 门禁(issue #162)"
+        shell: pwsh
+        run: |
+          $cn = Join-Path $env:RUNNER_TEMP "中文临时"
+          New-Item -ItemType Directory -Force -Path $cn | Out-Null
+          $env:TEMP = $cn
+          $env:TMP = $cn
+          New-Item -ItemType Directory -Force -Path "temp" | Out-Null
+          .\build\xtc_s4.exe tie .\Test\197_执中文临时目录.xt -sc .\temp\issue162_cn_temp.exe
+          if ($LASTEXITCODE -ne 0) { throw "中文 TEMP 下编译 197 失败(exit $LASTEXITCODE)" }
+          $out = & .\temp\issue162_cn_temp.exe
+          if ((($out -join "`n") -notmatch "197PASS")) {
+            throw "中文 TEMP 下执(echo ok) 未通过: $($out -join ' | ')"
+          }
+
       - name: "专项门禁:跨单元 ABI(#140)/库编译 -lib(#141)/隐藏窗口编译(#155)"
         env:
           PYTHONUTF8: "1"

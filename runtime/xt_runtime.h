@@ -394,6 +394,13 @@ XTValue xt_process_close_input(XTValue process_val);
 /// 等待子进程;.成功 表示等待操作成功,.值 为实际退出码
 XTValue xt_process_wait(XTValue process_val);
 
+/// 执(命令[, 超时毫秒]) 的底层捕获实现(Windows: CreateProcessW 管道/POSIX: 进程组)
+/// 超时毫秒 <=0 = 不超时;返回 1=已捕获(可能非零退出),0=启动/捕获失败。
+/// out_data 由 malloc 分配、调用方 free;out_len 不含 NUL。
+int xt_process_exec_capture(const char* command, int64_t timeout_ms,
+                            char** out_data, size_t* out_len, int* exit_code,
+                            int* timed_out, char* error, size_t error_size);
+
 // --- 对象创建与管理 ---
 
 /// 创建一个新的整数 (标记指针)
@@ -561,6 +568,8 @@ XTValue xt_http_request(XTValue url_val);
 XTValue xt_listen(XTValue port_val, XTValue callback_val, XTValue addr_val);
 XTValue xt_connect(XTValue addr_val);
 XTValue xt_execute(XTValue cmd_val);
+/// 执(命令, 超时毫秒):超时毫秒为 0/缺省走 xt_execute;>0 超时终止整棵子进程树并返回失败。
+XTValue xt_execute_timeout(XTValue cmd_val, XTValue timeout_val);
 
 /**
  * @brief 继承本进程控制台运行可执行文件并等待结束(编译器 `跑`/`pao` 指令用)

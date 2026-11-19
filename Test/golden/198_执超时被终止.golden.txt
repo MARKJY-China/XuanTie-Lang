@@ -1,0 +1,5 @@
+compile_ok=True
+exit=0
+成功=假
+超时=真
+快速=真

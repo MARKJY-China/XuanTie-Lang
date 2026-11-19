@@ -11,8 +11,10 @@
 #else
 #include <signal.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -421,3 +423,361 @@ XTValue xt_process_wait(XTValue process_val) {
     if (process->wait_error) return _xt_process_failure(process, process->error);
     return _xt_process_success_int(process->exit_code);
 }
+
+/* ============================================================
+ * 执(命令[, 超时毫秒]) 的底层捕获实现
+ *
+ * 设计目标（issue #162）：
+ *   - Windows 不再写临时 .bat：直接 CreateProcessW(cmd.exe /d /s /c)，
+ *     命令 UTF-8 → UTF-16，彻底消除非 ASCII TEMP 路径、临时文件竞争与
+ *     AutoRun/AV 误报；
+ *   - 输出用倍增缓冲（O(n)），上限 64 MiB；
+ *   - 可选超时：Windows 用 JobObject 杀整棵进程树，POSIX 用进程组；
+ *   - 退出码统一归一化，绝不把 -1 当成功。
+ * ============================================================ */
+#define XT_EXEC_OUTPUT_LIMIT ((size_t)64 * 1024 * 1024)
+
+static int _xt_exec_append(char** buf, size_t* len, size_t* cap,
+                           const char* data, size_t n) {
+    if (n > XT_EXEC_OUTPUT_LIMIT - *len) return 0;
+    if (*len + n + 1 > *cap) {
+        size_t next = *cap ? *cap : 4096;
+        while (next < *len + n + 1) {
+            if (next > XT_EXEC_OUTPUT_LIMIT / 2) { next = XT_EXEC_OUTPUT_LIMIT + 1; break; }
+            next *= 2;
+        }
+        if (next > XT_EXEC_OUTPUT_LIMIT + 1) next = XT_EXEC_OUTPUT_LIMIT + 1;
+        char* p = (char*)realloc(*buf, next);
+        if (!p) return 0;
+        *buf = p;
+        *cap = next;
+    }
+    if (n > 0) memcpy(*buf + *len, data, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+    return 1;
+}
+
+static void _xt_exec_empty(char** out_data, size_t* out_len) {
+    *out_data = (char*)malloc(1);
+    if (*out_data) (*out_data)[0] = '\0';
+    *out_len = 0;
+}
+
+#ifdef _WIN32
+static HANDLE _xt_exec_open_nul_read(SECURITY_ATTRIBUTES* sa) {
+    return CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       sa, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+}
+
+static void _xt_exec_drain_pipe(HANDLE hRead, char** out, size_t* len, size_t* cap,
+                                int* overflow) {
+    char buf[8192];
+    for (;;) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(hRead, NULL, 0, NULL, &avail, NULL) || avail == 0) return;
+        DWORD want = avail > (DWORD)sizeof(buf) ? (DWORD)sizeof(buf) : avail;
+        DWORD got = 0;
+        if (!ReadFile(hRead, buf, want, &got, NULL) || got == 0) return;
+        if (!_xt_exec_append(out, len, cap, buf, (size_t)got)) {
+            *overflow = 1;
+            return;
+        }
+    }
+}
+
+int xt_process_exec_capture(const char* command, int64_t timeout_ms,
+                            char** out_data, size_t* out_len, int* exit_code,
+                            int* timed_out, char* error, size_t error_size) {
+    SECURITY_ATTRIBUTES sa;
+    HANDLE hRead = NULL, hWrite = NULL, hNul = INVALID_HANDLE_VALUE;
+    HANDLE job = NULL;
+    PROCESS_INFORMATION pi;
+    STARTUPINFOW si;
+    wchar_t* wcmd = NULL;
+    wchar_t* line = NULL;
+    char* out = NULL;
+    size_t len = 0, cap = 0;
+    int overflow = 0;
+    DWORD code = 1;
+    int result = 0;
+
+    *out_data = NULL;
+    *out_len = 0;
+    *exit_code = 0;
+    *timed_out = 0;
+    if (error && error_size) error[0] = '\0';
+    if (!command) {
+        if (error && error_size) snprintf(error, error_size, "命令为空");
+        return 0;
+    }
+    if (timeout_ms < 0) timeout_ms = 0;
+    if (timeout_ms > 24LL * 60 * 60 * 1000) timeout_ms = 24LL * 60 * 60 * 1000;
+
+    sa.nLength = sizeof(sa);
+    sa.lpSecurityDescriptor = NULL;
+    sa.bInheritHandle = TRUE;
+    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) {
+        if (error && error_size) snprintf(error, error_size, "创建执输出管道失败, GetLastError=%lu", GetLastError());
+        return 0;
+    }
+    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
+    hNul = _xt_exec_open_nul_read(&sa);
+    if (hNul == INVALID_HANDLE_VALUE) {
+        if (error && error_size) snprintf(error, error_size, "打开 NUL 失败, GetLastError=%lu", GetLastError());
+        CloseHandle(hRead); CloseHandle(hWrite);
+        return 0;
+    }
+
+    size_t wlen = _xt_win_utf16_len(command);
+    if (wlen == 0) {
+        if (error && error_size) snprintf(error, error_size, "命令的 UTF-8 转 UTF-16 失败");
+        CloseHandle(hRead); CloseHandle(hWrite); CloseHandle(hNul);
+        return 0;
+    }
+    wcmd = (wchar_t*)malloc(wlen * sizeof(wchar_t));
+    if (!wcmd) {
+        if (error && error_size) snprintf(error, error_size, "分配命令缓冲失败");
+        CloseHandle(hRead); CloseHandle(hWrite); CloseHandle(hNul);
+        return 0;
+    }
+    MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, command, -1, wcmd, (int)wlen);
+
+    size_t line_cap = wlen + 64;
+    line = (wchar_t*)malloc(line_cap * sizeof(wchar_t));
+    if (!line) {
+        if (error && error_size) snprintf(error, error_size, "分配命令行缓冲失败");
+        free(wcmd);
+        CloseHandle(hRead); CloseHandle(hWrite); CloseHandle(hNul);
+        return 0;
+    }
+    if (_snwprintf(line, line_cap, L"cmd.exe /d /s /c chcp 65001 >nul & %ls", wcmd) < 0) {
+        if (error && error_size) snprintf(error, error_size, "命令行过长");
+        free(wcmd); free(line);
+        CloseHandle(hRead); CloseHandle(hWrite); CloseHandle(hNul);
+        return 0;
+    }
+    free(wcmd);
+
+    ZeroMemory(&si, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = hNul;
+    si.hStdOutput = hWrite;
+    si.hStdError = hWrite;
+    ZeroMemory(&pi, sizeof(pi));
+
+    BOOL created = CreateProcessW(NULL, line, NULL, NULL, TRUE,
+                                  CREATE_NO_WINDOW | CREATE_SUSPENDED,
+                                  NULL, NULL, &si, &pi);
+    free(line);
+    CloseHandle(hWrite);
+    CloseHandle(hNul);
+    if (!created) {
+        if (error && error_size) snprintf(error, error_size, "启动子进程失败, GetLastError=%lu", GetLastError());
+        CloseHandle(hRead);
+        return 0;
+    }
+
+    job = CreateJobObjectW(NULL, NULL);
+    if (job) {
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION info;
+        ZeroMemory(&info, sizeof(info));
+        info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info)) ||
+            !AssignProcessToJobObject(job, pi.hProcess)) {
+            CloseHandle(job);
+            job = NULL;
+        }
+    }
+    ResumeThread(pi.hThread);
+    CloseHandle(pi.hThread);
+
+    uint64_t start = GetTickCount64();
+    for (;;) {
+        _xt_exec_drain_pipe(hRead, &out, &len, &cap, &overflow);
+        if (overflow) break;
+
+        DWORD wait_ms = 20;
+        uint64_t elapsed = GetTickCount64() - start;
+        if (timeout_ms > 0) {
+            if (elapsed >= (uint64_t)timeout_ms) {
+                *timed_out = 1;
+                break;
+            }
+            uint64_t remain = (uint64_t)timeout_ms - elapsed;
+            if (remain < wait_ms) wait_ms = (DWORD)remain;
+        }
+        DWORD w = WaitForSingleObject(pi.hProcess, wait_ms);
+        if (w == WAIT_OBJECT_0) break;
+        if (w == WAIT_FAILED) {
+            if (error && error_size) snprintf(error, error_size, "等待子进程失败, GetLastError=%lu", GetLastError());
+            overflow = 1;
+            break;
+        }
+    }
+
+    if (*timed_out || overflow) {
+        if (job) TerminateJobObject(job, 1);
+        else TerminateProcess(pi.hProcess, 1);
+        WaitForSingleObject(pi.hProcess, 5000);
+    }
+    _xt_exec_drain_pipe(hRead, &out, &len, &cap, &overflow);
+    if (!*timed_out) {
+        DWORD got_code = 0;
+        if (GetExitCodeProcess(pi.hProcess, &got_code)) code = got_code;
+    } else {
+        code = 124;
+    }
+    if (job) CloseHandle(job);
+    CloseHandle(pi.hProcess);
+    CloseHandle(hRead);
+
+    if (overflow) {
+        if (error && error_size) snprintf(error, error_size, "执 输出超过 64 MiB 上限");
+        free(out);
+        return 0;
+    }
+    if (!out) _xt_exec_empty(&out, &len);
+    if (!out) {
+        if (error && error_size) snprintf(error, error_size, "执 输出内存不足");
+        return 0;
+    }
+    *out_data = out;
+    *out_len = len;
+    *exit_code = (int)code;
+    result = 1;
+    return result;
+}
+#else
+static int64_t _xt_exec_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+int xt_process_exec_capture(const char* command, int64_t timeout_ms,
+                            char** out_data, size_t* out_len, int* exit_code,
+                            int* timed_out, char* error, size_t error_size) {
+    int fds[2];
+    pid_t pid;
+    char* out = NULL;
+    size_t len = 0, cap = 0;
+    int status = 0;
+    int overflow = 0;
+    int64_t start;
+    char buf[8192];
+
+    *out_data = NULL;
+    *out_len = 0;
+    *exit_code = 0;
+    *timed_out = 0;
+    if (error && error_size) error[0] = '\0';
+    if (!command) {
+        if (error && error_size) snprintf(error, error_size, "命令为空");
+        return 0;
+    }
+    if (timeout_ms < 0) timeout_ms = 0;
+    if (pipe(fds) != 0) {
+        if (error && error_size) snprintf(error, error_size, "创建执输出管道失败: %s", strerror(errno));
+        return 0;
+    }
+    pid = fork();
+    if (pid < 0) {
+        if (error && error_size) snprintf(error, error_size, "fork 失败: %s", strerror(errno));
+        close(fds[0]); close(fds[1]);
+        return 0;
+    }
+    if (pid == 0) {
+        setpgid(0, 0);
+        close(fds[0]);
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, 0); close(devnull); }
+        dup2(fds[1], 1);
+        dup2(fds[1], 2);
+        close(fds[1]);
+        execl("/bin/sh", "sh", "-c", command, (char*)NULL);
+        _exit(127);
+    }
+    close(fds[1]);
+    setpgid(pid, pid);
+    start = _xt_exec_now_ms();
+
+    for (;;) {
+        struct pollfd pfd;
+        pfd.fd = fds[0];
+        pfd.events = POLLIN | POLLHUP | POLLERR;
+        pfd.revents = 0;
+        int pr = poll(&pfd, 1, 20);
+        if (pr > 0) {
+            ssize_t n = read(fds[0], buf, sizeof(buf));
+            if (n > 0) {
+                if (!_xt_exec_append(&out, &len, &cap, buf, (size_t)n)) {
+                    overflow = 1;
+                    break;
+                }
+            } else if (n == 0) {
+                /* 子进程关闭 stdout；继续等 waitpid，避免重复 POLLHUP 空转 */
+            } else if (errno != EINTR && errno != EAGAIN) {
+                break;
+            }
+        }
+
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) break;
+        if (w < 0 && errno != EINTR) break;
+        if (timeout_ms > 0 && _xt_exec_now_ms() - start >= timeout_ms) {
+            *timed_out = 1;
+            break;
+        }
+    }
+
+    if (*timed_out || overflow) {
+        kill(-pid, SIGKILL);
+        kill(pid, SIGKILL);
+        waitpid(pid, &status, 0);
+    } else {
+        /* 子进程退出后把管道里剩余输出读干净 */
+        for (;;) {
+            ssize_t n = read(fds[0], buf, sizeof(buf));
+            if (n > 0) {
+                if (!_xt_exec_append(&out, &len, &cap, buf, (size_t)n)) {
+                    overflow = 1;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        /* 某些平台 waitpid 在循环内未命中时再收一次 */
+        int dummy = 0;
+        pid_t w = waitpid(pid, &dummy, WNOHANG);
+        if (w == pid) status = dummy;
+    }
+    close(fds[0]);
+
+    if (overflow) {
+        if (error && error_size) snprintf(error, error_size, "执 输出超过 64 MiB 上限");
+        free(out);
+        return 0;
+    }
+    if (!out) _xt_exec_empty(&out, &len);
+    if (!out) {
+        if (error && error_size) snprintf(error, error_size, "执 输出内存不足");
+        return 0;
+    }
+    if (*timed_out) {
+        *exit_code = 124;
+    } else if (WIFEXITED(status)) {
+        *exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        *exit_code = 128 + WTERMSIG(status);
+    } else {
+        *exit_code = 1;
+    }
+    *out_data = out;
+    *out_len = len;
+    return 1;
+}
+#endif
