@@ -4,7 +4,7 @@
 发布说明模板（rc / stable / hotfix 通用）。
 
 用法:
-  1. 复制为 release/RELEASE_<tag>.md —— 文件名必须与 tag 完全一致(例 release/RELEASE_v1.0-rc.4-20261119.1.md),
+  1. 复制为 release/RELEASE_<tag>.md —— 文件名必须与 tag 完全一致(例 release/RELEASE_v1.0-rc.5.md),
      release.yml 才会把它作为 GitHub Release 正文;否则回退自动生成。
   2. 替换所有 <...> 占位符,发布前不得留空;本文件不要直接改。
   3. tag 必须满足 v<版本>-<YYYYMMDD>.<序号>;完整 tag == xuantie_compiler/玄铁.xt 的「设 版本号」常量 == 包内 MANIFEST 的「版本:」行

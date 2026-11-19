@@ -183,8 +183,8 @@ GSC(Go 种子编译器)可执行文件永远命名为 `xt_gsc.exe`;XTC(玄铁自
 ## 发布通道与四分支（永久规则，2026-11-19 用户立）
 
 - **四分支**：`develop` = dev 通道，`master` = rc 通道，`stable` = stable 通道，`hotfix` = P0 热修短分支（从 stable 切出，修完回合 stable 并同步 master）；日常修复只进 develop，CI 绿后合 master，soak/无 P0 后合 stable。
-- **dev**：push `develop` → dev 滚动构建（prerelease tag `dev` + `latest-dev.json`）；dev 永远不覆盖 `/releases/latest`，不签名/不公证，保留最近 14 天或最近 5 个。
-- **rc**：`master` 打 `v1.0-rc.4-YYYYMMDD.N`（示例 `v1.0-rc.4-20261119.1`）；预发布阶段可更新 `latest.json`，v1.0.0 起 rc 只写 `latest-rc.json`。
+- **dev**：push `develop` → dev 滚动构建（prerelease tag `dev` + `latest-dev.json`）；dev 版本号格式 `v<当前 RC 版本>-<YYYYMMDD>.<sha7>`（例 `v1.0-rc.5-20261119.9ce4191`），永远不覆盖 `/releases/latest`，不签名/不公证，保留最近 14 天或最近 5 个。
+- **rc**：`master` 打正常短版本 `v1.0-rc.5`（不带日期序号）；预发布阶段可更新 `latest.json`，v1.0.0 起 rc 只写 `latest-rc.json`。
 - **stable/hotfix**：`stable` 打 `v1.0.x`；`latest.json` 默认通道由 stable/hotfix 独占（channel=stable）。hotfix 只允许 P0，从 stable 切 `hotfix` 短分支修完并走同样 CI，回合 stable 后再同步 master。
 - **升级器**：默认 stable；`xtc 升级 --通道 dev` 才拿 dev；`xtc 升级 --版本 <tag>` 用于钉版本/回滚；不再依赖系统 `curl`。
 - **清单唯一真源**：stable=`latest.json`、dev=`latest-dev.json`、rc 阶段=`latest-rc.json`，含 channel/version/commit/date/notes_url/assets/platforms；发布 tag、源版本常量、MANIFEST 必须一致。

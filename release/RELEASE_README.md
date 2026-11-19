@@ -9,7 +9,7 @@
 | 分支 | 通道 | 触发 | tag | GitHub Release | 清单（唯一真源） | 工作流 |
 |---|---|---|---|---|---|---|
 | `develop` | dev | push `develop`（纯文档/图片改动不触发）或手动 dispatch | 滚动 tag `dev`（prerelease，每次构建删除重建） | prerelease，**不改变** `/releases/latest` | `latest-dev.json` | `.github/workflows/dev.yml` |
-| `master` | rc | 打 tag 推送 | `v<基版本>-<YYYYMMDD>.<序号>`，例 `v1.0-rc.4-20261119.1` | 普通 Release（预发布阶段可更新 Latest） | 预发布阶段 `latest.json`；v1.0.0 起 `latest-rc.json` | `.github/workflows/release.yml` |
+| `master` | rc | 打 tag 推送 | 正常短版本，例 `v1.0-rc.5` | 普通 Release（预发布阶段可更新 Latest） | 预发布阶段 `latest.json`；v1.0.0 起 `latest-rc.json` | `.github/workflows/release.yml` |
 | `stable` | stable | 打 tag 推送 | `v1.0.0` / `v1.0.1` | Latest | `latest.json`（`channel=stable`，stable/hotfix 独占） | `.github/workflows/release.yml` |
 | `hotfix` | stable / hotfix | P0 热修：从 `stable` 切出的短分支，修完回合 `stable` 并同步 `master`；合回后打 tag | `v1.0.x` | Latest | `latest.json`（`channel=stable`，stable/hotfix 独占） | `.github/workflows/release.yml` |
 
@@ -18,9 +18,10 @@
 ### tag 格式
 
 ```
-v<基版本>-<YYYYMMDD>.<序号>
-例：v1.0-rc.4-20261119.1
-    └─基版本─┘ └日期┘ └当日序号(同一天多次发布递增)
+v<RC 版本>
+例：v1.0-rc.5
+
+RC/stable 使用正常短版本；日期/提交后缀只用于 dev 构建名，不用于正式 Release。
 ```
 
 - **完整 tag == 编译器版本常量（`xuantie_compiler/玄铁.xt` 的 `设 版本号`）== 包内 `MANIFEST.txt` 的「版本:」行**；日期/序号是版本的一部分，不再另行剥基版本。
@@ -30,7 +31,7 @@ v<基版本>-<YYYYMMDD>.<序号>
 ### dev 版本号
 
 ```
-v<下一个 rc>-<YYYYMMDD>.<sha7>
+v<当前 RC 版本>-<YYYYMMDD>.<sha7>
 例：v1.0-rc.5-20261119.9ce4191
 ```
 
@@ -87,15 +88,15 @@ stable 清单示例（dev 同构，仅 `channel`/`version`/`tag` 与平台集合
 ```json
 {
   "channel": "stable",
-  "version": "v1.0-rc.4-20261119.1",
+  "version": "v1.0-rc.5",
   "commit": "<完整 40 位 sha>",
   "date": "2026-11-19",
-  "notes_url": "https://github.com/MARKJY-China/XuanTie-Lang/releases/tag/v1.0-rc.4-20261119.1",
-  "tag": "v1.0-rc.4-20261119.1",
+  "notes_url": "https://github.com/MARKJY-China/XuanTie-Lang/releases/tag/v1.0-rc.5",
+  "tag": "v1.0-rc.5",
   "published_at": "2026-11-19T00:00:00.000Z",
   "assets": {
     "windows_amd64": {
-      "url": "https://download.xt.markjy.com/releases/v1.0-rc.4-20261119.1/xuantie_v1.0-rc.4-20261119.1_windows_amd64.tar.gz",
+      "url": "https://github.com/MARKJY-China/XuanTie-Lang/releases/download/v1.0-rc.5/xuantie_v1.0-rc.5_windows_amd64.tar.gz",
       "sha256": "……",
       "size": 63286234
     }
@@ -159,7 +160,7 @@ node tools/publish-ros.mjs --dir release --version v1.0-rc.4 --dry-run
 1. `develop` CI 全绿 → 合并 `master` → master CI 全绿；
 2. 从 [RELEASE_TEMPLATE_stable.md](RELEASE_TEMPLATE_stable.md) 复制出 `release/RELEASE_<tag>.md` 并补齐内容（文件会被 `release.yml` 用作 Release 正文）；
 3. 修改版本常量到**完整目标 tag**（发布维护提交，走 master）；
-4. `git tag <完整版本>`（例 `v1.0-rc.4-20261119.1`）并 push tag；
+4. `git tag v1.0-rc.5` 并 push tag；
 5. 等 `release.yml`：确认指纹门禁通过、Release 正文正确、`latest.json` 的 `version/commit/channel` 正确（清单由流水线自动校验）。
 
 ### stable（stable 分支）
@@ -189,7 +190,7 @@ node tools/publish-ros.mjs --dir release --version v1.0-rc.4 --dry-run
 |---|---|
 | [RELEASE_TEMPLATE_stable.md](RELEASE_TEMPLATE_stable.md) | rc / stable / hotfix 发布说明模板（已知问题、升级方式、通道说明、校验） |
 | [RELEASE_TEMPLATE_dev.md](RELEASE_TEMPLATE_dev.md) | dev 通道人工说明模板（dev 的 Release 正文由 `dev.yml` 自动生成，本模板供需要更完整说明时使用） |
-| [RELEASE_v1.0-rc.4-20261119.1.md](RELEASE_v1.0-rc.4-20261119.1.md) | 下一次发布的说明草稿（框架，待补齐） |
+| [RELEASE_v1.0-rc.5.md](RELEASE_v1.0-rc.5.md) | 本 RC 的发布说明 |
 
 约定：
 

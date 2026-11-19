@@ -2,12 +2,12 @@
 #
 # 四通道模型(四分支;见 release/RELEASE_README.md;dev 通道由 dev.yml 负责):
 #   develop → dev    : dev.yml;prerelease 滚动 tag `dev` + latest-dev.json(不碰 latest.json / releases/latest)
-#   master  → rc     : 本工作流;tag 形如 v1.0-rc.4-20261119.1(基版本 + 日期 + 序号)
+#   master  → rc     : 本工作流;tag 形如 v1.0-rc.5(正常短版本)
 #   stable  → stable : 本工作流;tag 形如 v1.0.0 / v1.0.1(hotfix 同,stable/hotfix 独占 latest.json)
 #   hotfix  → stable : P0 热修短分支(从 stable 切出);修完回合 stable 并同步 master,再打 v1.0.x tag
 #
 # 触发方式:
-#   1. 打 tag 推送:      git tag v1.0-rc.4-20261119.1 && git push origin v1.0-rc.4-20261119.1
+#   1. 打 tag 推送:      git tag v1.0-rc.5 && git push origin v1.0-rc.5
 #                        → 构建多平台发行包 + 上传雨云 ROS + 生成 latest.json + 创建 GitHub Release
 #   2. 手动触发(网页 Actions 页 "Run workflow",或 gh workflow run 发布)
 #      —— 只构建并上传 artifacts(不建 Release、不上 ROS),用于发布前预演

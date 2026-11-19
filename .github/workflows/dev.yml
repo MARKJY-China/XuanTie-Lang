@@ -3,7 +3,7 @@
 # 四通道模型(四分支 → 通道 → tag):
 #   develop → dev    : 本工作流;滚动 prerelease tag `dev` + latest-dev.json
 #                      (绝不碰 latest.json,也不影响 GitHub /releases/latest)
-#   master  → rc     : release.yml + tag v<基版本>-<YYYYMMDD>.<序号>;预发布阶段写 latest.json,
+#   master  → rc     : release.yml + tag v<RC 版本>(例 v1.0-rc.5);预发布阶段写 latest.json,
 #                      v1.0.0 起写 latest-rc.json
 #   stable  → stable : release.yml + tag v1.0.x;写 latest.json(channel=stable,stable/hotfix 独占)
 #   hotfix  → stable : P0 热修短分支,从 stable 切出、回合 stable 并同步 master;同样走 release.yml
@@ -61,18 +61,15 @@ jobs:
             echo "！！ dev 通道只允许从 develop 分支构建(当前: $GITHUB_REF_NAME)"; exit 1
           fi
           # 版本号唯一真源:xuantie_compiler/玄铁.xt 的「设 版本号 = "v..."」常量(只读)
-          # dev 版本格式(用户指定):v<下一个 rc>-<YYYYMMDD>.<sha7>,如 v1.0-rc.5-20261119.9ce4191。
+          # dev 版本格式(用户指定):v<当前 RC 版本>-<YYYYMMDD>.<sha7>,如 v1.0-rc.5-20261119.9ce4191。
           RAW=$(grep -m1 '版本号 = "' xuantie_compiler/玄铁.xt | grep -oE 'v[0-9][0-9A-Za-z._-]*' | head -1)
           [ -n "$RAW" ] || { echo "！！ 无法从 xuantie_compiler/玄铁.xt 解析版本号常量"; exit 1; }
           case "$RAW" in
             v[0-9]*) ;;
             *) echo "！！ 版本号常量格式异常: $RAW"; exit 1 ;;
           esac
-          # 去掉发布 tag 的 -YYYYMMDD.N 后缀;rc 段自增一位作为下一条 dev 线
+          # dev 基于当前 RC 版本;去掉可能存在的发布 tag 日期后缀,不升 RC 号
           BASE=$(printf '%s' "$RAW" | sed -E 's/-[0-9]{8}\.[0-9]+$//')
-          if [[ "$BASE" =~ ^(.*-rc\.)([0-9]+)$ ]]; then
-            BASE="${BASH_REMATCH[1]}$((BASH_REMATCH[2] + 1))"
-          fi
           DATE_COMPACT=$(date -u +%Y%m%d)
           DATE_ISO=$(date -u +%F)
           SHORT=$(printf '%s' "$GITHUB_SHA" | cut -c1-7)

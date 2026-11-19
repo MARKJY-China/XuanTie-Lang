@@ -1,19 +1,19 @@
-# 玄铁 (XuanTie) v1.0-rc.4-20261119.1
+# 玄铁 (XuanTie) v1.0-rc.5
 
-基于 `v1.0-rc.4` 的候选版迭代构建，日期序号 `.1`。本版集中交付了 2026-11-12 至 2026-11-19 期间合入的编译器/运行时修复、渲染与 UI 库更新、字符流库、铸造厂 IDE 0.8.0，以及 dev/rc/stable/hotfix 四通道发布设施。
+第五个候选版。本版集中交付了 2026-11-12 至 2026-11-20 期间合入的编译器/运行时修复、渲染与 UI 库更新、字符流库、铸造厂 IDE 0.8.0，以及 dev/rc/stable/hotfix 四通道发布设施。
 
 **下载**（由 GitHub Actions 多平台流水线自动构建；发行包同时在雨云 ROS 提供国内直链）
 
-- `xuantie_v1.0-rc.4-20261119.1_windows_amd64.tar.gz` — Windows 绿色包（自带 clang/MinGW，解压即可用 `xtc`）
-- `xuantie_v1.0-rc.4-20261119.1_linux_x86_64.tar.gz` — Linux 绿色包（需系统 clang；见包内 README）
-- `xuantie_v1.0-rc.4-20261119.1_darwin_arm64.tar.gz` — macOS（Apple Silicon）绿色包
+- `xuantie_v1.0-rc.5_windows_amd64.tar.gz` — Windows 绿色包（自带 clang/MinGW，解压即可用 `xtc`）
+- `xuantie_v1.0-rc.5_linux_x86_64.tar.gz` — Linux 绿色包（需系统 clang；见包内 README）
+- `xuantie_v1.0-rc.5_darwin_arm64.tar.gz` — macOS（Apple Silicon）绿色包
 - 本版是否附 Windows 安装器 / 铸造厂 IDE / ARM64 包，以 Release 附件列表为准；未列出的平台请用绿色包。
 
 ## 升级方式
 
 - 默认稳定通道：`xtc 升级`（读 `latest.json`）
 - 明确选择通道：`xtc 升级 --通道 stable` / `xtc 升级 --通道 dev`
-- 钉版本 / 回滚：`xtc 升级 --版本 v1.0-rc.4-20261119.1`（或更旧 tag）
+- 钉版本 / 回滚：`xtc 升级 --版本 v1.0-rc.5`（或更旧 tag）
 - 手动：下载对应平台 tar.gz 解压覆盖；升级后 `xtc -V` 显示 `版本 + 通道 + 提交`
 - 发布后 `latest.json` 的 `channel`/`version`/`commit` 与本 tag 一致；安装前可用 `--检查` 只看版本不覆盖
 
@@ -22,6 +22,7 @@
 ### 编译器和运行时
 
 - **`执()` 重写（issue #162）**：Windows 不再写临时 `.bat`，改为 `CreateProcessW + 管道 + CREATE_NO_WINDOW`；命令 UTF-8→UTF-16，消除中文 TEMP 路径、临时文件竞争与 AV 误报；输出改倍增缓冲（上限 64 MiB）；新增 `执(命令, 超时毫秒)`（JobObject/进程组超时终止）；非零退出码一律失败。
+- **HTTP 长跳转修复**：runtime 的 HTTP 请求/重定向缓冲从 1024 扩到 8192，修复 GitHub Release 资产长 Location 被截断导致 `xtc 升级` 空响应；`--通道 dev`/`--版本` 的清单与下载路径已实测。
 - **算术/位运算/取反/`字()` 超域显式报错（issue #153）**：明确的整数越界不再静默回绕。
 - **跨单元 ABI / `-lib` 库编译 / 实例化 / 整域 / 转义修复**：补 issue #140/#141 回归门禁。
 - **运行时修复**：线程池泵送、通道超时、实例序列化、BOM、整域入口；子进程 stdin 流式写入；内存泄漏守卫。

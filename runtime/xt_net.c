@@ -311,7 +311,7 @@ static char* http_fetch_raw(const char* url, int connect_ms, int io_ms,
         }
     }
 
-    char req[1024];
+    char req[8192];
     // 默认 UA:完整 Chrome 串(实测取舍——空 UA 被知乎/GitHub 等返回跳转壳或拒答;
     // "compatible" 简式 UA 被百度返回 JS 级 https→http 跳板页,全串直取真页)。
     // 双参形态可经 头.User-Agent 覆写。
@@ -426,7 +426,7 @@ static int http_get_final_body(const char* url, char** out, size_t* outlen, int*
     *err = NULL;
     if (status) *status = 0;
 
-    char current[2048];
+    char current[8192];
     snprintf(current, sizeof(current), "%s", url ? url : "");
     char* raw = NULL;
     char* loc = NULL;
@@ -443,7 +443,7 @@ static int http_get_final_body(const char* url, char** out, size_t* outlen, int*
             return -1;
         }
         if (st >= 301 && st <= 308 && st != 304 && loc && loc[0]) {
-            char next[2048];
+            char next[8192];
             http_join_location(current, loc, next, sizeof(next));
             snprintf(current, sizeof(current), "%s", next);
             free(raw); raw = NULL;
