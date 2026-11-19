@@ -71,6 +71,9 @@ const MANIFEST_NAME = MANIFEST_BY_CHANNEL[CHANNEL]
 const DIR = argVal('--dir', 'release')
 const VERSION = argVal('--version', process.env.GITHUB_REF_NAME || '')
 const DRY = args.includes('--dry-run')
+const ASSET_BASE = argVal('--asset-base', '').replace(/\/+$/, '')
+const BEST_EFFORT = args.includes('--best-effort')
+const MAX_ATTEMPTS = Math.max(1, Math.min(10, parseInt(argVal('--retries', '6'), 10) || 6))
 const TAG = argVal('--tag', CHANNEL === 'dev' ? 'dev' : VERSION)
 const COMMIT = argVal('--commit', process.env.GITHUB_SHA || '')
 const DATE = argVal('--date', new Date().toISOString().slice(0, 10))
@@ -173,7 +176,7 @@ async function put(key, body, contentType) {
     console.log(`  [dry-run] PUT ${key} (${body.length} 字节)`)
     return
   }
-  const maxAttempts = 6
+  const maxAttempts = MAX_ATTEMPTS
   let lastErr = ''
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const { url, headers } = signS3('PUT', key, body)
@@ -214,10 +217,15 @@ for (const f of tarballs) {
   }
   const body = readFileSync(f)
   const key = `${prefix}/${name}`
-  const url = PUBLIC_BASE ? `${PUBLIC_BASE}/${key}` : ''
+  const url = ASSET_BASE ? `${ASSET_BASE}/${name}` : (PUBLIC_BASE ? `${PUBLIC_BASE}/${key}` : '')
   assets[slug] = { url, sha256: sha256(body), size: body.length }
   console.log(`平台 ${slug}: ${name} (${(body.length / 1048576).toFixed(1)} MB)`)
-  await put(key, body, 'application/gzip')
+  try {
+    await put(key, body, 'application/gzip')
+  } catch (e) {
+    if (!BEST_EFFORT) throw e
+    console.warn(`  [best-effort] ROS 上传失败,继续生成 manifest: ${e.message}`)
+  }
 }
 
 // MANIFEST 一并上传(便于第三方核验),并把指纹记进清单
@@ -227,8 +235,13 @@ for (const f of files.filter((x) => /^MANIFEST_.*\.txt$/.test(basename(x)))) {
   if (!slug) continue
   const body = readFileSync(f)
   const key = `${prefix}/${name}`
-  manifests[slug] = { url: PUBLIC_BASE ? `${PUBLIC_BASE}/${key}` : '', sha256: sha256(body), size: body.length }
-  await put(key, body, 'text/plain; charset=utf-8')
+  manifests[slug] = { url: ASSET_BASE ? `${ASSET_BASE}/${name}` : (PUBLIC_BASE ? `${PUBLIC_BASE}/${key}` : ''), sha256: sha256(body), size: body.length }
+  try {
+    await put(key, body, 'text/plain; charset=utf-8')
+  } catch (e) {
+    if (!BEST_EFFORT) throw e
+    console.warn(`  [best-effort] ROS 上传失败,继续生成 manifest: ${e.message}`)
+  }
 }
 
 const manifest = {
@@ -248,7 +261,12 @@ const manifestBody = Buffer.from(JSON.stringify(manifest, null, 2), 'utf8')
 
 mkdirSync(dirname(MANIFEST_OUT) || '.', { recursive: true })
 writeFileSync(MANIFEST_OUT, manifestBody)
-await put(MANIFEST_NAME, manifestBody, 'application/json; charset=utf-8')
+try {
+  await put(MANIFEST_NAME, manifestBody, 'application/json; charset=utf-8')
+} catch (e) {
+  if (!BEST_EFFORT) throw e
+  console.warn(`[best-effort] ROS 清单上传失败: ${e.message}`)
+}
 
 console.log('')
 console.log(`${MANIFEST_NAME}:`)

@@ -434,7 +434,9 @@ jobs:
             --channel stable \
             --commit "$GITHUB_SHA" \
             --date "$(date -u +%F)" \
-            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}"
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}" \
+            --asset-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
+            --best-effort --retries 2
 
       - name: 校验 latest.json 通道与指纹(tag 触发)
         if: startsWith(github.ref, 'refs/tags/v')

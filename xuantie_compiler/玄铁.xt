@@ -151,7 +151,7 @@
 // ── 自更新:xtc 升级 / xtc sj(下载官方发行包 → 校验 → 原地覆盖)──────────────
 // 只认官方发行包(tar.gz)。issue #163:
 //   * 通道:stable(默认)/dev。stable 清单 latest.json,dev 清单 latest-dev.json;
-//     默认源为文档站 https://xuantie.markjy.com/api/latest.json(--源 可覆盖,dev 按同目录派生);
+//     默认源为 GitHub 最新 release 的 latest.json 资产(--源 可覆盖;--国内 走文档站;dev 固定 dev tag 资产);
 //   * 钉版本 --版本 <tag>:绕过清单,直接按 xuantie_<tag>_<平台>.tar.gz 下载(GitHub,--国内 走 Gitee);
 //   * 网络一律走运行时 HTTP(求 / xt_http_get_bytes),不再依赖系统 curl。
 函 升级资产名(平台, 架构) {
@@ -230,9 +230,13 @@
     返 _行
 }
 
-// stable 源 → 本通道清单地址:dev 与 stable 同目录,仅文件名 latest → latest-dev
+// stable 源 → 本通道清单地址:dev 与 stable 同目录,仅文件名 latest → latest-dev;
+// GitHub latest 重定向地址没有同级 dev 文件,dev 固定走 dev tag 的 release 资产。
 函 升级清单地址(源, 通道) {
     若 通道 != "dev" { 返 源 }
+    若 源.包含?("releases/latest/download/latest.json") {
+        返 "https://github.com/MARKJY-China/XuanTie-Lang/releases/download/dev/latest-dev.json"
+    }
     若 源.包含?("latest-dev.json") { 返 源 }
     若 源.包含?("latest.json") { 返 源.替换("latest.json", "latest-dev.json") }
     // 自定义源(如本地 http 目录):截到最后一个 / 或 \ 再拼文件名
@@ -578,7 +582,7 @@
     设 升级国内 = 假
     设 升级强制 = 假
     设 升级目标 = ""
-    设 升级源 = "https://xuantie.markjy.com/api/latest.json"
+    设 升级源 = "https://github.com/MARKJY-China/XuanTie-Lang/releases/latest/download/latest.json"
     设 升级通道 = "stable"   // issue #163:stable(默认)/dev;dev 首次切换会警告
     设 升级钉版本 = ""       // issue #163:--版本 <tag> 钉版本/回滚;非空则绕过清单
     

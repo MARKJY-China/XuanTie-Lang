@@ -248,6 +248,7 @@ jobs:
             --commit "$GITHUB_SHA" \
             --date "${{ needs.meta.outputs.date }}" \
             --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev" \
+            --asset-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/dev" \
             --dry-run
 
       - name: 校验 dev 清单字段
@@ -329,7 +330,9 @@ jobs:
             --channel dev \
             --commit "$GITHUB_SHA" \
             --date "${{ needs.meta.outputs.date }}" \
-            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev"
+            --notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/dev" \
+            --asset-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/dev" \
+            --best-effort --retries 2
 
       - name: 校验 stable latest.json 未被 dev 覆盖(尽力而为)
         env:
