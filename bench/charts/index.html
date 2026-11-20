@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>玄铁性能对比图</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #F6F7F9; color: #111827;
+         font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+  header { padding: 34px 6vw 10px; }
+  h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: .01em; }
+  p { margin: 0; color: #6B7280; font-size: 14px; line-height: 1.7; }
+  .grid { display: grid; gap: 18px; padding: 22px 6vw 48px;
+           grid-template-columns: repeat(auto-fill, minmax(520px, 1fr)); }
+  .card { display: block; background: #fff; border: 1px solid #E5E7EB; border-radius: 14px;
+           overflow: hidden; text-decoration: none; color: inherit;
+           box-shadow: 0 1px 2px rgba(16,24,40,.04); transition: box-shadow .15s, transform .15s; }
+  .card:hover { box-shadow: 0 8px 24px rgba(16,24,40,.10); transform: translateY(-2px); }
+  .card img { display: block; width: 100%; height: auto; }
+  .cap { display: flex; justify-content: space-between; gap: 12px; padding: 12px 14px;
+          font-size: 14px; color: #374151; border-top: 1px solid #F3F4F6; }
+  .cap span { color: #6B7280; white-space: nowrap; }
+  footer { padding: 0 6vw 36px; color: #9CA3AF; font-size: 12px; }
+  code { background: #EEF0F3; padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>玄铁性能对比图</h1>
+  <p>每个基准用例一张图，对数刻度、越短越快；玄铁高亮。另含 issue #168 的 FFT 与小数数组专图。
+     主数据：2026-11-20.json（2026-11-20），
+     机器：12th Gen Intel(R) Core(TM) i5-12400F，工具链：玄铁 (XuanTie) 编译器驱动 v1.0-rc.5。</p>
+</header>
+<div class="grid">
+    <a class="card" href="01_空函数调用1e6.png">
+      <img src="01_空函数调用1e6.png" alt="空函数调用 · 1,000,000 次">
+      <div class="cap"><b>01. 空函数调用 · 1,000,000 次</b><span>基准中位 6.78 ms</span></div>
+    </a>
+    <a class="card" href="02_字符串拼接1e5.png">
+      <img src="02_字符串拼接1e5.png" alt="字符串拼接 · 100,000 次">
+      <div class="cap"><b>02. 字符串拼接 · 100,000 次</b><span>基准中位 2.48 ms</span></div>
+    </a>
+    <a class="card" href="03_列表添加1e5.png">
+      <img src="03_列表添加1e5.png" alt="列表添加 · 100,000 次">
+      <div class="cap"><b>03. 列表添加 · 100,000 次</b><span>基准中位 2.72 ms</span></div>
+    </a>
+    <a class="card" href="04_字典插入1e4.png">
+      <img src="04_字典插入1e4.png" alt="字典插入 · 10,000 次">
+      <div class="cap"><b>04. 字典插入 · 10,000 次</b><span>基准中位 4.34 ms</span></div>
+    </a>
+    <a class="card" href="05_浮点累加1e6.png">
+      <img src="05_浮点累加1e6.png" alt="浮点累加 · 1,000,000 次">
+      <div class="cap"><b>05. 浮点累加 · 1,000,000 次</b><span>基准中位 7.05 ms</span></div>
+    </a>
+    <a class="card" href="06_乘模1e6.png">
+      <img src="06_乘模1e6.png" alt="乘模 · 1,000,000 次">
+      <div class="cap"><b>06. 乘模 · 1,000,000 次</b><span>基准中位 20.55 ms</span></div>
+    </a>
+    <a class="card" href="07_分支1e7.png">
+      <img src="07_分支1e7.png" alt="分支 · 10,000,000 次">
+      <div class="cap"><b>07. 分支 · 10,000,000 次</b><span>基准中位 228.03 ms</span></div>
+    </a>
+    <a class="card" href="08_嵌套循环1e6.png">
+      <img src="08_嵌套循环1e6.png" alt="嵌套循环 · 1,000,000 次">
+      <div class="cap"><b>08. 嵌套循环 · 1,000,000 次</b><span>基准中位 18.57 ms</span></div>
+    </a>
+    <a class="card" href="09_fib30递归.png">
+      <img src="09_fib30递归.png" alt="fib30递归">
+      <div class="cap"><b>09. fib30递归</b><span>基准中位 15.95 ms</span></div>
+    </a>
+    <a class="card" href="10_FFT4096点.png">
+      <img src="10_FFT4096点.png" alt="FFT 4096 点 · 单次">
+      <div class="cap"><b>10. FFT 4096 点 · 单次</b><span>基准中位 33.54 ms</span></div>
+    </a>
+    <a class="card" href="11_小数数组4096x500.png">
+      <img src="11_小数数组4096x500.png" alt="小数数组微基准 · 4096×500">
+      <div class="cap"><b>11. 小数数组微基准 · 4096×500</b><span>基准中位 894.73 ms</span></div>
+    </a>
+</div>
+<footer>重新生成：<code>python bench/chart.py</code> · 数据由 <code>bench/run.py</code> 产出，图由 <code>bench/chart.py</code> 渲染。</footer>
+</body>
+</html>

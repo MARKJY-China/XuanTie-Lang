@@ -11,7 +11,7 @@
 用法:
   python bench/run.py                       # 跑玄铁基准 → bench/results/<日期>.json
   python bench/run.py --runs 7              # 指定运行次数(默认 5)
-  python bench/run.py --with-peers          # 同时跑 node/java/go/python 对照
+  python bench/run.py --with-peers          # 同时跑 node/java/go/python/rust/vix 对照
   python bench/run.py --xtc build/xtc_s4.exe
   python bench/run.py --compare             # 对比 results/ 里最近两份快照
   python bench/run.py --compare a.json b.json
@@ -107,9 +107,13 @@ def toolchain_info(xtc):
             chain[f's{n}'] = {'size': f.stat().st_size, 'md5': md5_of(f)}
     if chain:
         t['bootstrap_chain'] = chain
-    for name, cmd in (('go', ['go', 'version']), ('node', ['node', '--version']),
-                      ('java', ['java', '-version']), ('python', ['python', '--version']),
-                      ('clang', ['clang', '--version']), ('gcc', ['gcc', '--version'])):
+    probes = [('go', ['go', 'version']), ('node', ['node', '--version']),
+              ('java', ['java', '-version']), ('python', ['python', '--version']),
+              ('rust', ['rustc', '--version']),
+              ('clang', ['clang', '--version']), ('gcc', ['gcc', '--version'])]
+    if VIXC:
+        probes.append(('vix', [VIXC, '--version']))
+    for name, cmd in probes:
         rc, out = sh(cmd, timeout=60)
         if rc == 0 and out.strip():
             t[name] = out.strip().splitlines()[0].strip()
@@ -174,29 +178,51 @@ def bench_startup(xtc, runs):
             'all_ms': [round(v, 3) for v in vals]}
 
 
+VIXC = os.environ.get('VIXC') or shutil.which('vixc') or ''
+
 PEERS = {
     'node': {'cmd': ['node', str(CASES / 'node_bench.js')], 'build': None},
     'java': {'cmd': ['java', '-Dstdout.encoding=UTF-8', '-Dfile.encoding=UTF-8',
                      str(CASES / 'BenchJava.java')], 'build': None},
     'go': {'cmd': None, 'build': ['go', 'build', '-o', '{exe}', str(CASES / 'go_bench.go')]},
     'python': {'cmd': ['python', str(CASES / 'python_bench.py')], 'build': None},
+    'rust': {'cmd': None, 'build': ['rustc', '-O', str(CASES / 'rust_bench.rs'), '-o', '{exe}']},
+    # Vix v0.5.0 的 Windows 发行包自带 lld 但默认找 MSVC .lib;这里先 -obj,
+    # 再用 gcc 链接 .o(实测可行),避免依赖 MSVC/Windows SDK。
+    'vix': {'cmd': None, 'build': [
+        ['{vixc}', str(CASES / 'vix_bench.vix'), '-obj', '{obj}', '-opt=l3'],
+        ['gcc', '{obj}', '-o', '{exe}', '-lm'],
+    ]},
 }
 
 
 def bench_peer(name, runs):
     cfg = PEERS[name]
+    if name == 'vix' and not VIXC:
+        return {'lang': 'vix', 'error': '未设置 VIXC(指向 vixc.exe);跳过 Vix 对照'}, {}
     work = Path(tempfile.mkdtemp(prefix=f'{name}_bench_'))
     exe = work / (name + ('.exe' if os.name == 'nt' else ''))
     entry = {'lang': name}
     cmd = cfg['cmd']
     if cfg['build']:
-        bc = [str(exe) if a == '{exe}' else a for a in cfg['build']]
+        steps = cfg['build']
+        if steps and isinstance(steps[0], (list, tuple)):
+            steps = list(steps)
+        else:
+            steps = [steps]
+        obj = work / (name + '.o')
         t0 = time.perf_counter()
-        rc, out = sh(bc)
+        for step in steps:
+            bc = []
+            for a in step:
+                a = a.replace('{exe}', str(exe)).replace('{obj}', str(obj)).replace('{vixc}', VIXC)
+                bc.append(a)
+            rc, out = sh(bc)
+            if rc != 0:
+                entry['compile_ms'] = round((time.perf_counter() - t0) * 1000, 1)
+                entry['error'] = out[-800:]
+                return entry, {}
         entry['compile_ms'] = round((time.perf_counter() - t0) * 1000, 1)
-        if rc != 0:
-            entry['error'] = out[-800:]
-            return entry, {}
         cmd = [str(exe)]
     rc, probe = sh(cmd, timeout=900)
     if rc != 0:
@@ -220,7 +246,7 @@ def snapshot(xtc, runs, with_peers):
         cases.append({'lang': '玄铁', 'name': name, 'median_us': round(statistics.median(vals), 1),
                       'min_us': min(vals), 'all_us': [round(v, 1) for v in vals]})
     if with_peers:
-        for peer in ('node', 'java', 'go', 'python'):
+        for peer in ('node', 'java', 'go', 'python', 'rust', 'vix'):
             entry, per = bench_peer(peer, runs)
             xtc_entry.setdefault('peers', {})[peer] = {k: v for k, v in entry.items()}
             for name, vals in per.items():
@@ -297,7 +323,7 @@ def main():
     ap = argparse.ArgumentParser(description='玄铁性能基准跑分器')
     ap.add_argument('--xtc', default=None, help='编译器路径(默认 build/xtc_s4.exe, 回退 build/xtc.exe)')
     ap.add_argument('--runs', type=int, default=5, help='运行次数(默认 5, 取中位数)')
-    ap.add_argument('--with-peers', action='store_true', help='同时跑 node/java/go/python 对照')
+    ap.add_argument('--with-peers', action='store_true', help='同时跑 node/java/go/python/rust/vix 对照')
     ap.add_argument('--label', default=None, help='结果文件名标签(默认当天日期)')
     ap.add_argument('--out', default=None, help='直接指定输出 JSON 路径')
     ap.add_argument('--compare', nargs='*', help='对比两份快照; 不带参数则取 results/ 里最近两份')

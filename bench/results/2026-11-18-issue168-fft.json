@@ -1,0 +1,22 @@
+{
+  "date": "2026-11-18",
+  "time": "",
+  "kind": "special",
+  "method": { "runs": 1, "aggregate": "single", "note": "issue #168 外部单次实测" },
+  "note": "issue #168 外部实测（macOS arm64，xtc v1.0-rc.5）；非 bench/run.py 复现，仅作定位对照",
+  "baseline": "玄铁",
+  "machine": {
+    "cpu": "Apple M3",
+    "platform": "macOS arm64"
+  },
+  "toolchain": {
+    "xtc_version": "玄铁 (XuanTie) 编译器驱动 v1.0-rc.5"
+  },
+  "cases": [
+    { "lang": "rust", "name": "FFT4096点", "median_us": 50.0, "min_us": 50.0, "all_us": [50.0] },
+    { "lang": "node", "name": "FFT4096点", "median_us": 70.0, "min_us": 70.0, "all_us": [70.0] },
+    { "lang": "bun", "name": "FFT4096点", "median_us": 110.0, "min_us": 110.0, "all_us": [110.0] },
+    { "lang": "python", "name": "FFT4096点", "median_us": 5080.0, "min_us": 5080.0, "all_us": [5080.0] },
+    { "lang": "玄铁", "name": "FFT4096点", "median_us": 33540.0, "min_us": 33540.0, "all_us": [33540.0] }
+  ]
+}

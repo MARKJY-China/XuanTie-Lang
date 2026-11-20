@@ -1,0 +1,162 @@
+extern "C"
+{
+    fn clock(): i32
+}
+
+#[inline(never)]
+fn empty(x: i32): i32
+{
+    return x
+}
+
+fn fib(n: i32): i32
+{
+    if (n < 2)
+    {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+fn elapsed_us(start: i32, reps: i32): i32
+{
+    return (clock() - start) * 1000 / reps
+}
+
+fn main(): i32
+{
+    // 短用例重复 10 次:Windows 的 clock() 只有 1ms 粒度。
+    let reps = 10
+
+    let t0 = clock()
+    let mut sink0 = 0
+    let mut i0 = 0
+    while (i0 < 1000000 * reps)
+    {
+        sink0 = empty(sink0)
+        i0 += 1
+    }
+    print("空函数调用1e6: ", elapsed_us(t0, reps), " 微秒 (sink=", sink0, ")")
+
+    let t1 = clock()
+    let mut s1 = ""
+    let mut i1 = 0
+    while (i1 < 100000)
+    {
+        s1 = s1 + "a"
+        i1 += 1
+    }
+    print("字符串拼接1e5: ", elapsed_us(t1, 1), " 微秒 (len=", s1.length, ")")
+
+    let t2 = clock()
+    let mut xs = []
+    let mut r2 = 0
+    while (r2 < reps)
+    {
+        xs = []
+        let mut i2 = 0
+        while (i2 < 100000)
+        {
+            xs.push(i2)
+            i2 += 1
+        }
+        r2 += 1
+    }
+    print("列表添加1e5: ", elapsed_us(t2, reps), " 微秒 (len=", xs.length, ")")
+
+    let t3 = clock()
+    let mut f3: f64 = 0.0
+    let mut i3 = 0
+    while (i3 < 1000000 * reps)
+    {
+        f3 = f3 + 1.5
+        i3 += 1
+    }
+    print("浮点累加1e6: ", elapsed_us(t3, reps), " 微秒 (f=", f3, ")")
+
+    let t4 = clock()
+    let mut r4: i64 = 0
+    let mut i4 = 0
+    while (i4 < 1000000)
+    {
+        r4 = (r4 * 7 + 13) % 1000003
+        i4 += 1
+    }
+    print("乘模1e6: ", elapsed_us(t4, 1), " 微秒 (r=", r4, ")")
+
+    let t5 = clock()
+    let mut c5 = 0
+    let mut i5 = 0
+    while (i5 < 10000000)
+    {
+        if (i5 % 2 == 0)
+        {
+            c5 += 1
+        }
+        else
+        {
+            c5 -= 1
+        }
+        i5 += 1
+    }
+    print("分支1e7: ", elapsed_us(t5, 1), " 微秒 (c=", c5, ")")
+
+    // 字典插入:Vix 标准库无 HashMap,用 16384 槽开放寻址表测插入路径
+    // (整数键;与 Go/Java/Python 的字符串键不是逐字同构,脚注已注明)。
+    let cap = 16384
+    let t8 = clock()
+    let mut total = 0
+    let mut rep8 = 0
+    while (rep8 < reps)
+    {
+        let mut keys: [i64] = []
+        let mut z = 0
+        while (z < cap)
+        {
+            keys.push(0)
+            z += 1
+        }
+        let mut k = 1
+        while (k <= 10000)
+        {
+            let mut h = (k * 2654435761) % cap
+            while (keys[h] != 0)
+            {
+                h = (h + 1) % cap
+            }
+            keys[h] = k
+            k += 1
+        }
+        total = total + 10000
+        rep8 += 1
+    }
+    print("字典插入1e4: ", elapsed_us(t8, reps), " 微秒 (n=", total, ")")
+
+    let t6 = clock()
+    let mut n6: i64 = 0
+    let mut r6 = 0
+    while (r6 < reps)
+    {
+        n6 = 0
+        let mut a6 = 0
+        while (a6 < 1000)
+        {
+            let mut b6 = 0
+            while (b6 < 1000)
+            {
+                // 依赖 n6 的写法阻止编译器把双重循环折叠成 n=1e6。
+                n6 = n6 * 31 + b6
+                b6 += 1
+            }
+            a6 += 1
+        }
+        r6 += 1
+    }
+    print("嵌套循环1e6: ", elapsed_us(t6, reps), " 微秒 (n=", n6, ")")
+
+    let t7 = clock()
+    let f7 = fib(30)
+    print("fib30递归: ", elapsed_us(t7, 1), " 微秒 (f=", f7, ")")
+
+    return 0
+}
