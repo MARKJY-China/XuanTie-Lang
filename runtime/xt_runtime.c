@@ -1423,6 +1423,20 @@ static const char* xt_err_name_of(XTValue name_val) {
 // 成员缺失诊断:对非对象值(整数/布尔/空等标记值)访问成员。
 // 原行为:直接 inttoptr 解引用标记整数 → Segfault。
 // 活动尝试块内:可捕异常(消息含成员名),由编译器守卫点分支到 捕捉 块。
+// 注解返回类型为 整/布尔/小数 的函数返回了 空:这是函数契约违反,
+// 不能静默把 tagged 空(0) 当整数 0 交给调用方。按「宁可报错也不静默」硬退出。
+void xt_empty_return_error(XTValue func_name_val) {
+    const char* name = "?";
+    if (xt_is_real_ptr(func_name_val)) {
+        XTString* s = (XTString*)func_name_val;
+        if (s->data) name = s->data;
+    }
+    xt_error_prefix();
+    fprintf(stderr, "函数 '%s' 注解了数值返回类型,但实际返回了 空\n", name);
+    fprintf(stderr, "  提示: 该函数的所有返回路径都必须给出数值;无结果请去掉返回注解,或在尝试表达式末尾显式 产出 默认值。\n");
+    exit(1);
+}
+
 void xt_member_missing(XTValue name_val) {
     const char* name = xt_err_name_of(name_val);
     if (xt_exc_active()) {

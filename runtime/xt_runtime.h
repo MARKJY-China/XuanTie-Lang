@@ -506,6 +506,8 @@ void xt_error_set_file(const char* file);
 void xt_error_set_loc(int32_t line, int32_t col);
 /// 硬错误 handler:活动尝试块内 → 转为可捕异常(xt_exc_raise)并返回;无尝试块 → 打印诊断并 exit(1)
 void xt_member_missing(XTValue name_val);
+/// 注解数值返回的函数实际返回 空:硬错误(issue:空不应静默变 0)
+void xt_empty_return_error(XTValue func_name_val);
 void xt_member_unknown(XTValue name_val);
 void xt_index_bad(XTValue val);
 void xt_index_negative(int64_t index);
