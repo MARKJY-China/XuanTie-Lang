@@ -2,6 +2,10 @@
 // v0.1 作用域纪律见 ide/AGENTS.md(调试器 UI / 插件系统 / Git 界面 / 控件设计器 = 禁区)
 import * as monaco from 'monaco-editor';
 import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
+import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker';
+import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker';
+import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker';
+import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 import { open as pickDialog } from '@tauri-apps/plugin-dialog';
 import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
@@ -74,8 +78,29 @@ function applyEye(): void {
   L.btnEye.title = meta.title;
 }
 
+// Monaco 各语言服务使用独立 worker:只挂 editor.worker 时,打开 .json 会把
+// JSON 语言请求送进编辑器 worker,表现为大量
+// “Cannot read properties of undefined (reading 'toUri')”。
 (self as unknown as { MonacoEnvironment: monaco.Environment }).MonacoEnvironment = {
-  getWorker: () => new editorWorker(),
+  getWorker: (_workerId: string, label: string) => {
+    switch (label) {
+      case 'json':
+        return new jsonWorker();
+      case 'css':
+      case 'scss':
+      case 'less':
+        return new cssWorker();
+      case 'html':
+      case 'handlebars':
+      case 'razor':
+        return new htmlWorker();
+      case 'typescript':
+      case 'javascript':
+        return new tsWorker();
+      default:
+        return new editorWorker();
+    }
+  },
 };
 
 registerXtLanguage();
