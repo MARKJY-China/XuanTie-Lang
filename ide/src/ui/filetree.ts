@@ -37,6 +37,13 @@ function extOf(name: string): string {
   return i > 0 ? name.slice(i + 1).toLowerCase() : '';
 }
 
+/** 文件树右键是否提供「运行」:可执行程序与常见脚本。 */
+export function isRunnableFile(path: string): boolean {
+  const name = path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1);
+  const ext = extOf(name);
+  return ext === 'exe' || ext === 'bat' || ext === 'cmd' || ext === 'ps1' || ext === 'sh';
+}
+
 /** 编辑器是否应拒绝打开:有扩展名且属于二进制/构建产物(无扩展名的 .gitignore 等仍按文本打开)。 */
 export function isBinaryEditorPath(path: string): boolean {
   const name = path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1);

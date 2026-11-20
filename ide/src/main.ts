@@ -29,7 +29,7 @@ import { attachLspFeatures } from './lsp/features';
 import { initImeAutoSwitch } from './ime';
 import { buildLayout, initMenus, initSplitters, initWindowControls } from './ui/layout';
 import { TabManager } from './ui/tabs';
-import { FileTree, isBinaryEditorPath } from './ui/filetree';
+import { FileTree, isBinaryEditorPath, isRunnableFile } from './ui/filetree';
 import { ProblemsPanel } from './ui/problems';
 import { SelectionTools } from './ui/selection-tools';
 import { DesignerPanel } from './ui/designer/panel';
@@ -1342,6 +1342,15 @@ function showTreeMenu(e: MouseEvent, node: FileNode | null): void {
     return;
   }
   const items: ContextMenuEntry[] = [];
+  if (!node.isDir && isRunnableFile(node.path)) {
+    items.push({
+      label: '运行',
+      action: () => {
+        void runner.runExecutable(node.path).catch((err: unknown) => showToast(`运行失败: ${String(err)}`, 'err'));
+      },
+    });
+    items.push(CONTEXT_SEP);
+  }
   if (node.isDir) {
     items.push({ label: '新建文件', action: () => void newFileIn(node.path) });
     items.push({ label: '新建文件夹', action: () => void newDirIn(node.path) });
