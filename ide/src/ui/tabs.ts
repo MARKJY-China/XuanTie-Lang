@@ -1,5 +1,6 @@
 // 编辑器标签页:打开/激活/脏标记/保存/关闭(关闭脏文档先确认)
 import * as monaco from 'monaco-editor';
+import { languageIdForPath } from '../lang/xt';
 import * as backend from '../backend';
 import { basename } from '../util';
 
@@ -128,11 +129,13 @@ interface OpenDoc {
     const res = await backend.fsReadFile(path);
     const text = res.text;
     const uri = monaco.Uri.file(path);
+    const languageId = languageIdForPath(path);
     let model = monaco.editor.getModel(uri);
     if (model) {
       model.setValue(text);
+      if (model.getLanguageId() !== languageId) monaco.editor.setModelLanguage(model, languageId);
     } else {
-      model = monaco.editor.createModel(text, 'xuantie', uri);
+      model = monaco.editor.createModel(text, languageId, uri);
     }
     const tabEl = this.buildTab(path);
     this.tabBar.appendChild(tabEl);
@@ -208,8 +211,10 @@ interface OpenDoc {
     const oldModel = doc.model;
     const uri = monaco.Uri.file(to);
     // 同名旧模型(极少见,例如上一次改名残留)直接用;否则新建同内容模型
-    const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(text, 'xuantie', uri);
+    const languageId = languageIdForPath(to);
+    const model = monaco.editor.getModel(uri) ?? monaco.editor.createModel(text, languageId, uri);
     if (model.getValue() !== text) model.setValue(text);
+    if (model.getLanguageId() !== languageId) monaco.editor.setModelLanguage(model, languageId);
 
     doc.model = model;
     doc.path = to;

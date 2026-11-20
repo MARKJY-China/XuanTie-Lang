@@ -10,7 +10,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
 import { initUpdater, manualCheck, resetSkip } from './update/updater';
 import '@vscode/codicons/dist/codicon.css';
-import { registerXtLanguage } from './lang/xt';
+import { isXtPath, registerXtLanguage } from './lang/xt';
 import * as backend from './backend';
 import {
   getSettings,
@@ -146,19 +146,20 @@ const tabs = new TabManager(
   editor,
   {
     onDidOpen: (p, text) => {
-      lsp.didOpen(p, text);
+      if (isXtPath(p)) lsp.didOpen(p, text);
+      else problems.update(p, []);
       syncUnsaved();
     },
     onDidChange: (p, text) => {
-      lsp.didChange(p, text);
+      if (isXtPath(p)) lsp.didChange(p, text);
       syncUnsaved();
     },
     onDidSave: (p) => {
-      lsp.didSave(p);
+      if (isXtPath(p)) lsp.didSave(p);
       syncUnsaved();
     },
     onDidClose: (p) => {
-      lsp.didClose(p);
+      if (isXtPath(p)) lsp.didClose(p);
       problems.update(p, []);
       renderProblemsBadge();
       syncUnsaved();
@@ -1159,6 +1160,7 @@ async function startLsp(): Promise<void> {
   }
   // 重连/晚连接场景:已打开的文档补发 didOpen,否则它们永远收不到补全与诊断
   for (const p of tabs.getAllPaths()) {
+    if (!isXtPath(p)) continue;
     const text = tabs.getText(p);
     if (text !== null) lsp.didOpen(p, text);
   }

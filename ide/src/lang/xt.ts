@@ -5,6 +5,45 @@ import * as monaco from 'monaco-editor';
 
 export const XT_LANGUAGE_ID = 'xuantie';
 
+// 文件扩展名 → Monaco 语言 id。之前所有文件都硬编码成 xuantie,
+// 导致 .md/.json 被玄铁高亮、LSP 也按玄铁解析。这里只让 .xt 走玄铁,
+// 常见文本格式走 Monaco 内置语言,未知格式退化为 plaintext。
+export function isXtPath(path: string): boolean {
+  return path.toLowerCase().endsWith('.xt');
+}
+
+export function languageIdForPath(path: string): string {
+  const name = path.toLowerCase();
+  if (name.endsWith('.xt')) return XT_LANGUAGE_ID;
+  const rules: Array<[string[], string]> = [
+    [['.md', '.markdown', '.mdx'], 'markdown'],
+    [['.json', '.jsonc'], 'json'],
+    [['.yml', '.yaml'], 'yaml'],
+    [['.toml', '.ini', '.cfg', '.conf'], 'ini'],
+    [['.html', '.htm'], 'html'],
+    [['.css', '.scss', '.less'], 'css'],
+    [['.js', '.mjs', '.cjs', '.jsx'], 'javascript'],
+    [['.ts', '.mts', '.cts', '.tsx'], 'typescript'],
+    [['.c', '.h'], 'c'],
+    [['.cc', '.cpp', '.cxx', '.hpp', '.hh'], 'cpp'],
+    [['.rs'], 'rust'],
+    [['.py'], 'python'],
+    [['.go'], 'go'],
+    [['.java'], 'java'],
+    [['.lua'], 'lua'],
+    [['.sh', '.bash', '.zsh'], 'shell'],
+    [['.bat', '.cmd'], 'bat'],
+    [['.ps1', '.psm1'], 'powershell'],
+    [['.xml', '.svg'], 'xml'],
+    [['.sql'], 'sql'],
+    [['.txt', '.log', '.lock'], 'plaintext'],
+  ];
+  for (const [exts, id] of rules) {
+    if (exts.some((ext) => name.endsWith(ext))) return id;
+  }
+  return 'plaintext';
+}
+
 // 标识符后继字符:字母数字下划线 + 任意非 ASCII + 结尾 ?
 const TAIL = 'a-zA-Z0-9_\\u0080-\\uFFFF?';
 
