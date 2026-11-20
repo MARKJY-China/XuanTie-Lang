@@ -1828,9 +1828,17 @@ static int xt_is_real_ptr(XTValue val) {
 // 无活动尝试块时,故障点保持既有行为(返 0/报错退出),两语义并存。
 // 消息约定:可捕异常的消息在 raise 时就把「[文件:行:列] 」嵌进去(#110),捕捉块读到的
 // e["消息"] 自带定位;轮询式路径(除零/溢出等)由运行时直接 xt_exc_raise 常量文案,无位置。
-static int xt_exc_depth = 0;
-static int xt_exc_pending = 0;
-static const char* xt_exc_msg = NULL;
+// issue #113/#110 后续:异常深度/挂起标志/消息与错误位置都按线程隔离。
+// 异步/并行任务在线程池线程上执行;进程级全局会让多个任务的 尝试 互相截走/污染。
+#if defined(_MSC_VER)
+static __declspec(thread) int xt_exc_depth = 0;
+static __declspec(thread) int xt_exc_pending = 0;
+static __declspec(thread) const char* xt_exc_msg = NULL;
+#else
+static __thread int xt_exc_depth = 0;
+static __thread int xt_exc_pending = 0;
+static __thread const char* xt_exc_msg = NULL;
+#endif
 
 int xt_exc_active(void) { return xt_exc_depth > 0; }
 
