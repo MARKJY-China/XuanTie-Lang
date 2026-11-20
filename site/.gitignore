@@ -7,6 +7,8 @@ offline-docs/
 
 # 由仓库同步/生成的副本（单一真源在仓库根 GUIDE/ 与 assets/）
 guide/
+benchmark.md
+public/benchmark/
 public/ai/
 public/llms.txt
 public/assets/

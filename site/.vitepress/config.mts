@@ -127,6 +127,7 @@ export default defineConfig({
     nav: [
       { text: '首页', link: '/' },
       { text: '下载', link: '/downloads' },
+      { text: '性能对比', link: '/benchmark' },
       { text: '铸造厂 IDE', link: '/ide/' },
       { text: '语言参考', link: '/guide/参考/README' },
       { text: 'API 参考', link: '/guide/API/README' },
@@ -167,6 +168,7 @@ export default defineConfig({
         text: '项目',
         items: [
           { text: '更新日志', link: '/versionLog' },
+          { text: '性能对比', link: '/benchmark' },
           { text: 'GitHub 仓库', link: 'https://github.com/MARKJY-China/XuanTie-Lang' },
         ],
       },

@@ -20,6 +20,9 @@ run('node', ['scripts/sync-docs.mjs'])
 console.log('①.5 生成 AI 文档层（/ai/）')
 run('node', ['scripts/build-ai-docs.mjs'])
 
+console.log('①.6 同步性能图（/benchmark）')
+run('node', ['scripts/sync-benchmark.mjs'])
+
 console.log('② 构建站点' + (extra.length ? `（${extra.join(' ')}）` : ''))
 run('npx', ['vitepress', 'build', ...extra])
 

@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "docs:dev": "node scripts/sync-docs.mjs && vitepress dev",
+    "docs:dev": "node scripts/sync-docs.mjs && node scripts/sync-benchmark.mjs && vitepress dev",
     "docs:build": "node scripts/build-site.mjs",
     "docs:preview": "vitepress preview",
-    "sync": "node scripts/sync-docs.mjs",
+    "sync": "node scripts/sync-docs.mjs && node scripts/sync-benchmark.mjs",
     "docs:offline": "node scripts/build-offline.mjs",
     "docs:ai": "node scripts/build-ai-docs.mjs"
   },
