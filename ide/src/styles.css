@@ -1152,6 +1152,7 @@ body.light #statusbar .sb-update { color: #0b63b8; }
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
   animation: toast-in 0.15s ease-out;
   max-width: 420px;
+  white-space: pre-line;
 }
 .toast.err { border-color: var(--err); }
 .toast.ok { border-color: var(--ok); }

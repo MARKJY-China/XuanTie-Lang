@@ -23,6 +23,9 @@ const BINARY_EXT = new Set([
   'exe', 'dll', 'pdb', 'o', 'obj', 'lib', 'a', 'so', 'dylib', 'bin', 'dat',
   'zip', '7z', 'gz', 'tar', 'rar', 'png', 'jpg', 'jpeg', 'gif', 'ico', 'icns', 'bmp', 'webp',
   'pdf', 'mp3', 'mp4', 'wav', 'ttf', 'otf', 'woff', 'woff2', 'eot', 'll',
+  'msi', 'msix', 'wasm', 'class', 'jar', 'pyc', 'pyo', 'db', 'sqlite', 'sqlite3',
+  'dmg', 'iso', 'img', 'apk', 'ipa', 'deb', 'rpm', 'dmp', 'ilk', 'exp', 'res',
+  'pak', 'vpk', 'ttc', 'otc', 'webm', 'flac', 'ogg', 'm4a', 'mov', 'avi', 'mkv',
 ]);
 
 type FileClass = 'xt' | 'known' | 'binary' | 'unknown';
@@ -32,6 +35,13 @@ function extOf(name: string): string {
   if (name.startsWith('.')) return name.slice(1).toLowerCase();
   const i = name.lastIndexOf('.');
   return i > 0 ? name.slice(i + 1).toLowerCase() : '';
+}
+
+/** 编辑器是否应拒绝打开:有扩展名且属于二进制/构建产物(无扩展名的 .gitignore 等仍按文本打开)。 */
+export function isBinaryEditorPath(path: string): boolean {
+  const name = path.slice(Math.max(path.lastIndexOf('\\'), path.lastIndexOf('/')) + 1);
+  const ext = extOf(name);
+  return ext !== '' && BINARY_EXT.has(ext);
 }
 
 function classify(node: FileNode): FileClass {

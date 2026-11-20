@@ -29,7 +29,7 @@ import { attachLspFeatures } from './lsp/features';
 import { initImeAutoSwitch } from './ime';
 import { buildLayout, initMenus, initSplitters, initWindowControls } from './ui/layout';
 import { TabManager } from './ui/tabs';
-import { FileTree } from './ui/filetree';
+import { FileTree, isBinaryEditorPath } from './ui/filetree';
 import { ProblemsPanel } from './ui/problems';
 import { SelectionTools } from './ui/selection-tools';
 import { DesignerPanel } from './ui/designer/panel';
@@ -161,7 +161,7 @@ const lsp = new XtLspClient();
 const problems = new ProblemsPanel(
   L.problemsHost,
   (p, line, column) => {
-    void tabs.openFile(p, { line, column });
+    openEditorFile(p, { line, column });
   },
   (text) => {
     setAiDock(true);
@@ -204,10 +204,17 @@ const tabs = new TabManager(
 // Markdown 阅读器:默认渲染 .md,可切回源码;只在 .md 激活时占用编辑器区。
 let mdReaderMode = true;
 const mdReader = new MarkdownReader(L.markdownHost, {
-  openFile: (p) => {
-    void tabs.openFile(p);
-  },
+  openFile: (p) => openEditorFile(p),
 });
+/** 统一编辑器打开入口:二进制文件只提示、不进编辑器;其它文件照常打开。 */
+function openEditorFile(p: string, reveal?: { line: number; column: number }): void {
+  if (isBinaryEditorPath(p)) {
+    showToast('编辑器不支持打开二进制文件。\n你可以右键该文件点击“运行”来启动。', 'err');
+    return;
+  }
+  void tabs.openFile(p, reveal).catch((err: unknown) => showToast(`打开失败: ${String(err)}`, 'err'));
+}
+
 const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outputHost);
 // 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
 term.onRunState = (running) => setRunButton(running);
@@ -654,9 +661,7 @@ const aiPanel = new AiChatPanel(
     },
     openFileInEditor: (p) => {
       const abs = /^[A-Za-z]:[\\/]/.test(p) ? p : backend.joinPath(workspace, p);
-      void tabs
-        .openFile(abs)
-        .catch((err: unknown) => showToast(`打开失败: ${String(err)}`, 'err'));
+      openEditorFile(abs);
     },
     getSessionId: () => {
       if (!aiSessionId) aiSessionId = `s-${Date.now()}`;
@@ -1052,7 +1057,7 @@ function aiProvidersModal(): Promise<unknown> {
 lsp.onStatus(updateLspStatus);
 attachLspFeatures(lsp, editor, {
   openAt: (p, line, column) => {
-    void tabs.openFile(p, { line, column });
+    openEditorFile(p, { line, column });
   },
   onDiagnostics: (p, diags) => {
     problems.update(p, diags);
@@ -1191,9 +1196,7 @@ editor.onDidChangeCursorPosition((e) => {
 });
 
 const fileTree = new FileTree(L.treeHost, {
-  openFile: (p) => {
-    tabs.openFile(p).catch((err: unknown) => showToast(`打开失败: ${String(err)}`, 'err'));
-  },
+  openFile: (p) => openEditorFile(p),
   onContext: (e, node) => showTreeMenu(e, node),
 });
 
