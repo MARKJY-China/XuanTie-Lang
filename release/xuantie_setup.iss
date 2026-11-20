@@ -1,9 +1,14 @@
-; 玄铁 v1.0-rc.3 安装器脚本(Inno Setup 6/7)
-; payload 来自 temp/pkg_test/玄铁(由 temp/make_pkg.sh 生成)
-; 构建: iscc xuantie_setup.iss
+; 玄铁 XuanTie Windows 安装器脚本(Inno Setup 6/7)
+; payload 来自 temp/pkg_test/XuanTie(由 release/make_pkg.sh 生成)
+; 构建: iscc /DMyAppVersion=<版本> /DMyOutputBaseFilename=<输出名> xuantie_setup.iss
 
 #define MyAppName "玄铁 (XuanTie)"
+#ifndef MyAppVersion
 #define MyAppVersion "1.0-rc.5"
+#endif
+#ifndef MyOutputBaseFilename
+#define MyOutputBaseFilename "xuantie_v1.0-rc.5_setup"
+#endif
 
 [Setup]
 AppName={#MyAppName}
@@ -13,7 +18,7 @@ AppPublisherURL=https://github.com/MARKJY-China/XuanTie-Lang
 DefaultDirName={autopf}\XuanTie
 PrivilegesRequired=lowest
 OutputDir=.
-OutputBaseFilename=xuantie_v1.0-rc.5_setup
+OutputBaseFilename={#MyOutputBaseFilename}
 Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern

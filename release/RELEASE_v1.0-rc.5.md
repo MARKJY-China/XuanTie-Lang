@@ -7,7 +7,8 @@
 - `xuantie_v1.0-rc.5_windows_amd64.tar.gz` — Windows 绿色包（自带 clang/MinGW，解压即可用 `xtc`）
 - `xuantie_v1.0-rc.5_linux_x86_64.tar.gz` — Linux 绿色包（需系统 clang；见包内 README）
 - `xuantie_v1.0-rc.5_darwin_arm64.tar.gz` — macOS（Apple Silicon）绿色包
-- 本版是否附 Windows 安装器 / 铸造厂 IDE / ARM64 包，以 Release 附件列表为准；未列出的平台请用绿色包。
+- `xuantie_v1.0-rc.5_windows_amd64_setup.exe` — Windows AMD64 安装器（Inno Setup，含 `xtc`/`tiepm`/`xt_lsp`/VSCode 插件；可选加入 PATH）
+- ARM64 包与铸造厂 IDE 是否随本版发布，以 Release 附件列表为准；未列出的平台请用绿色包。
 
 ## 升级方式
 

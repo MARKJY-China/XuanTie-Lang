@@ -137,6 +137,26 @@ jobs:
         shell: bash
         run: bash release/make_pkg.sh
 
+      - name: 构建 Windows AMD64 安装器(Setup.exe)
+        if: matrix.slug == 'windows_amd64' && startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          choco install innosetup --no-progress -y 2>$null
+          $iscc = Get-ChildItem 'C:\Program Files (x86)\Inno Setup*\ISCC.exe' -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $iscc) { throw '未找到 Inno Setup ISCC.exe' }
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag.TrimStart('v')
+          $outBase = "xuantie_${tag}_windows_amd64_setup"
+          Push-Location release
+          try {
+            & $iscc.FullName "/DMyAppVersion=$ver" "/DMyOutputBaseFilename=$outBase" xuantie_setup.iss
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup 失败(exit $LASTEXITCODE)" }
+          } finally { Pop-Location }
+          New-Item -ItemType Directory -Force -Path out | Out-Null
+          Copy-Item "release\$outBase.exe" "out\$outBase.exe" -Force
+          Get-ChildItem out | Format-Table Name,Length
+
       - name: 打压缩包 + 收拢产物
         shell: bash
         run: |
@@ -455,6 +475,7 @@ jobs:
           files: |
             artifacts/lang-*/*.tar.gz
             artifacts/lang-*/MANIFEST_*.txt
+            artifacts/lang-windows_amd64/*setup*.exe
             artifacts/foundry-windows/*.exe
             latest.json
           body_path: ${{ steps.notes.outputs.path }}
