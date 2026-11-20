@@ -15,6 +15,8 @@ export interface LayoutHandles {
   sidebarSplit: HTMLElement;
   tabbar: HTMLElement;
   btnDesignerToggle: HTMLButtonElement;
+  btnMdToggle: HTMLButtonElement;
+  markdownHost: HTMLElement;
   designerHost: HTMLElement;
   monacoHost: HTMLElement;
   welcome: HTMLElement;
@@ -121,10 +123,12 @@ const TEMPLATE = `
   <div id="editor-col">
     <div id="tabbar-row">
       <div id="tabbar"></div>
+      <button class="ibtn tbtoggle hidden" id="btn-md-toggle" title="Markdown 阅读/源码(Ctrl+Shift+M)"><i class="codicon codicon-book"></i></button>
       <button class="ibtn tbtoggle" id="btn-designer-toggle" title="UI 设计器(代码 ⇄ 界面视图)"><i class="codicon codicon-layout"></i></button>
     </div>
     <div id="editor-host">
       <div id="monaco-host"></div>
+      <div id="markdown-host" class="hidden"></div>
       <div id="designer-host" class="hidden"></div>
       <div id="welcome">
         <div class="wl-logo">玄铁铸造厂</div>
@@ -237,6 +241,8 @@ export function buildLayout(root: HTMLElement): LayoutHandles {
     sidebarSplit: must(root, 'sidebar-split'),
     tabbar: must(root, 'tabbar'),
     btnDesignerToggle: must(root, 'btn-designer-toggle') as HTMLButtonElement,
+    btnMdToggle: must(root, 'btn-md-toggle') as HTMLButtonElement,
+    markdownHost: must(root, 'markdown-host'),
     designerHost: must(root, 'designer-host'),
     monacoHost: must(root, 'monaco-host'),
     welcome: must(root, 'welcome'),

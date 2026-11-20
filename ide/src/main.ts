@@ -14,7 +14,7 @@ import { openUrl } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
 import { initUpdater, manualCheck, resetSkip } from './update/updater';
 import '@vscode/codicons/dist/codicon.css';
-import { isXtPath, registerXtLanguage } from './lang/xt';
+import { isMarkdownPath, isXtPath, registerXtLanguage } from './lang/xt';
 import * as backend from './backend';
 import {
   getSettings,
@@ -33,6 +33,7 @@ import { FileTree } from './ui/filetree';
 import { ProblemsPanel } from './ui/problems';
 import { SelectionTools } from './ui/selection-tools';
 import { DesignerPanel } from './ui/designer/panel';
+import { MarkdownReader } from './ui/md-reader';
 import {
   confirmBox,
   CONTEXT_SEP,
@@ -154,6 +155,7 @@ let entryFile = '';
 const sbProject = document.getElementById('sb-project') as HTMLElement;
 const sbLsp = document.getElementById('sb-lsp') as HTMLElement;
 const sbCursor = document.getElementById('sb-cursor') as HTMLElement;
+const sbLang = document.getElementById('sb-lang') as HTMLElement;
 
 const lsp = new XtLspClient();
 const problems = new ProblemsPanel(
@@ -173,10 +175,12 @@ const tabs = new TabManager(
     onDidOpen: (p, text) => {
       if (isXtPath(p)) lsp.didOpen(p, text);
       else problems.update(p, []);
+      syncEditorView();
       syncUnsaved();
     },
     onDidChange: (p, text) => {
       if (isXtPath(p)) lsp.didChange(p, text);
+      if (isMarkdownPath(p) && p === tabs.getActivePath()) syncEditorView();
       syncUnsaved();
     },
     onDidSave: (p) => {
@@ -191,11 +195,19 @@ const tabs = new TabManager(
     },
     onActivate: () => {
       updateEncodingDisplay();
+      syncEditorView();
       designerPanel.refreshIfOpen();
     },
   },
   (p) => confirmBox('关闭未保存', `${basename(p)} 有未保存的更改,放弃并关闭?`),
 );
+// Markdown 阅读器:默认渲染 .md,可切回源码;只在 .md 激活时占用编辑器区。
+let mdReaderMode = true;
+const mdReader = new MarkdownReader(L.markdownHost, {
+  openFile: (p) => {
+    void tabs.openFile(p);
+  },
+});
 const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outputHost);
 // 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
 term.onRunState = (running) => setRunButton(running);
@@ -342,18 +354,64 @@ const designerPanel = new DesignerPanel(L.designerHost, {
 
 /** 设计器模式开关:整个编辑器区在 代码编辑器 ⇄ 界面设计器 间切换(小屏也够用) */
 let designerOn = false;
+
+function isMarkdownActive(): boolean {
+  const p = tabs.getActivePath();
+  return p !== null && isMarkdownPath(p);
+}
+
+/** 统一决定编辑器区显示:Markdown 阅读器 / 玄铁编辑器 / UI 设计器 三选一。 */
+function syncEditorView(): void {
+  const p = tabs.getActivePath();
+  const md = p !== null && isMarkdownPath(p);
+  if (md && designerOn) {
+    designerOn = false;
+    designerPanel.close();
+  }
+  const showReader = md && mdReaderMode;
+  L.btnMdToggle.classList.toggle('hidden', !md);
+  L.btnMdToggle.classList.toggle('active', showReader);
+  L.btnDesignerToggle.classList.toggle('hidden', md);
+  L.btnDesignerToggle.classList.toggle('active', designerOn);
+  sbLang.textContent = md ? 'Markdown' : p !== null && isXtPath(p) ? '玄铁' : '纯文本';
+  L.markdownHost.classList.toggle('hidden', !showReader);
+  L.monacoHost.classList.toggle('hidden', showReader || designerOn);
+  L.designerHost.classList.toggle('hidden', !designerOn || showReader);
+  if (showReader && p !== null) {
+    mdReader.show(p, tabs.getText(p) ?? '');
+  } else {
+    mdReader.hide();
+  }
+  const ico = L.btnMdToggle.querySelector('i');
+  if (ico) ico.className = 'codicon ' + (showReader ? 'codicon-book' : 'codicon-code');
+}
+
 function setDesignerMode(on: boolean): void {
+  if (on && isMarkdownActive()) {
+    showToast('Markdown 文件请用阅读/源码切换,不支持 UI 设计器', 'err');
+    return;
+  }
   designerOn = on;
-  L.designerHost.classList.toggle('hidden', !on);
-  L.monacoHost.classList.toggle('hidden', on);
-  L.btnDesignerToggle.classList.toggle('active', on);
   if (on) designerPanel.open();
   else designerPanel.close();
+  syncEditorView();
 }
 L.btnDesignerToggle.addEventListener('click', () => setDesignerMode(!designerOn));
-// 模型变更(设计器写回 / Ctrl+Z 撤销重做 / AI 改写)→ 设计器开着就重读重绘(拖拽中不打断)
-// 同时实时同步未保存计数给 Rust(macOS 红点=隐藏时判断是否先弹询问)
+L.btnMdToggle.addEventListener('click', () => {
+  if (!isMarkdownActive()) return;
+  mdReaderMode = !mdReaderMode;
+  syncEditorView();
+});
+window.addEventListener('keydown', (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && ev.key.toLowerCase() === 'm' && isMarkdownActive()) {
+    ev.preventDefault();
+    mdReaderMode = !mdReaderMode;
+    syncEditorView();
+  }
+});
+// 模型变更(设计器写回 / Ctrl+Z 撤销重做 / AI 改写 / Markdown 源码编辑)→ 同步视图与未保存计数
 editor.onDidChangeModelContent(() => {
+  if (isMarkdownActive()) syncEditorView();
   designerPanel.refreshIfOpen();
   syncUnsaved();
 });

@@ -12,6 +12,10 @@ export function isXtPath(path: string): boolean {
   return path.toLowerCase().endsWith('.xt');
 }
 
+export function isMarkdownPath(path: string): boolean {
+  return /\.(?:md|markdown|mdx)$/i.test(path);
+}
+
 export function languageIdForPath(path: string): string {
   const name = path.toLowerCase();
   if (name.endsWith('.xt')) return XT_LANGUAGE_ID;
