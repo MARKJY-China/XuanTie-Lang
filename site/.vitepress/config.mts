@@ -49,6 +49,22 @@ function manualChapterItems() {
   })
 }
 
+// 正式语言参考：从 GUIDE/参考 动态生成；README 是总索引，其余按数字章节排序
+function referenceItems() {
+  let files = []
+  try {
+    files = readdirSync(join(ROOT, 'GUIDE', '参考')).filter((f) => f.endsWith('.md')).sort()
+  } catch { return [] }
+  const nameOf = (f) => f.slice(0, -3)
+  const rest = files.map(nameOf).filter((x) => x !== 'README')
+  const items = [{ text: '语言参考总览', link: '/guide/参考/README' }]
+  for (const x of rest) {
+    const label = x.replace(/^\d+_/, '').replace(/_/g, ' ')
+    items.push({ text: label, link: '/guide/参考/' + x })
+  }
+  return items
+}
+
 // 例程：README 置顶当总览，其余按文件名排序
 function exampleItems() {
   let files = []
@@ -112,7 +128,7 @@ export default defineConfig({
       { text: '首页', link: '/' },
       { text: '下载', link: '/downloads' },
       { text: '铸造厂 IDE', link: '/ide/' },
-      { text: '语言手册', link: '/guide/玄铁语言参考手册' },
+      { text: '语言参考', link: '/guide/参考/README' },
       { text: 'API 参考', link: '/guide/API/README' },
       { text: '更新日志', link: '/versionLog' },
       { text: '铁铺包管理', link: '/guide/07_铁铺使用指南' },
@@ -120,8 +136,14 @@ export default defineConfig({
     ],
     sidebar: [
       {
-        text: '入门',
-        items: [{ text: '玄铁语言参考手册', link: '/guide/玄铁语言参考手册' }],
+        text: '语言参考',
+        collapsed: false,
+        items: referenceItems(),
+      },
+      {
+        text: '入门与旧版导览',
+        collapsed: true,
+        items: [{ text: '玄铁语言参考手册（旧版导览）', link: '/guide/玄铁语言参考手册' }],
       },
       { text: '手册章节', collapsed: false, items: manualChapterItems() },
       {

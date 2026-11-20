@@ -51,7 +51,7 @@ function main() {
     '',
     '本包为玄铁官方文档的 markdown 源文件，目录结构与文档站一致。',
     '',
-    '- 人类阅读：用任意 markdown 阅读器打开 `guide/玄铁语言参考手册.md`；',
+    '- 人类阅读：正式语言参考打开 `guide/参考/README.md`；旧版导览在 `guide/玄铁语言参考手册.md`；',
     '- 文档站：https://xuantie.markjy.com/',
     '- 源码仓库：https://github.com/MARKJY-China/XuanTie-Lang',
     '',

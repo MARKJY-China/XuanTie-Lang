@@ -364,11 +364,17 @@ function parseBuiltinModules() {
   return mods
 }
 
+// 个别内建模块需要显式标注编译器兼容性,避免文档站与 XTC/GSC 实现混淆
+const BUILTIN_COMPAT = {
+  进程: 'XTC 自举编译器与 GSC 种子编译器均支持（不是 GSC 专属）',
+}
+
 function renderBuiltinModule(title, doc, items) {
   const out = []
   out.push(`# ${title} API 参考`)
   out.push('')
   out.push(`> 语言内建模块 ｜ 来源：\`GUIDE/${doc}.md\` 共 ${items.length} 个调用 ｜ 原生编译，无需 \`引\``)
+  if (BUILTIN_COMPAT[title]) out.push(`> 兼容性：${BUILTIN_COMPAT[title]}`)
   out.push('')
   out.push('## 函数')
   out.push('')

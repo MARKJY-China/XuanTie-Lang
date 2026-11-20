@@ -1,6 +1,6 @@
 // scripts/sync-docs.mjs — 把仓库 GUIDE/ 同步进站点（单一内容源）
 //
-// 同步范围：GUIDE 根级白名单 + 关键字/UI/手册/例程/API 子目录（递归）。
+// 同步范围：GUIDE 根级白名单 + 关键字/UI/手册/例程/API/参考 子目录（递归）。
 // 同时做三件"上站即需要"的改写：
 //   1) 仓库内相对链接 → GitHub blob（站内没有的文件会被点成 404，改指源码）；
 //   2) ```text 围栏 → ```xuantie，让站内用上玄铁语法高亮；
@@ -41,7 +41,7 @@ const ROOT_FILES = [
   '自举编译器实现笔记.md',
   '铁铺设计笔记.md',
 ]
-const INCLUDE_DIRS = ['关键字', 'UI', '手册', '例程', 'API']
+const INCLUDE_DIRS = ['关键字', 'UI', '手册', '例程', 'API', '参考']
 
 const linkMisses = new Map()
 
@@ -83,9 +83,9 @@ function escapeVueInterp(md) {
     .replace(/`\}\}`/g, '<code v-pre>}}</code>')
 }
 
-function writeDoc(dest, md) {
+function writeDoc(dest, md, srcDir) {
   mkdirSync(dirname(dest), { recursive: true })
-  writeFileSync(dest, escapeVueInterp(rewriteFences(rewriteLinks(md, join(ROOT, 'GUIDE')))), 'utf8')
+  writeFileSync(dest, escapeVueInterp(rewriteFences(rewriteLinks(md, srcDir))), 'utf8')
 }
 
 function main() {
@@ -106,7 +106,7 @@ function main() {
   for (const name of ROOT_FILES) {
     const src = join(GUIDE, name)
     if (!existsSync(src)) continue
-    writeDoc(join(OUT, name), readFileSync(src, 'utf8'))
+    writeDoc(join(OUT, name), readFileSync(src, 'utf8'), GUIDE)
     rootCount++
   }
 
@@ -117,7 +117,7 @@ function main() {
       const dest = join(outDir, e.name)
       if (e.isDirectory()) { walk(src, dest); continue }
       if (!e.name.endsWith('.md')) continue
-      writeDoc(dest, readFileSync(src, 'utf8'))
+      writeDoc(dest, readFileSync(src, 'utf8'), dirname(src))
       subCount++
     }
   }

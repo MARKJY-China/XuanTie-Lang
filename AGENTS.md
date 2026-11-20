@@ -190,3 +190,20 @@ GSC(Go 种子编译器)可执行文件永远命名为 `xt_gsc.exe`;XTC(玄铁自
 - **清单唯一真源**：stable=`latest.json`、dev=`latest-dev.json`、rc 阶段=`latest-rc.json`，含 channel/version/commit/date/notes_url/assets/platforms；发布 tag、源版本常量、MANIFEST 必须一致。
 - **发版节奏**：不再因为"频繁发版烦"而把已知缺陷留在 Latest——修好即进 dev，stable 保持低频、只收 soak 过的版本；只有 stable/hotfix 更新 Latest，dev 不打扰默认用户。
 - 发布说明模板与完整流程见 [关于仓库Git管理制度.md](关于仓库Git管理制度.md) 与 `release/RELEASE_TEMPLATE_*.md`。
+
+---
+
+## 版本标注规范（永久规则，2026-11-20 用户立）
+
+- **版本新增/变更信息不得写进标题**。标题只写特性/主题本身，不写 `(vX 新增)`、`vX 开始支持` 等。
+- 版本信息写在标题**之后或下方**，用引用块：
+  ```markdown
+  ## 惰性导入
+  > 在 v1.0-rc.5 版本加入。
+  ```
+- 变更/废弃同样用引用块：
+  ```markdown
+  ## 旧语法
+  > 在 v1.0-rc.6 版本变更：……
+  ```
+- 该规则适用于 `GUIDE/` 全部文档、`GUIDE/API/` 生成说明与文档站页面；新增/修改文档时一并遵守。

@@ -30,6 +30,7 @@ function titleOf(md, fallback) {
 function groupOf(p) {
   if (p.startsWith('GUIDE/API/')) return 'API 参考'
   if (p.startsWith('GUIDE/例程/')) return '完整例程讲解'
+  if (p.startsWith('GUIDE/参考/')) return '语言参考'
   if (p.startsWith('GUIDE/手册/')) return '手册章节'
   if (p.startsWith('GUIDE/关键字/')) return '关键字速查'
   if (p.startsWith('GUIDE/UI/选项键/')) return 'UI 选项键'
@@ -39,7 +40,7 @@ function groupOf(p) {
   return '语言指南与参考手册'
 }
 
-const ORDER = ['语言指南与参考手册', 'API 参考', '完整例程讲解', '手册章节', '关键字速查', 'UI 状态系统与渲染', 'UI 选项键', '内部实现']
+const ORDER = ['语言参考', '语言指南与参考手册', 'API 参考', '完整例程讲解', '手册章节', '关键字速查', 'UI 状态系统与渲染', 'UI 选项键', '内部实现']
 
 // ① 先用仓库生成器产出 all.txt / index.json / llms.txt（含日期、版本、状态标注）
 rmSync(GEN, { recursive: true, force: true })
