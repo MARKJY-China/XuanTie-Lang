@@ -55,7 +55,7 @@ python bench/run.py --compare a.json b.json
 ## 性能对比图（charts/）
 
 `bench/charts/` 保存每个基准用例一张「对数刻度横向条形图 + 数据明细表」PNG，共 9 张；
-另加 issue #168 的 FFT 与 `小数数组` 两张专图，以及 `index.html` 画廊。
+另加 issue #168 的 FFT 与 `小数数组` 三张专图，以及 `index.html` 画廊。
 在线版：<https://xt.markjy.com/benchmark>（由 `site/scripts/sync-benchmark.mjs` 同步）。版式对齐 issue #168 的 FFT 对比图：最快在顶部、玄铁高亮、右侧标中位耗时，
 表格给出总耗时、单次、相对玄铁与样本数。
 
@@ -73,12 +73,14 @@ python bench/chart.py --only 浮点累加          # 只重画某一项
 
 ### issue #168 专图
 
-`chart.py` 默认还会生成两张专项图（数据来自 `bench/results/` 下的 `kind=special` 文件）：
+`chart.py` 默认还会生成三张专项图（数据来自 `bench/results/` 下的 `kind=special` 文件）：
 
 - `10_FFT4096点.png`：issue #168 的 4096 点 FFT 五语言外部实测（macOS arm64、xtc rc.5）。
   **不是 `bench/run.py` 复现的数据**，图注已标明，只用于定位对照。
 - `11_小数数组4096x500.png`：issue #168 复现微基准，普通数组 / 标注局部 / `小数数组` / 标量对照，
   Windows i5-12400F、4096×500、5 次中位数。它说明 `小数数组` 把数组直取从 ~895 ms 降到 ~79 ms。
+- `12_FFT小数数组.png`：同 issue 的 FFT 前后对照——外部 rc.5 33.54 ms vs 本机
+  `小数数组` + 整变量 raw 化 4.52 ms；不同机器/平台，图注已标明“仅量级对照”。
 
 ## 对照语言现状
 

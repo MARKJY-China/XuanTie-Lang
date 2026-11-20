@@ -1,0 +1,19 @@
+{
+  "date": "2026-11-20",
+  "time": "",
+  "kind": "special",
+  "method": { "runs": 1, "aggregate": "single" },
+  "note": "同一 issue 的前后对照：玄铁 rc.5 外部实测 33.54ms vs 本机小数数组 FFT 4.52ms；不同机器/平台，仅量级对照",
+  "baseline": "玄铁旧",
+  "machine": {
+    "cpu": "Apple M3（外部） / i5-12400F（本机）",
+    "platform": "macOS arm64 / Windows 11"
+  },
+  "toolchain": {
+    "xtc_version": "玄铁 (XuanTie) v1.0-rc.5"
+  },
+  "cases": [
+    { "lang": "玄铁旧", "name": "FFT小数数组", "median_us": 33540.0, "min_us": 33540.0, "all_us": [33540.0] },
+    { "lang": "玄铁小数数组", "name": "FFT小数数组", "median_us": 4517.0, "min_us": 4494.0, "all_us": [4517.0, 4494.0, 4708.0, 4503.0, 4544.0] }
+  ]
+}

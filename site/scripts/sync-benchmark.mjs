@@ -27,6 +27,7 @@ const STANDARD = [
 const SPECIAL = [
   ['10_FFT4096点.png', 'FFT 4096 点 · 五语言外部实测'],
   ['11_小数数组4096x500.png', '小数数组微基准 · 4096×500'],
+  ['12_FFT小数数组.png', 'FFT 4096 点 · 小数数组优化'],
 ]
 
 if (!existsSync(SRC)) {

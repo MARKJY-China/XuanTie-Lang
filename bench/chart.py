@@ -48,6 +48,8 @@ LANG_STYLE = {
     "标注局部": {"label": "标注局部", "color": "#D08A3E", "bold": False},
     "小数数组": {"label": "小数数组", "color": "#8B5CF6", "bold": False},
     "标量":     {"label": "标量对照", "color": "#4E9B7A", "bold": False},
+    "玄铁旧":   {"label": "玄铁 rc.5（外部）", "color": "#7C8395", "bold": True},
+    "玄铁小数数组": {"label": "玄铁 + 小数数组（本机）", "color": "#8B5CF6", "bold": False},
 }
 
 # xt_bench.xt 的输出顺序；不在表里的新用例追加到末尾。
@@ -67,12 +69,14 @@ CASE_ORDER = [
 SPECIAL_RESULTS = [
     RESULTS / "2026-11-18-issue168-fft.json",
     RESULTS / "2026-11-20-issue168-f64array.json",
+    RESULTS / "2026-11-20-issue168-fft-f64array.json",
 ]
 TITLE_OVERRIDE = {
     "FFT4096点": "FFT 4096 点 · 单次",
+    "FFT小数数组": "FFT 4096 点 · 小数数组优化",
     "小数数组4096x500": "小数数组微基准 · 4096×500",
 }
-SINGLE_RUN = {"FFT4096点"}
+SINGLE_RUN = {"FFT4096点", "FFT小数数组"}
 
 FONT_CANDIDATES = [
     ("C:/Windows/Fonts/msyh.ttc", "C:/Windows/Fonts/msyhbd.ttc"),
