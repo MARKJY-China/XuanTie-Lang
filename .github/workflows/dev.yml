@@ -55,29 +55,66 @@ jobs:
 
       - id: meta
         name: 从源码版本常量推导 dev 版本
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -e
           if [ "$GITHUB_REF_NAME" != "develop" ]; then
             echo "！！ dev 通道只允许从 develop 分支构建(当前: $GITHUB_REF_NAME)"; exit 1
           fi
           # 版本号唯一真源:xuantie_compiler/玄铁.xt 的「设 版本号 = "v..."」常量(只读)
-          # dev 版本格式(用户指定):v<当前 RC 版本>-<YYYYMMDD>.<sha7>,如 v1.0-rc.5-20261119.9ce4191。
+          # dev 版本格式(用户指定):v<下一个待发布版本>-dev.<N>,如 v1.0-rc.6-dev.1。
+          # 「下一个」指当前源码版本常量 +1:rc.5 -> rc.6;v1.0.0 -> v1.0.1。
           RAW=$(grep -m1 '版本号 = "' xuantie_compiler/玄铁.xt | grep -oE 'v[0-9][0-9A-Za-z._-]*' | head -1)
           [ -n "$RAW" ] || { echo "！！ 无法从 xuantie_compiler/玄铁.xt 解析版本号常量"; exit 1; }
           case "$RAW" in
             v[0-9]*) ;;
             *) echo "！！ 版本号常量格式异常: $RAW"; exit 1 ;;
           esac
-          # dev 基于当前 RC 版本;去掉可能存在的发布 tag 日期后缀,不升 RC 号
-          BASE=$(printf '%s' "$RAW" | sed -E 's/-[0-9]{8}\.[0-9]+$//')
+          # 去掉可能已存在的 dev/日期后缀,只拿基版本
+          RAW_BASE=$(printf '%s' "$RAW" | sed -E 's/-dev\.[0-9]+$//; s/-[0-9]{8}\.[0-9A-Za-z]+$//')
+          case "$RAW_BASE" in
+            *-rc.*)
+              RC_N="${RAW_BASE##*-rc.}"
+              case "$RC_N" in ''|*[!0-9]*) echo "！！ 无法解析 RC 序号: $RAW_BASE"; exit 1 ;; esac
+              BASE="${RAW_BASE%-rc.*}-rc.$((RC_N + 1))"
+              ;;
+            v*.*.*)
+              VER="${RAW_BASE#v}"
+              MAJOR="${VER%%.*}"
+              REST="${VER#*.}"
+              MINOR="${REST%%.*}"
+              PATCH="${REST#*.}"
+              case "$MAJOR.$MINOR.$PATCH" in *[!0-9.]*|'') echo "！！ 无法解析稳定版本: $RAW_BASE"; exit 1 ;; esac
+              BASE="v${MAJOR}.${MINOR}.$((PATCH + 1))"
+              ;;
+            *)
+              echo "！！ 版本号常量必须是 vX.Y-rc.N 或 vX.Y.Z: $RAW_BASE"; exit 1
+              ;;
+          esac
+          # 同一 BASE 的 dev 序号从 GitHub 滚动 dev Release 的 name 读取并 +1;
+          # 没有旧 Release / 换了 BASE 时从 1 开始。
+          PREV_NAME=""
+          if command -v gh >/dev/null 2>&1; then
+            PREV_NAME=$(gh release view dev --repo "$GITHUB_REPOSITORY" --json name --jq '.name' 2>/dev/null || true)
+          fi
+          N=1
+          PREFIX="${BASE}-dev."
+          if [ -n "$PREV_NAME" ] && [ "${PREV_NAME#"$PREFIX"}" != "$PREV_NAME" ]; then
+            PREV_N="${PREV_NAME#"$PREFIX"}"
+            case "$PREV_N" in
+              ''|*[!0-9]*) ;;
+              *) N=$((PREV_N + 1)) ;;
+            esac
+          fi
           DATE_COMPACT=$(date -u +%Y%m%d)
           DATE_ISO=$(date -u +%F)
           SHORT=$(printf '%s' "$GITHUB_SHA" | cut -c1-7)
-          VERSION="${BASE}-${DATE_COMPACT}.${SHORT}"
+          VERSION="${BASE}-dev.${N}"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "date=$DATE_ISO" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "dev 版本: $VERSION(基准 $BASE,提交 $GITHUB_SHA)"
+          echo "dev 版本: $VERSION(基准 $BASE,序号 $N,提交 $GITHUB_SHA)"
 
   build:
     name: 构建 dev 包 (${{ matrix.slug }})

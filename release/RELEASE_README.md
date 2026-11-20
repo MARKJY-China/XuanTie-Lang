@@ -21,22 +21,25 @@
 v<RC 版本>
 例：v1.0-rc.5
 
-RC/stable 使用正常短版本；日期/提交后缀只用于 dev 构建名，不用于正式 Release。
+RC/stable 使用正常短版本；dev 使用 `-dev.N` 序号，不写日期/提交。
 ```
 
-- **完整 tag == 编译器版本常量（`xuantie_compiler/玄铁.xt` 的 `设 版本号`）== 包内 `MANIFEST.txt` 的「版本:」行**；日期/序号是版本的一部分，不再另行剥基版本。
+- **完整 tag == 编译器版本常量（`xuantie_compiler/玄铁.xt` 的 `设 版本号`）== 包内 `MANIFEST.txt` 的「版本:」行**；正式 tag 不含日期/提交，dev 的 `dev.N` 只用于 dev Release/清单。
 - 无日期后缀的 tag（如 `v1.0.0`）同样必须与版本常量完全相等。
 - 指纹门禁（`release.yml` 的 publish job）校验：包内「提交:」== tag 指向提交；「版本:」== **完整 tag 名**。不一致直接拒绝发布。
 
 ### dev 版本号
 
 ```
-v<当前 RC 版本>-<YYYYMMDD>.<sha7>
-例：v1.0-rc.5-20261119.9ce4191
+v<下一个待发布版本>-dev.<N>
+例：v1.0-rc.6-dev.1
 ```
 
-- 由 `dev.yml` 的 meta job 从版本常量 + 构建提交推导；build job 在 checkout 后把 `设 版本号` **临时 patch 成该 dev 版本**（仅 CI 工作区，不提交），因此 dev 包内 `-V` 与 MANIFEST 均为 dev 版本。
-- 滚动 tag 固定为 `dev`（prerelease）；包内 MANIFEST「版本:」== dev 版本，`-V` 显示 `通道=dev`，升级器仍以清单 `commit` 做最强校验。
+- **基准版本是当前源码版本常量的下一个版本**：源码 `v1.0-rc.5` → dev `v1.0-rc.6-dev.N`；源码 `v1.0.0` → dev `v1.0.1-dev.N`。
+- 同一基准版本内只递增 `N`；基准版本变化（发布了新的 latest/RC）时 `N` 重置为 1。
+- `N` 由 `dev.yml` 的 meta job 读取 GitHub 滚动 `dev` Release 的 name 后 +1；没有旧 Release 或基准不匹配时从 1 开始。
+- 由 `dev.yml` 的 build job 在 checkout 后把 `设 版本号` **临时 patch 成该 dev 版本**（仅 CI 工作区，不提交），因此 dev 包内 `-V` 与 MANIFEST 均为 dev 版本。
+- 滚动 tag 仍固定为 `dev`（prerelease）；包内 MANIFEST「版本:」== dev 版本，`-V` 显示 `通道=dev`，升级器仍以清单 `commit` 做最强校验。
 
 ## 2. 工作流
 

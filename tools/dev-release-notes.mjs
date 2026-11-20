@@ -4,7 +4,7 @@
 //
 // 用法:
 //   node tools/dev-release-notes.mjs --latest v1.0-rc.5 --head <sha> \
-//     --version v1.0-rc.5-20261121.xxxxxxx --repo owner/repo --out dev-changes.md
+//     --version v1.0-rc.6-dev.1 --repo owner/repo --out dev-changes.md
 // 没有 --latest/Release 时输出“首次 dev 构建,无 Latest 基线”的说明,不报错。
 import { execFileSync, spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';

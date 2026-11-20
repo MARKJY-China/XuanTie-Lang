@@ -20,7 +20,7 @@
 #
 # 发布纪律(与仓库 AGENTS.md 的「发布指纹 & 同名 tag」一致,并在本流水线中自动化校验):
 #   - 发行包内 MANIFEST.txt 必须记录构建提交,且 == 本次 tag 指向的提交,否则拒绝发布;
-#   - tag 全名(含 -YYYYMMDD.N 或 v1.0.0)必须 == 版本号常量 == MANIFEST「版本:」行;
+#   - tag 全名(如 v1.0.0)必须 == 版本号常量 == MANIFEST「版本:」行;
 #     publish job 按完整 tag 校验,不在流水线里剥基版本。
 name: 发布
 
@@ -389,7 +389,7 @@ jobs:
             v*) ;;
             *) echo "！！ 发布 tag 必须以 v 开头: $TAG"; exit 1 ;;
           esac
-          # 完整 tag（含 -YYYYMMDD.N）就是版本常量与 MANIFEST「版本:」行的值；
+          # 完整 tag（如 v1.0.0）就是版本常量与 MANIFEST「版本:」行的值；
           # 不在流水线里剥基版本，避免资产名/升级器自检与 tag 脱节。
           echo "发布 tag: $TAG"
 
