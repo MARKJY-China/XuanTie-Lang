@@ -27,6 +27,9 @@
 #include <math.h>
 #include <errno.h>
 
+// 定义在文件后部(字符串转换段);小数数组的 join 分支先用,故前置声明
+XTString* xt_float_to_string(double val);
+
 #ifdef _WIN32
 #include <shellapi.h>
 #include <io.h>
@@ -1506,6 +1509,15 @@ void xt_index_bad_hard(XTValue val) {
     exit(1);
 }
 
+// 小数数组静态快路径的形态守卫失败:值不是 小数数组(空/普通数组/其它对象)。
+// 静态注解已承诺形态,走到这里说明运行时值违反了类型约定,必须显式报错而非按错布局读内存。
+void xt_f64array_bad_hard(void) {
+    xt_error_prefix();
+    fprintf(stderr, "运行时错误: 值不是 小数数组,不能按连续 double 缓冲访问\n");
+    fprintf(stderr, "  提示: `小数数组` 只能由 `设 名: 小数数组 = []` 创建;普通数组请声明为 数组。\n");
+    exit(1);
+}
+
 // 负索引诊断(issue #126):数组/字符串取 [-1] 原本静默返回 空,把编程错误伪装成"没取到"。
 // 负索引没有语义支持(不是倒数),按「宁可报错,也不静默」处理;越界正向索引仍返回 空
 // (那是可判定的运行时状态,调用方可用 长度 判定)。
@@ -1694,6 +1706,11 @@ static void xt_free_obj(XTObject* obj) {
         }
         case XT_TYPE_ARRAY: {
             XTArray* arr = (XTArray*)obj;
+            if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+                // 小数数组元素是裸 double,不持有引用;只回收缓冲本身
+                if (arr->f64_data && !arr->elements_in_arena) free(arr->f64_data);
+                break;
+            }
             // 数组销毁时，需要 release 内部所有元素
             for (size_t i = 0; i < arr->length; i++) {
                 xt_release((XTValue)arr->elements[i]);
@@ -2090,6 +2107,9 @@ XTValue xt_array_new(size_t capacity) {
     XTArray* arr = (XTArray*)xt_malloc(sizeof(XTArray), XT_TYPE_ARRAY);
     arr->length = 0;
     arr->capacity = capacity > 0 ? capacity : 4; 
+    arr->f64_data = NULL;
+    arr->f64_capacity = 0;
+    arr->elem_kind = XT_ARRAY_KIND_BOXED;
     
     if (g_current_arena) {
         arr->elements = (void**)xt_arena_alloc_raw(sizeof(void*) * arr->capacity);
@@ -2099,6 +2119,97 @@ XTValue xt_array_new(size_t capacity) {
         arr->elements_in_arena = 0;
     }
     return (XTValue)arr;
+}
+
+// 小数数组:连续 double 缓冲。元素不持有引用,扩容/删除/插入都在 double 上搬移,
+// 与装箱数组共用 XT_TYPE_ARRAY(长度/length 字段同布局),由 elem_kind 区分存储形态。
+static void xt_array_f64_reserve(XTArray* arr, size_t need) {
+    if (need <= arr->f64_capacity) return;
+    size_t new_capacity = arr->f64_capacity > 0 ? arr->f64_capacity : 4;
+    while (new_capacity < need) new_capacity *= 2;
+
+    double* new_data;
+    if (g_current_arena) {
+        new_data = (double*)xt_arena_alloc_raw(sizeof(double) * new_capacity);
+        if (arr->f64_data && arr->length > 0) {
+            memcpy(new_data, arr->f64_data, sizeof(double) * arr->length);
+        }
+        // 旧缓冲若来自 arena,随 arena 整体回收,不单独 free
+    } else {
+        if (arr->f64_data && !arr->elements_in_arena) {
+            new_data = (double*)realloc(arr->f64_data, sizeof(double) * new_capacity);
+        } else {
+            new_data = (double*)malloc(sizeof(double) * new_capacity);
+            if (arr->f64_data && arr->length > 0) {
+                memcpy(new_data, arr->f64_data, sizeof(double) * arr->length);
+            }
+        }
+        arr->elements_in_arena = 0;
+    }
+    if (!new_data) {
+        fprintf(stderr, "Fatal error: out of memory (xt_array_f64_reserve)\n");
+        exit(1);
+    }
+    arr->f64_data = new_data;
+    arr->f64_capacity = new_capacity;
+}
+
+XTValue xt_array_f64_new(size_t capacity) {
+    XTArray* arr = (XTArray*)xt_malloc(sizeof(XTArray), XT_TYPE_ARRAY);
+    arr->elements = NULL;
+    arr->length = 0;
+    arr->capacity = 0;
+    arr->f64_capacity = capacity > 0 ? capacity : 4;
+    arr->elem_kind = XT_ARRAY_KIND_F64;
+    if (g_current_arena) {
+        arr->f64_data = (double*)xt_arena_alloc_raw(sizeof(double) * arr->f64_capacity);
+        arr->elements_in_arena = 1;
+    } else {
+        arr->f64_data = (double*)malloc(sizeof(double) * arr->f64_capacity);
+        arr->elements_in_arena = 0;
+    }
+    if (!arr->f64_data) {
+        fprintf(stderr, "Fatal error: out of memory (xt_array_f64_new)\n");
+        exit(1);
+    }
+    return (XTValue)arr;
+}
+
+// 小数数组专用接收者校验:错类型/错形态都是明确的编程错误,不静默、不段错误。
+static void xt_require_f64_array(XTValue v, const char* op) {
+    if (XT_IS_REAL_PTR(v) && ((XTObject*)v)->type_id == XT_TYPE_ARRAY &&
+        ((XTArray*)v)->elem_kind == XT_ARRAY_KIND_F64) {
+        return;
+    }
+    xt_error_prefix();
+    fprintf(stderr, "运行时错误: %s 的接收者不是 小数数组\n", op);
+    fprintf(stderr, "  提示: 小数数组 只能由 `设 名: 小数数组 = []` 声明；普通数组请用 数组。\n");
+    exit(1);
+}
+
+void xt_array_f64_append(XTValue arr_val, double value) {
+    xt_require_f64_array(arr_val, "追加");
+    XTArray* arr = (XTArray*)arr_val;
+    xt_array_f64_reserve(arr, arr->length + 1);
+    arr->f64_data[arr->length++] = value;
+}
+
+double xt_array_f64_get(XTValue arr_val, XTValue index_val) {
+    xt_require_f64_array(arr_val, "取元素");
+    XTArray* arr = (XTArray*)arr_val;
+    int64_t index = xt_to_int(index_val);
+    if (index < 0) xt_index_negative(index);
+    if ((size_t)index >= arr->length) return 0.0;
+    return arr->f64_data[index];
+}
+
+void xt_array_f64_set(XTValue arr_val, XTValue index_val, double value) {
+    xt_require_f64_array(arr_val, "改元素");
+    XTArray* arr = (XTArray*)arr_val;
+    int64_t index = xt_to_int(index_val);
+    if (index < 0) xt_index_negative(index);
+    if ((size_t)index >= arr->length) return;
+    arr->f64_data[index] = value;
 }
 
 // 数组方法接收者校验(铁律:明确的编程错误必须报错退出,不静默、不崩溃)。
@@ -2146,6 +2257,11 @@ void xt_array_append(XTValue arr_val, XTValue element) {
     if (!XT_IS_REAL_PTR(arr_val)) return;
     xt_require_array(arr_val, "追加");
     XTArray* arr = (XTArray*)arr_val;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        // 通用追加落到小数数组:数值化后存连续缓冲,不持有元素引用(元素本来就是裸 double)
+        xt_array_f64_append(arr_val, xt_f64_of(element));
+        return;
+    }
     
     if (arr->length >= arr->capacity) {
         size_t new_capacity = arr->capacity == 0 ? 4 : arr->capacity * 2;
@@ -2179,6 +2295,16 @@ XTValue xt_array_get(XTValue arr_val, XTValue index_val) {
     if (!XT_IS_REAL_PTR(arr_val)) return XT_NULL;
     xt_require_array(arr_val, "取元素");
     XTArray* arr = (XTArray*)arr_val;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        // 小数数组的元素不装箱;通用 get 若要返回 XTValue 必须临时装箱,而当前
+        // 调用方(编译器索引/遍历/解构)按"借用引用"处理返回值,装箱会净漏一份。
+        // 因此这里显式拒绝:下标读取必须走 小数数组 的静态快路径。
+        xt_error_prefix();
+        fprintf(stderr, "运行时错误: 小数数组 的下标读取需要静态类型 '小数数组'\n");
+        fprintf(stderr, "  提示: 让接收变量/参数保留 `: 小数数组` 注解,编译器会直接 load double;\n");
+        fprintf(stderr, "        若此处是普通 数组 变量,请勿把 小数数组 赋给它。\n");
+        exit(1);
+    }
     int64_t index = xt_to_int(index_val);
     if (index < 0) xt_index_negative(index);
     if ((size_t)index >= arr->length) return XT_NULL;
@@ -2191,6 +2317,10 @@ XTValue xt_array_get(XTValue arr_val, XTValue index_val) {
 XTValue xt_array_pop(XTArray* arr) {
     if (!arr || arr->header.type_id != XT_TYPE_ARRAY || arr->length == 0) return XT_NULL;
     arr->length--;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        // 弹出的裸 double 必须装箱后才能作为 XTValue 返回值(所有权随返回值移交)
+        return (XTValue)xt_float_new(arr->f64_data[arr->length]);
+    }
     XTValue val = (XTValue)arr->elements[arr->length];
     arr->elements[arr->length] = NULL; // 清除槽位，防止未来追加时覆盖导致泄漏
     return val;
@@ -2203,6 +2333,10 @@ void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value) {
     if (!XT_IS_REAL_PTR(arr_val)) return;
     xt_require_array(arr_val, "改元素");
     XTArray* arr = (XTArray*)arr_val;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        xt_array_f64_set(arr_val, index_val, xt_f64_of(value));
+        return;
+    }
     int64_t index = xt_to_int(index_val);
     if (index < 0) xt_index_negative(index);
     if ((size_t)index >= arr->length) return;
@@ -2222,6 +2356,14 @@ void xt_array_remove(XTValue arr_val, XTValue index_val) {
     int64_t index = xt_to_int(index_val);
     if (index < 0) xt_index_negative(index);
     if ((size_t)index >= arr->length) return;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        if ((size_t)index + 1 < arr->length) {
+            memmove(&arr->f64_data[index], &arr->f64_data[index + 1],
+                    sizeof(double) * (arr->length - (size_t)index - 1));
+        }
+        arr->length--;
+        return;
+    }
     xt_release((XTValue)arr->elements[index]);
     for (size_t i = (size_t)index; i < arr->length - 1; i++) {
         arr->elements[i] = arr->elements[i+1];
@@ -2238,6 +2380,16 @@ void xt_array_insert(XTValue arr_val, XTValue index_val, XTValue value) {
     XTArray* arr = (XTArray*)arr_val;
     int64_t index = xt_to_int(index_val);
     if (index < 0 || (size_t)index > arr->length) return;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        xt_array_f64_reserve(arr, arr->length + 1);
+        if ((size_t)index < arr->length) {
+            memmove(&arr->f64_data[index + 1], &arr->f64_data[index],
+                    sizeof(double) * (arr->length - (size_t)index));
+        }
+        arr->f64_data[index] = xt_f64_of(value);
+        arr->length++;
+        return;
+    }
     
     xt_array_append(arr_val, value);
     for (size_t i = arr->length - 1; i > (size_t)index; i--) {
@@ -2254,6 +2406,13 @@ XTValue xt_array_contains(XTValue arr_val, XTValue element) {
     if (!XT_IS_REAL_PTR(arr_val)) return XT_FALSE;
     xt_require_array(arr_val, "含?");
     XTArray* arr = (XTArray*)arr_val;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        double target = xt_f64_of(element);
+        for (size_t i = 0; i < arr->length; i++) {
+            if (arr->f64_data[i] == target) return XT_TRUE;
+        }
+        return XT_FALSE;
+    }
     for (size_t i = 0; i < arr->length; i++) {
         if (xt_compare((XTValue)arr->elements[i], element) == 0) return XT_TRUE;
     }
@@ -2267,6 +2426,13 @@ XTValue xt_array_find(XTValue arr_val, XTValue element) {
     if (!XT_IS_REAL_PTR(arr_val)) return XT_FROM_INT(-1);
     xt_require_array(arr_val, "找");
     XTArray* arr = (XTArray*)arr_val;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        double target = xt_f64_of(element);
+        for (size_t i = 0; i < arr->length; i++) {
+            if (arr->f64_data[i] == target) return XT_FROM_INT((int64_t)i);
+        }
+        return XT_FROM_INT(-1);
+    }
     for (size_t i = 0; i < arr->length; i++) {
         if (xt_compare((XTValue)arr->elements[i], element) == 0) return XT_FROM_INT(i);
     }
@@ -2285,6 +2451,13 @@ XTValue xt_array_slice(XTValue arr_val, XTValue start_val) {
     if ((size_t)start >= arr->length) return xt_array_new(0);
     
     size_t new_len = arr->length - (size_t)start;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        XTValue new_arr_val = xt_array_f64_new(new_len);
+        XTArray* dst = (XTArray*)new_arr_val;
+        memcpy(dst->f64_data, &arr->f64_data[start], sizeof(double) * new_len);
+        dst->length = new_len;
+        return new_arr_val;
+    }
     XTValue new_arr_val = xt_array_new(new_len);
     for (size_t i = 0; i < new_len; i++) {
         xt_array_append(new_arr_val, (XTValue)arr->elements[start + i]);
@@ -2508,6 +2681,31 @@ XTString* xt_array_join(XTValue arr_val, XTString* sep) {
     
     size_t total_len = 0;
     size_t sep_len = sep ? sep->length : 0;
+
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        for (size_t i = 0; i < arr->length; i++) {
+            XTString* s = xt_float_to_string(arr->f64_data[i]);
+            total_len += s->length;
+            if (i < arr->length - 1) total_len += sep_len;
+            xt_release((XTValue)s);
+        }
+        char* buf = (char*)malloc(total_len + 1);
+        char* p = buf;
+        for (size_t i = 0; i < arr->length; i++) {
+            XTString* s = xt_float_to_string(arr->f64_data[i]);
+            memcpy(p, s->data, s->length);
+            p += s->length;
+            if (i < arr->length - 1 && sep) {
+                memcpy(p, sep->data, sep->length);
+                p += sep->length;
+            }
+            xt_release((XTValue)s);
+        }
+        *p = '\0';
+        XTString* res = xt_string_new(buf);
+        free(buf);
+        return res;
+    }
     
     // 第一遍：计算总缓冲区大小
     for (size_t i = 0; i < arr->length; i++) {
@@ -3578,6 +3776,11 @@ int xt_channel_select_array(XTValue arr_val, int timeout_ms) {
     if (!xt_is_real_ptr(arr_val)) return -1;
     XTArray* arr = (XTArray*)arr_val;
     if (arr->length == 0) return -1;
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        xt_error_prefix();
+        fprintf(stderr, "运行时错误: 小数数组 不能作为通道集合传给 选\n");
+        exit(1);
+    }
     return xt_channel_select((XTValue*)arr->elements, (int)arr->length, timeout_ms);
 }
 
@@ -4386,6 +4589,13 @@ XTValue xt_math_max(XTValue arr_val) {
     if (!XT_IS_REAL_PTR(arr_val) || ((XTObject*)arr_val)->type_id != XT_TYPE_ARRAY) return XT_FROM_INT(0);
     XTArray* arr = (XTArray*)arr_val;
     if (arr->length == 0) return XT_FROM_INT(0);
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        double m = arr->f64_data[0];
+        for (size_t i = 1; i < arr->length; i++) {
+            if (arr->f64_data[i] > m) m = arr->f64_data[i];
+        }
+        return (XTValue)xt_float_new(m);
+    }
     
     XTValue max_val = (XTValue)arr->elements[0];
     double max_d = xt_to_double(max_val);
@@ -4406,6 +4616,13 @@ XTValue xt_math_min(XTValue arr_val) {
     if (!XT_IS_REAL_PTR(arr_val) || ((XTObject*)arr_val)->type_id != XT_TYPE_ARRAY) return XT_FROM_INT(0);
     XTArray* arr = (XTArray*)arr_val;
     if (arr->length == 0) return XT_FROM_INT(0);
+    if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+        double m = arr->f64_data[0];
+        for (size_t i = 1; i < arr->length; i++) {
+            if (arr->f64_data[i] < m) m = arr->f64_data[i];
+        }
+        return (XTValue)xt_float_new(m);
+    }
     
     XTValue min_val = (XTValue)arr->elements[0];
     double min_d = xt_to_double(min_val);
@@ -5916,7 +6133,11 @@ XTString* xt_json_serialize(XTValue val) {
             XTArray* arr = (XTArray*)val;
             XTString* res = xt_string_new("[");
             for (size_t i = 0; i < arr->length; i++) {
-                XTString* item = xt_json_serialize((XTValue)arr->elements[i]);
+                XTValue elem = (arr->elem_kind == XT_ARRAY_KIND_F64)
+                    ? (XTValue)xt_float_new(arr->f64_data[i])
+                    : (XTValue)arr->elements[i];
+                XTString* item = xt_json_serialize(elem);
+                if (arr->elem_kind == XT_ARRAY_KIND_F64) xt_release(elem);
                 XTString* temp = xt_string_concat(res, item);
                 xt_release((XTValue)res); xt_release((XTValue)item); res = temp;
                 if (i < arr->length - 1) {
@@ -5998,7 +6219,11 @@ static XTString* xt_json_serialize_indent(XTValue val, int depth) {
         XTArray* arr = (XTArray*)val;
         for (size_t i = 0; i < arr->length; i++, idx++) {
             XTString* ind = xt_json_indent_unit(depth + 1);
-            XTString* item = xt_json_serialize_indent((XTValue)arr->elements[i], depth + 1);
+            XTValue elem = (arr->elem_kind == XT_ARRAY_KIND_F64)
+                ? (XTValue)xt_float_new(arr->f64_data[i])
+                : (XTValue)arr->elements[i];
+            XTString* item = xt_json_serialize_indent(elem, depth + 1);
+            if (arr->elem_kind == XT_ARRAY_KIND_F64) xt_release(elem);
             res = xt_string_concat(res, ind);
             res = xt_string_concat(res, item);
             res = xt_string_concat(res, xt_string_new(idx + 1 < count ? ",\n" : "\n"));
@@ -6809,6 +7034,10 @@ static int _xt_run_inherit_code(XTValue exe_val, XTValue args_val) {
 
     if (args_val != XT_NULL && XT_IS_REAL_PTR(args_val) && ((XTObject*)args_val)->type_id == XT_TYPE_ARRAY) {
         XTArray* arr = (XTArray*)args_val;
+        if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+            free(cmdline);
+            return -1;
+        }
         for (size_t i = 0; i < arr->length; i++) {
             XTValue a = (XTValue)arr->elements[i];
             if (!XT_IS_REAL_PTR(a)) continue;
@@ -6859,6 +7088,10 @@ static int _xt_run_inherit_code(XTValue exe_val, XTValue args_val) {
     size_t k = 1;
     if (argc > 1) {
         XTArray* arr = (XTArray*)args_val;
+        if (arr->elem_kind == XT_ARRAY_KIND_F64) {
+            free(argv);
+            return -1;
+        }
         for (size_t i = 0; i < arr->length; i++) {
             XTValue a = (XTValue)arr->elements[i];
             if (!XT_IS_REAL_PTR(a)) continue;

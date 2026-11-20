@@ -303,14 +303,27 @@ typedef struct {
 
 /**
  * @brief 动态数组结构
+ *
+ * 两种元素存储形态(由 elem_kind 区分):
+ *   - XT_ARRAY_KIND_BOXED: elements 存 XTValue(装箱形态),容量 capacity;
+ *   - XT_ARRAY_KIND_F64:   f64_data 存连续 double,容量 f64_capacity;elements 为 NULL。
+ *
+ * 字段顺序与编译器发射的 %XTArray 类型逐字段对应(编译.xt 的 小数数组 快路径
+ * 直接按偏移 load double)。改字段顺序必须同步改编译器类型定义。
  */
 typedef struct {
     XTObject header;
-    void** elements;          ///< 元素数组 (存储 XTValue)
+    void** elements;          ///< 元素数组 (存储 XTValue;f64 形态为 NULL)
     size_t length;            ///< 当前元素个数
-    size_t capacity;          ///< 数组容量
-    uint8_t elements_in_arena; ///< 标志位：elements 是否由 Arena 分配 (不可 free/realloc)
+    size_t capacity;          ///< 装箱元素容量
+    uint8_t elements_in_arena; ///< 标志位：elements/f64_data 是否由 Arena 分配 (不可 free/realloc)
+    double* f64_data;         ///< 小数数组的连续 double 缓冲
+    size_t f64_capacity;      ///< 小数数组容量
+    uint8_t elem_kind;        ///< XT_ARRAY_KIND_*
 } XTArray;
+
+#define XT_ARRAY_KIND_BOXED 0 ///< elements[] 存装箱 XTValue
+#define XT_ARRAY_KIND_F64   1 ///< f64_data[] 存连续 double
 
 /**
  * @brief 字典条目结构 (哈希链表节点)
@@ -436,6 +449,14 @@ XTValue xt_bytes_to_string(XTValue bytes_val);
 
 /// 创建指定容量的空数组
 XTValue xt_array_new(size_t capacity);
+/// 创建指定容量的空 小数数组(连续 double 缓冲)
+XTValue xt_array_f64_new(size_t capacity);
+/// 向 小数数组 末尾追加原生 double(不装箱)
+void xt_array_f64_append(XTValue arr_val, double value);
+/// 读取 小数数组 下标处的原生 double(越界返 0.0,负索引按既有诊断)
+double xt_array_f64_get(XTValue arr_val, XTValue index_val);
+/// 写入 小数数组 下标处的原生 double(越界忽略,负索引按既有诊断)
+void xt_array_f64_set(XTValue arr_val, XTValue index_val, double value);
 /// 向数组末尾追加元素
 void xt_array_append(XTValue arr_val, XTValue element);
 void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value);
