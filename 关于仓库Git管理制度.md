@@ -40,6 +40,7 @@
 纪律：
 
 - **dev 永远 prerelease**，不允许覆盖 `latest.json`；dev 包不签名/不公证，只保留最近 14 天或最近 5 个。
+- **dev Release 必须带对比说明**：正文不能只有版本/提交/通道说明，必须包含「对比 Latest」段（新增/修复/性能/其他改动），由 `tools/dev-release-notes.mjs` 自动对比当前 GitHub Latest Release 生成；没有对比说明的 dev 发布视为不合规（首次无 Latest 时明确写“首次 dev 构建”）。
 - **stable 独占默认安装通道**：`latest.json` 只由 stable/hotfix 发布写入；v1.0.0 前的预发布阶段，master 的 rc 可临时写 `latest.json`，但必须在 v1.0.0 发布时切回 stable 独占。
 - **RC 用正常短版本**：`v1.0-rc.5`；版本号/源常量/MANIFEST/tag 四处必须一致，不一致拒绝发布。日期/提交只用于 dev 构建名，不污染 RC。
 - **发布前 soak**：rc 从 master 出、至少经过 develop CI + master CI；stable 从 rc/stable 出、至少 soak 到约定天数且无 P0。

@@ -48,9 +48,11 @@ v<当前 RC 版本>-<YYYYMMDD>.<sha7>
    - `linux_x86_64`（ubuntu-latest）
    - `darwin_arm64`（macos-15）
    每平台：GSC → 自举链 + DDC 门禁 → tiepm / xt_lsp → `make_pkg.sh` → `xuantie_<dev版本>_<平台>.tar.gz`；
-3. `publish`：指纹校验（提交/版本）→ 生成 `latest-dev.json`（先本地生成供 Release 附件）→ 删除旧 `dev` release+tag → 重建 **prerelease** `dev` → 校验 `/releases/latest` 未被 dev 影响 → 上传 ROS 并刷新 `latest-dev.json` → 尽力校验 `latest.json` 未被覆盖。
+3. `publish`：指纹校验（提交/版本）→ 生成 `latest-dev.json`（先本地生成供 Release 附件）→ **对比当前 GitHub Latest Release 生成变更摘要（新增/修复/性能/其他，`tools/dev-release-notes.mjs`）** → 删除旧 `dev` release+tag → 重建 **prerelease** `dev`（正文必须包含该对比段）→ 校验 `/releases/latest` 未被 dev 影响 → 上传 ROS 并刷新 `latest-dev.json` → 尽力校验 `latest.json` 未被覆盖。
 
 dev 通道**不产安装器、不签名/不公证、不发 arm64 与铸造厂 IDE**（这些只走 `release.yml`）；产物格式为 tar.gz。
+
+> **dev Release 正文规则**：除版本/提交/通道说明外，必须包含自动生成的「对比 Latest」段；仅写构建元数据不合规。
 
 ### `release.yml`（push tag `v*`）
 

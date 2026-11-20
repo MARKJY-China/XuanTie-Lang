@@ -219,6 +219,9 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 生成「对比 Latest」变更摘要需要完整提交历史与 tag
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -262,6 +265,35 @@ jobs:
             '.channel == "dev" and .version == $v and .commit == $c and (.assets | length) > 0 and (.platforms | length) > 0' latest-dev.json
           jq -r '"清单: channel=\(.channel) version=\(.version) commit=\(.commit) date=\(.date) 平台=\(.assets | keys | join(","))"' latest-dev.json
 
+      - name: 生成 dev Release 变更摘要(对比当前 Latest)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          git fetch --tags --force --quiet origin || true
+          set +e
+          LATEST_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" 2>/tmp/latest-release.err)
+          API_RC=$?
+          set -e
+          if [ $API_RC -ne 0 ]; then
+            if grep -q 'HTTP 404' /tmp/latest-release.err; then
+              LATEST_TAG=""
+              echo "尚无 GitHub Latest Release(首次 dev 构建)"
+            else
+              cat /tmp/latest-release.err
+              echo "！！ 查询 Latest Release 失败;按规定不能生成无对比的 dev 发布说明"; exit 1
+            fi
+          else
+            LATEST_TAG=$(printf '%s' "$LATEST_JSON" | jq -r '.tag_name // ""')
+          fi
+          echo "对比基线 Latest = ${LATEST_TAG:-（无）}"
+          node tools/dev-release-notes.mjs \
+            --latest="$LATEST_TAG" \
+            --head "$GITHUB_SHA" \
+            --version "${{ needs.meta.outputs.version }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --out dev-changes.md
+
       - name: 生成 dev Release 正文
         run: |
           cat > dev-release-body.md <<'DEV_NOTES_EOF'
@@ -271,6 +303,10 @@ jobs:
           - 提交: `${{ github.sha }}`
           - 构建日期: ${{ needs.meta.outputs.date }}
           - 清单: `latest-dev.json`(本 Release 附件;ROS 桶根目录同名文件是升级器读取的唯一真源)
+
+          DEV_NOTES_EOF
+          cat dev-changes.md >> dev-release-body.md
+          cat >> dev-release-body.md <<'DEV_NOTES_EOF'
 
           **通道说明**:dev 是 `develop` 分支的最新快照,滚动更新、**不签名**、**不保证稳定**,仅供提前试用与报 bug 定位。
           本 Release 是 GitHub **prerelease** 的滚动 tag `dev`,不会出现在 `/releases/latest`;stable/rc 的 `latest.json` 不受影响。
