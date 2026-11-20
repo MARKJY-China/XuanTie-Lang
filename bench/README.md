@@ -75,15 +75,15 @@ python bench/chart.py --only 浮点累加          # 只重画某一项
 ### issue #168 专图
 
 `10_FFT4096点.png` 是标准第 10 项（`run.py --with-peers` 会跑）；本机七语言同构
-FFT（Windows i5-12400F，单线程，100 次中位）：Rust 51 µs、Vix 50 µs、Go 68 µs、
-Node 130.8 µs、Java 145.4 µs、玄铁 5.00 ms、Python 7.45 ms。源文件在 `bench/cases/fft/`。
+FFT（Windows i5-12400F，单线程，100 次中位）：Rust 53 µs、Vix 50 µs、Go 62 µs、
+Node 96 µs、Java 136.1 µs、玄铁 4.59 ms、Python 6.37 ms。源文件在 `bench/cases/fft/`。
 
 `chart.py` 默认还会生成两张专项图（数据来自 `bench/results/` 下的 `kind=special` 文件）：
 
 - `11_小数数组4096x500.png`：issue #168 复现微基准，普通数组 / 标注局部 / `小数数组` / 标量对照，
   Windows i5-12400F、4096×500、5 次中位数。它说明 `小数数组` 把数组直取从 ~895 ms 降到 ~79 ms。
 - `12_FFT小数数组.png`：同 issue 的 FFT 前后对照——外部 rc.5 33.54 ms vs 本机
-  `小数数组` + 整变量 raw 化 5.00 ms；不同机器/平台，图注已标明“仅量级对照”。
+  `小数数组` + 整变量 raw 化 + 可信数组守卫 4.59 ms；不同机器/平台，图注已标明“仅量级对照”。
 
 ## 对照语言现状
 
