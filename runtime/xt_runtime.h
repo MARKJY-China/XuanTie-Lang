@@ -458,6 +458,12 @@ double xt_array_f64_get(XTValue arr_val, XTValue index_val);
 /// 写入 小数数组 下标处的原生 double(越界忽略,负索引按既有诊断)
 void xt_array_f64_set(XTValue arr_val, XTValue index_val, double value);
 void xt_f64array_bad_hard(void);
+// 字节集拼接/清空（#175，#173 的追加字节集出口）
+void xt_bytes_append_bytes(XTValue dst, XTValue src);
+void xt_bytes_clear(XTValue bytes_val);
+// 定长小端读写（#175）：n=1..8；读返回无符号值（超出 62 位报错），写返回布尔
+XTValue xt_bytes_read_le(XTValue bytes_val, XTValue offset, XTValue width);
+XTValue xt_bytes_write_le(XTValue bytes_val, XTValue offset, XTValue value, XTValue width);
 // FFT 专用 C 内核：参数必须是 小数数组；不做 elem_kind/长度检查（显式 unsafe 接口）
 int64_t xt_fft4096_f64(XTValue re_arr, XTValue im_arr, XTValue cos_arr, XTValue sin_arr);
 /// 向数组末尾追加元素

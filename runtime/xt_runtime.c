@@ -3511,17 +3511,115 @@ static void xt_require_bytes(XTValue v, const char* method) {
     exit(1);
 }
 
+void xt_bytes_append_bytes(XTValue dst_val, XTValue src_val) {
+    xt_require_bytes(dst_val, "追加字节集");
+    xt_require_bytes(src_val, "追加字节集");
+    XTBytes* dst = (XTBytes*)dst_val;
+    XTBytes* src = (XTBytes*)src_val;
+    if (src->length == 0) return;
+    if (dst->length > SIZE_MAX - src->length) {
+        fprintf(stderr, "运行时错误: 字节缓冲长度溢出\n");
+        exit(1);
+    }
+    size_t needed = dst->length + src->length;
+    if (needed > dst->capacity) {
+        size_t new_capacity = dst->capacity < 8 ? 8 : dst->capacity;
+        while (new_capacity < needed) {
+            if (new_capacity > SIZE_MAX / 2) { new_capacity = needed; break; }
+            new_capacity *= 2;
+        }
+        if (atomic_load(&dst->header.ref_count) >= XT_REF_COUNT_IMMORTAL) {
+            uint8_t* nd = (uint8_t*)xt_arena_alloc_raw(new_capacity);
+            if (!nd) { fprintf(stderr, "运行时错误: 字节缓冲扩容失败(arena)\n"); exit(1); }
+            memcpy(nd, dst->data, dst->length);
+            dst->data = nd;
+        } else {
+            uint8_t* nd = (uint8_t*)realloc(dst->data, new_capacity);
+            if (!nd) { fprintf(stderr, "运行时错误: 字节缓冲扩容失败(需要 %zu 字节)\n", new_capacity); exit(1); }
+            dst->data = nd;
+        }
+        dst->capacity = new_capacity;
+    }
+    memcpy(dst->data + dst->length, src->data, src->length);
+    dst->length = needed;
+}
+
+void xt_bytes_clear(XTValue bytes_val) {
+    xt_require_bytes(bytes_val, "清空");
+    ((XTBytes*)bytes_val)->length = 0;
+}
+
+XTValue xt_bytes_read_le(XTValue bytes_val, XTValue offset_val, XTValue width_val) {
+    xt_require_bytes(bytes_val, "读小端");
+    XTBytes* b = (XTBytes*)bytes_val;
+    int64_t off = xt_to_int(offset_val);
+    int64_t width = xt_to_int(width_val);
+    if (width < 1 || width > 8 || off < 0 || (uint64_t)off + (uint64_t)width > b->length) {
+        return XT_FROM_INT(0);
+    }
+    uint64_t v = 0;
+    for (int64_t i = 0; i < width; i++) {
+        v |= (uint64_t)b->data[off + i] << (8 * i);
+    }
+    if (v > (uint64_t)4611686018427387903LL) {
+        fprintf(stderr, "运行时错误: 读小端 %lld 字节的结果超出整可表示域 ±(2^62-1)\n", (long long)width);
+        exit(1);
+    }
+    return XT_FROM_INT((int64_t)v);
+}
+
+XTValue xt_bytes_write_le(XTValue bytes_val, XTValue offset_val, XTValue value_val, XTValue width_val) {
+    xt_require_bytes(bytes_val, "写小端");
+    XTBytes* b = (XTBytes*)bytes_val;
+    int64_t off = xt_to_int(offset_val);
+    int64_t width = xt_to_int(width_val);
+    int64_t value = xt_to_int(value_val);
+    if (width < 1 || width > 8 || off < 0 || (uint64_t)off + (uint64_t)width > b->length) {
+        return XT_FALSE;
+    }
+    if (value < 0 || (width < 8 && (uint64_t)value >= (1ULL << (8 * width)))) {
+        return XT_FALSE;
+    }
+    for (int64_t i = 0; i < width; i++) {
+        b->data[off + i] = (uint8_t)((uint64_t)value >> (8 * i));
+    }
+    return XT_TRUE;
+}
+
 void xt_bytes_append(XTValue bytes_val, uint8_t b_val) {
     if (XT_IS_INT(bytes_val)) return;
     xt_require_bytes(bytes_val, "追加");
     XTBytes* b = (XTBytes*)bytes_val;
     if (b->length >= b->capacity) {
-        size_t new_capacity = b->capacity * 2;
+        // 容量 0 时旧实现算出 new_capacity=0:realloc(0) 释放后立刻写,必崩。
+        // 同时防 capacity*2 溢出,并保证至少能容纳 length+1。
+        size_t base = b->capacity < 8 ? 8 : b->capacity;
+        if (base > SIZE_MAX / 2) {
+            fprintf(stderr, "运行时错误: 字节缓冲容量溢出\n");
+            exit(1);
+        }
+        size_t new_capacity = base * 2;
+        if (new_capacity <= b->length) {
+            if (b->length == SIZE_MAX) {
+                fprintf(stderr, "运行时错误: 字节缓冲长度溢出\n");
+                exit(1);
+            }
+            new_capacity = b->length + 1;
+        }
         if (atomic_load(&b->header.ref_count) >= XT_REF_COUNT_IMMORTAL) {
             uint8_t* new_data = (uint8_t*)xt_arena_alloc_raw(new_capacity);
+            if (!new_data) {
+                fprintf(stderr, "运行时错误: 字节缓冲扩容失败(arena)\n");
+                exit(1);
+            }
             memcpy(new_data, b->data, b->length); b->data = new_data;
         } else {
-            b->data = realloc(b->data, new_capacity);
+            uint8_t* new_data = (uint8_t*)realloc(b->data, new_capacity);
+            if (!new_data) {
+                fprintf(stderr, "运行时错误: 字节缓冲扩容失败(需要 %zu 字节)\n", new_capacity);
+                exit(1);
+            }
+            b->data = new_data;
         }
         b->capacity = new_capacity;
     }
