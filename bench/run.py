@@ -195,6 +195,22 @@ PEERS = {
     ]},
 }
 
+# issue #168:4096 点 FFT 独立基准；与上面的标准 9 项一起产快照。
+FFT_DIR = CASES / 'fft'
+FFT_PEERS = {
+    'node': {'cmd': ['node', str(FFT_DIR / 'node_fft.js')], 'build': None},
+    'python': {'cmd': ['python', str(FFT_DIR / 'python_fft.py')], 'build': None},
+    'go': {'cmd': None, 'build': ['go', 'build', '-o', '{exe}', str(FFT_DIR / 'go_fft.go')]},
+    'rust': {'cmd': None, 'build': ['rustc', '-O', str(FFT_DIR / 'rust_fft.rs'), '-o', '{exe}']},
+    'java': {'cmd': None, 'build': [['javac', '-d', '{work}', str(FFT_DIR / 'BenchFft.java')]],
+             'run': ['java', '-Dstdout.encoding=UTF-8', '-Dfile.encoding=UTF-8',
+                     '-cp', '{work}', 'BenchFft']},
+    'vix': {'cmd': None, 'build': [
+        ['{vixc}', str(FFT_DIR / 'vix_fft.vix'), '-obj', '{obj}', '-opt=l3'],
+        ['gcc', '{obj}', '-o', '{exe}', '-lm'],
+    ]},
+}
+
 
 def bench_peer(name, runs):
     cfg = PEERS[name]
@@ -238,6 +254,74 @@ def bench_peer(name, runs):
     return entry, per_case
 
 
+def _run_fft_peer(name, runs):
+    cfg = FFT_PEERS[name]
+    if name == 'vix' and not VIXC:
+        return {'lang': name, 'error': '未设置 VIXC；跳过 Vix FFT'}, {}
+    work = Path(tempfile.mkdtemp(prefix=f'{name}_fft_'))
+    exe = work / (name + ('.exe' if os.name == 'nt' else ''))
+    entry = {'lang': name}
+    cmd = cfg.get('cmd')
+    if cfg.get('build'):
+        steps = cfg['build']
+        if steps and not isinstance(steps[0], (list, tuple)):
+            steps = [steps]
+        obj = work / (name + '.o')
+        t0 = time.perf_counter()
+        for step in steps:
+            bc = []
+            for a in step:
+                a = (a.replace('{exe}', str(exe)).replace('{obj}', str(obj))
+                      .replace('{vixc}', VIXC).replace('{work}', str(work)))
+                bc.append(a)
+            rc, out = sh(bc)
+            if rc != 0:
+                entry['compile_ms'] = round((time.perf_counter() - t0) * 1000, 1)
+                entry['error'] = out[-800:]
+                return entry, {}
+        entry['compile_ms'] = round((time.perf_counter() - t0) * 1000, 1)
+    if cfg.get('run'):
+        cmd = [a.replace('{work}', str(work)).replace('{exe}', str(exe)) for a in cfg['run']]
+    elif cmd is None:
+        cmd = [str(exe)]
+    rc, out = sh(cmd, timeout=900)
+    if rc != 0:
+        entry['error'] = out[-800:]
+        return entry, {}
+    per_case = {}
+    for k, v in parse_cases(out).items():
+        per_case.setdefault(k, []).append(v)
+    for _ in range(max(0, runs - 1)):
+        rc, out = sh(cmd, timeout=900)
+        for k, v in parse_cases(out).items():
+            per_case.setdefault(k, []).append(v)
+    return entry, per_case
+
+
+def bench_fft_xt(xtc, runs):
+    src = FFT_DIR / 'xt_fft.xt'
+    work = Path(tempfile.mkdtemp(prefix='xt_fft_'))
+    exe = work / 'xt_fft.exe'
+    t0 = time.perf_counter()
+    rc, out = sh([str(xtc), 'tie', str(src), '-O3', '-sc', str(exe)])
+    entry = {'lang': '玄铁', 'compile_ms': round((time.perf_counter() - t0) * 1000, 1)}
+    if rc != 0:
+        entry['error'] = out[-800:]
+        return entry, {}
+    rc, out = sh([str(exe)], timeout=900)
+    if rc != 0:
+        entry['error'] = out[-800:]
+        return entry, {}
+    per = {}
+    for k, v in parse_cases(out).items():
+        per.setdefault(k, []).append(v)
+    for _ in range(max(0, runs - 1)):
+        rc, out = sh([str(exe)], timeout=900)
+        for k, v in parse_cases(out).items():
+            per.setdefault(k, []).append(v)
+    return entry, per
+
+
 def snapshot(xtc, runs, with_peers):
     cases, xtc_entry = [], None
     xt_entry, per_case = bench_xt(xtc, runs)
@@ -251,6 +335,22 @@ def snapshot(xtc, runs, with_peers):
             xtc_entry.setdefault('peers', {})[peer] = {k: v for k, v in entry.items()}
             for name, vals in per.items():
                 cases.append({'lang': peer, 'name': name,
+                              'median_us': round(statistics.median(vals), 1),
+                              'min_us': min(vals), 'all_us': [round(v, 1) for v in vals]})
+
+    # issue #168:FFT4096 正式纳入标准快照；玄铁始终跑,对照仅在 --with-peers 时跑。
+    fft_entry, fft_per = bench_fft_xt(xtc, runs)
+    xtc_entry['fft'] = fft_entry
+    for name, vals in fft_per.items():
+        cases.append({'lang': '玄铁', 'name': 'FFT4096点',
+                      'median_us': round(statistics.median(vals), 1),
+                      'min_us': min(vals), 'all_us': [round(v, 1) for v in vals]})
+    if with_peers:
+        for peer in FFT_PEERS:
+            entry, per = _run_fft_peer(peer, runs)
+            xtc_entry.setdefault('fft_peers', {})[peer] = {k: v for k, v in entry.items()}
+            for name, vals in per.items():
+                cases.append({'lang': peer, 'name': 'FFT4096点',
                               'median_us': round(statistics.median(vals), 1),
                               'min_us': min(vals), 'all_us': [round(v, 1) for v in vals]})
     return {
@@ -297,7 +397,7 @@ def cmd_compare(a_path, b_path):
             rows.append((c['lang'], c['name'], old, c))
             continue
         rows.append((c['lang'], c['name'], old, c))
-    print(f'{"语言":<8}{"用例":<16}{"旧(µs)":>12}{"新(µs)":>12}{"变化":>14}{"差值(ms)":>12}')
+    print(f'{"语言":<8}{"用例":<16}{"旧(us)":>12}{"新(us)":>12}{"变化":>14}{"差值(ms)":>12}')
     print('-' * 76)
     for lang, name, old, new in rows:
         if not old:
@@ -357,7 +457,7 @@ def main():
           f'{snap["compile_and_binary"].get("compile_warm_ms")} ms')
     print(f'  启动(空程序): {snap["startup"].get("min_ms")} ms')
     for c in snap['cases']:
-        print(f'  {c["lang"]:<7}{c["name"]:<16}{c["median_us"]:>12,.0f} µs')
+        print(f'  {c["lang"]:<7}{c["name"]:<16}{c["median_us"]:>12,.0f} us')
     return 0
 
 

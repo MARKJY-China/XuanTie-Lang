@@ -23,9 +23,9 @@ const STANDARD = [
   ['07_分支1e7.png', '分支 · 10,000,000 次'],
   ['08_嵌套循环1e6.png', '嵌套循环 · 1,000,000 次'],
   ['09_fib30递归.png', 'fib30 递归'],
+  ['10_FFT4096点.png', 'FFT 4096 点 · 七语言本机实测'],
 ]
 const SPECIAL = [
-  ['10_FFT4096点.png', 'FFT 4096 点 · 五语言外部实测'],
   ['11_小数数组4096x500.png', '小数数组微基准 · 4096×500'],
   ['12_FFT小数数组.png', 'FFT 4096 点 · 小数数组优化'],
 ]
@@ -61,7 +61,7 @@ description: 玄铁与 Node/Java/Go/Python/Rust/Vix 的基准对比图
 > 每个用例一张图，玄铁高亮；下方明细含总耗时、单次、相对基准与样本数。
 
 数据快照：**2026-11-20（v1.0-rc.5）** · 机器：12th Gen Intel i5-12400F · 取 5 次中位数。
-标准 9 项由 \`bench/run.py --with-peers\` 跑出；Go 为 windows/386，Vix 空函数/嵌套循环
+标准 10 项（含 FFT）由 \`bench/run.py --with-peers\` 跑出；Go 为 windows/386，Vix 空函数/嵌套循环
 被优化器折叠时标 \`0（编译期消除）\`。
 
 ## 标准基准
@@ -76,10 +76,10 @@ ${STANDARD.map(card).join('\n')}
 ${SPECIAL.map(card).join('\n')}
 </div>
 
-- **FFT 4096 点**：issue #168 的外部实测（macOS arm64、xtc rc.5），不是本仓库
-  \`bench/run.py\` 复现数据，仅作定位对照。
 - **小数数组微基准**：Windows i5-12400F、4096×500、5 次中位数；普通数组直取
   ~894.73 ms → 小数数组 ~79.19 ms，标量对照 ~22.68 ms。
+- **FFT 小数数组优化**：issue 外部 rc.5 33.54 ms vs 本机小数数组版 5.00 ms；
+  不同机器/平台，仅量级对照。
 
 ## 口径与来源
 

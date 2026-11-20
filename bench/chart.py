@@ -63,11 +63,11 @@ CASE_ORDER = [
     "分支1e7",
     "嵌套循环1e6",
     "fib30递归",
+    "FFT4096点",
 ]
 
 # issue #168 专图:FFT 五语言外部实测 + 小数数组前后对比。
 SPECIAL_RESULTS = [
-    RESULTS / "2026-11-18-issue168-fft.json",
     RESULTS / "2026-11-20-issue168-f64array.json",
     RESULTS / "2026-11-20-issue168-fft-f64array.json",
 ]

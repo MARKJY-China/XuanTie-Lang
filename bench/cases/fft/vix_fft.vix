@@ -1,0 +1,97 @@
+extern "C"
+{
+    fn sin(x: f64): f64
+    fn cos(x: f64): f64
+    fn clock(): i32
+}
+
+fn main(): i32
+{
+    let n = 4096
+    let mut re: [f64] = []
+    let mut im: [f64] = []
+    let mut cos_t: [f64] = []
+    let mut sin_t: [f64] = []
+    let mut i = 0
+    while (i < n)
+    {
+        re.push(sin(2.0 * 3.141592653589793 * i / n))
+        im.push(0.0)
+        i = i + 1
+    }
+    i = 0
+    while (i < n / 2)
+    {
+        let a = 2.0 * 3.141592653589793 * i / n
+        cos_t.push(cos(a))
+        sin_t.push(sin(a))
+        i = i + 1
+    }
+
+    // 单次 FFT 的代码内联在计时循环里：Vix 数组按值传递，函数调用会 move，
+    // 这里避免每轮移动数组。
+    let t = clock()
+    let mut r = 0
+    while (r < 100)
+    {
+        // 位反转（用减法/比较实现，避免依赖位运算符）
+        let mut i2 = 1
+        let mut j = 0
+        while (i2 < n)
+        {
+            let mut bit = n / 2
+            while (j >= bit)
+            {
+                j = j - bit
+                bit = bit / 2
+            }
+            j = j + bit
+            if (i2 < j)
+            {
+                let tr = re[i2]
+                re[i2] = re[j]
+                re[j] = tr
+                let ti = im[i2]
+                im[i2] = im[j]
+                im[j] = ti
+            }
+            i2 = i2 + 1
+        }
+
+        let mut len = 2
+        while (len <= n)
+        {
+            let half = len / 2
+            let step = n / len
+            let mut k = 0
+            while (k < n)
+            {
+                let mut tt = 0
+                while (tt < half)
+                {
+                    let idx = k + tt
+                    let tw = tt * step
+                    let wr = cos_t[tw]
+                    let wi = -sin_t[tw]
+                    let ur = re[idx]
+                    let ui = im[idx]
+                    let vr0 = re[idx + half]
+                    let vi0 = im[idx + half]
+                    let vr = vr0 * wr - vi0 * wi
+                    let vi = vr0 * wi + vi0 * wr
+                    re[idx] = ur + vr
+                    im[idx] = ui + vi
+                    re[idx + half] = ur - vr
+                    im[idx + half] = ui - vi
+                    tt = tt + 1
+                }
+                k = k + len
+            }
+            len = len * 2
+        }
+        r = r + 1
+    }
+    let us = (clock() - t) * 1000 / 100
+    print("FFT4096: ", us, " 微秒 (校验 ", re[1], ")")
+    return 0
+}

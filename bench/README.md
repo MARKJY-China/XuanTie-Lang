@@ -1,4 +1,4 @@
-# 玄铁性能基准 (bench)
+﻿# 玄铁性能基准 (bench)
 
 本目录是玄铁性能数据的**唯一权威存放处**：语料、跑分器、历史快照、优化史。
 
@@ -19,7 +19,8 @@ bench/
 │   ├── go_bench.go       原 temp/bench_go.go(9 项已补齐)
 │   ├── python_bench.py   原 temp/bench_py.py
 │   ├── rust_bench.rs     9 项 Rust 对照(rustc -O)
-│   └── vix_bench.vix     Vix v0.5.0 对照(9 项;字典为整数键开放寻址表)
+│   ├── vix_bench.vix     Vix v0.5.0 对照(9 项;字典为整数键开放寻址表)
+│   └── fft/              FFT4096 七语言同构基准(单独编译/运行)
 ├── charts/               生成物:每个用例一张对比图 + index.html 画廊
 └── results/
     ├── 2026-08-15.json   历史回填快照(kind=historical, 单次测量)
@@ -49,13 +50,13 @@ python bench/run.py --compare a.json b.json
 4. **记录机器与工具链身份**：没有这些上下文的数字不算数据（旧表缺的正是这一层，导致回填数据无法逐题复现）。
 5. **取中位数，且保留全部原始值**：`--runs` 默认 5。抖动大的用例（如空函数调用）必须看 `all_us` 才能判断差异是否显著。
 6. **口径不同的快照不混比**：单次测量 vs 中位数、不同机器、不同优化等级都不行；`--compare` 会显式警告。
-7. **Go 对照注意本机是 windows/386**（32 位，数据偏弱），换 amd64 后需整表重测——这是待办，不是已完成。Go/Rust/Vix 语料现已覆盖全部 9 项（Go 的空函数/列表/乘模/嵌套循环为 2026-11-20 补齐）。
+7. **Go 对照注意本机是 windows/386**（32 位，数据偏弱），换 amd64 后需整表重测——这是待办，不是已完成。Go/Rust/Vix 语料现已覆盖全部 9 项；FFT 为标准第 10 项（Go 的空函数/列表/乘模/嵌套循环为 2026-11-20 补齐）。
 8. **红线**：任何对外发布的性能数字，必须能由本目录的语料 + `run.py` + 快照 JSON 复现；做不到就不发。
 
 ## 性能对比图（charts/）
 
-`bench/charts/` 保存每个基准用例一张「对数刻度横向条形图 + 数据明细表」PNG，共 9 张；
-另加 issue #168 的 FFT 与 `小数数组` 三张专图，以及 `index.html` 画廊。
+`bench/charts/` 保存每个基准用例一张「对数刻度横向条形图 + 数据明细表」PNG，共 10 张(含 FFT)；
+另加 issue #168 的 `小数数组`、FFT 前后对照两张专图，以及 `index.html` 画廊。
 在线版：<https://xt.markjy.com/benchmark>（由 `site/scripts/sync-benchmark.mjs` 同步）。版式对齐 issue #168 的 FFT 对比图：最快在顶部、玄铁高亮、右侧标中位耗时，
 表格给出总耗时、单次、相对玄铁与样本数。
 
@@ -73,18 +74,20 @@ python bench/chart.py --only 浮点累加          # 只重画某一项
 
 ### issue #168 专图
 
-`chart.py` 默认还会生成三张专项图（数据来自 `bench/results/` 下的 `kind=special` 文件）：
+`10_FFT4096点.png` 是标准第 10 项（`run.py --with-peers` 会跑）；本机七语言同构
+FFT（Windows i5-12400F，单线程，100 次中位）：Rust 51 µs、Vix 50 µs、Go 68 µs、
+Node 130.8 µs、Java 145.4 µs、玄铁 5.00 ms、Python 7.45 ms。源文件在 `bench/cases/fft/`。
 
-- `10_FFT4096点.png`：issue #168 的 4096 点 FFT 五语言外部实测（macOS arm64、xtc rc.5）。
-  **不是 `bench/run.py` 复现的数据**，图注已标明，只用于定位对照。
+`chart.py` 默认还会生成两张专项图（数据来自 `bench/results/` 下的 `kind=special` 文件）：
+
 - `11_小数数组4096x500.png`：issue #168 复现微基准，普通数组 / 标注局部 / `小数数组` / 标量对照，
   Windows i5-12400F、4096×500、5 次中位数。它说明 `小数数组` 把数组直取从 ~895 ms 降到 ~79 ms。
 - `12_FFT小数数组.png`：同 issue 的 FFT 前后对照——外部 rc.5 33.54 ms vs 本机
-  `小数数组` + 整变量 raw 化 4.52 ms；不同机器/平台，图注已标明“仅量级对照”。
+  `小数数组` + 整变量 raw 化 5.00 ms；不同机器/平台，图注已标明“仅量级对照”。
 
 ## 对照语言现状
 
-- **Vix v0.5.0**（<https://github.com/vixlang/Vix-lang/releases/tag/v0.5.0>）：已接入 9/9 项。
+- **Vix v0.5.0**（<https://github.com/vixlang/Vix-lang/releases/tag/v0.5.0>）：已接入 10/10 项(含 FFT)。
   本地需设 `VIXC` 指向 `vixc.exe`；Windows 发行包默认找 MSVC `.lib`，本目录改为
   `vixc -obj` + `gcc` 链接（实测可行）。字典插入用 16384 槽整数键开放寻址表
   （Vix 标准库无内置 HashMap，与字符串键版本不完全同构）；空函数/嵌套循环被 Vix
