@@ -212,6 +212,8 @@ const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outpu
 // 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
 term.onRunState = (running) => setRunButton(running);
 const runner = new Runner(term, () => workspace);
+// 启动时没有活动 .xt:先隐藏「运行」,等激活 .xt/运行会话后再显示。
+syncRunButtonVisibility();
 
 // ---- 智器对话(右侧 dock,Trae 式全高;会话按工程区持久化) ----
 let aiDockOpen = false;
@@ -384,6 +386,7 @@ function syncEditorView(): void {
   }
   const ico = L.btnMdToggle.querySelector('i');
   if (ico) ico.className = 'codicon ' + (showReader ? 'codicon-book' : 'codicon-code');
+  syncRunButtonVisibility();
 }
 
 function setDesignerMode(on: boolean): void {
@@ -1841,6 +1844,15 @@ function settingsModal(): Promise<void> {
   });
 }
 
+/** 运行按钮可见性:只有当前 .xt 才显示「运行」;运行中始终显示「停止」。 */
+function syncRunButtonVisibility(): void {
+  const btn = byId('btn-run');
+  const running = term.isRunning();
+  const p = tabs.getActivePath();
+  const isXt = p !== null && isXtPath(p);
+  btn.classList.toggle('hidden', !running && !isXt);
+}
+
 /** 顶部「运行」按钮两态:空闲=运行(强调色),运行中=停止(错误色)。由终端会话状态驱动。 */
 function setRunButton(running: boolean): void {
   const btn = byId('btn-run');
@@ -1850,6 +1862,7 @@ function setRunButton(running: boolean): void {
     ? '<i class="codicon codicon-debug-stop"></i>停止'
     : '<i class="codicon codicon-play"></i>运行';
   btn.title = running ? '停止运行会话' : '编译并运行当前文件 (F5)';
+  syncRunButtonVisibility();
 }
 
 // ---- 运行 / 保存 ----

@@ -101,6 +101,7 @@ body {
 .tbtn:hover { background: var(--bg-hover); }
 .tbtn:disabled { opacity: 0.45; cursor: default; }
 .tbtn:disabled:hover { background: transparent; }
+.tbtn.hidden { display: none; }
 .tbtn.primary { border-color: var(--accent-dim); color: var(--accent); font-weight: 600; }
 .tbtn.primary:hover { background: rgba(232, 132, 44, 0.12); }
 /* 运行中:同一个按钮切成「停止」,用错误色一眼区分(不是另一个按钮) */
