@@ -180,6 +180,11 @@ export function execCapture(
   return invoke('exec_capture', { program, args, cwd, timeoutSecs: timeoutSecs ?? null });
 }
 
+// 在独立的新命令行窗口运行外部程序(不捕获输出)
+export function spawnExternal(program: string, args: string[], cwd: string): Promise<void> {
+  return invoke('spawn_external', { program, args, cwd });
+}
+
 // ---- AI 链路日志(开发者模式)/ 控制台窗口 ----
 export function aiLogSetEnabled(enabled: boolean): Promise<void> {
   return invoke('ai_log_set_enabled', { enabled });

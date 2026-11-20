@@ -117,3 +117,24 @@ pub async fn exec_capture(
         }),
     }
 }
+
+
+/// 在独立的新命令行窗口里启动可执行程序/脚本(不捕获输出,不占 IDE 输出面板)。
+/// Windows 用 CREATE_NEW_CONSOLE;非 Windows 尽力用当前桌面会话 spawn(没有终端模拟器时由调用方提示)。
+#[tauri::command]
+pub async fn spawn_external(program: String, args: Vec<String>, cwd: String) -> Result<(), String> {
+    let mut cmd = std::process::Command::new(&program);
+    cmd.args(&args);
+    if !cwd.is_empty() {
+        cmd.current_dir(&cwd);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+        cmd.creation_flags(CREATE_NEW_CONSOLE);
+    }
+    cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| format!("启动外部程序失败 {}: {}", program, e))
+}

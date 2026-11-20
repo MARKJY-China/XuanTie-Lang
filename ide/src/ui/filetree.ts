@@ -224,7 +224,9 @@ export class FileTree {
       const others: FileNode[] = [];
       const collect = (nodes: FileNode[]): void => {
         for (const n of nodes) {
-          if (!n.isDir && !isRecognized(n)) others.push(n);
+          // 必须带 rootPath:build 目录整目录豁免(原位渲染),否则其子文件会同时进
+          // 「其他文件」组,出现 build\vc.exe 两份。
+          if (!n.isDir && !isRecognized(n, this.rootPath)) others.push(n);
           if (n.isDir) collect(n.children);
         }
       };

@@ -301,6 +301,7 @@ fn main() {
             scaffold::scaffold_project,
             exec::exec_capture,
             exec::kill_all_exec,
+            exec::spawn_external,
             ailog::ai_log_push,
             ailog::ai_log_fetch,
             ailog::ai_log_set_enabled,
