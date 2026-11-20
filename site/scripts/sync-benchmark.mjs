@@ -1,4 +1,4 @@
-// scripts/sync-benchmark.mjs — 把 bench/charts 接进文档站 /benchmark
+﻿// scripts/sync-benchmark.mjs — 把 bench/charts 接进文档站 /benchmark
 //
 // 站点页面不直接复用 bench/charts/index.html（那是无导航的本地画廊），
 // 而是生成同源的 VitePress Markdown：图片复制到 site/public/benchmark，
@@ -23,7 +23,7 @@ const STANDARD = [
   ['07_分支1e7.png', '分支 · 10,000,000 次'],
   ['08_嵌套循环1e6.png', '嵌套循环 · 1,000,000 次'],
   ['09_fib30递归.png', 'fib30 递归'],
-  ['10_FFT4096点.png', 'FFT 4096 点 · 七语言本机实测'],
+  ['10_FFT4096点.png', 'FFT 4096 点 · 七语言本机（玄铁 C 内核）'],
 ]
 const SPECIAL = [
   ['11_小数数组4096x500.png', '小数数组微基准 · 4096×500'],
@@ -78,7 +78,7 @@ ${SPECIAL.map(card).join('\n')}
 
 - **小数数组微基准**：Windows i5-12400F、4096×500、5 次中位数；普通数组直取
   ~894.73 ms → 小数数组 ~79.19 ms，标量对照 ~22.68 ms。
-- **FFT 小数数组优化**：issue 外部 rc.5 33.54 ms vs 本机小数数组版 4.59 ms；
+- **FFT 小数数组优化**：issue 外部 rc.5 33.54 ms vs 本机 C 内核 0.045 ms；
   不同机器/平台，仅量级对照。
 
 ## 口径与来源

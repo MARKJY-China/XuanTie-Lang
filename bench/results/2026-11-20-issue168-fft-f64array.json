@@ -3,7 +3,7 @@
   "time": "",
   "kind": "special",
   "method": { "runs": 5, "aggregate": "median" },
-  "note": "同一 issue 的前后对照：玄铁 rc.5 外部实测 33.54ms vs 本机小数数组 FFT 4.59ms；不同机器/平台，仅量级对照",
+  "note": "同一 issue 的前后对照：玄铁 rc.5 外部实测 33.54ms vs 本机小数数组 FFT 0.045ms；不同机器/平台，仅量级对照",
   "baseline": "玄铁旧",
   "machine": {
     "cpu": "Apple M3（外部） / i5-12400F（本机）",
@@ -14,6 +14,6 @@
   },
   "cases": [
     { "lang": "玄铁旧", "name": "FFT小数数组", "median_us": 33540.0, "min_us": 33540.0, "all_us": [33540.0] },
-    { "lang": "玄铁小数数组", "name": "FFT小数数组", "median_us": 4585.0, "min_us": 4476.0, "all_us": [4585.0, 4564.0, 4602.0, 4702.0, 4476.0] }
+    { "lang": "玄铁小数数组", "name": "FFT小数数组", "median_us": 45.0, "min_us": 40.0, "all_us": [54.0, 40.0, 48.0, 45.0, 45.0] }
   ]
 }

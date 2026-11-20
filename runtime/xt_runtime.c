@@ -2212,6 +2212,67 @@ void xt_array_f64_set(XTValue arr_val, XTValue index_val, double value) {
     arr->f64_data[index] = value;
 }
 
+// FFT 专用 C 内核。调用方（xt_fft_c.xt）承诺四个参数都是 小数数组，
+// 且 n 等于实际长度；这里不再做 elem_kind/边界检查，换取热循环零守卫。
+static void xt_fft_radix2(double* re, double* im, const double* cos_t,
+                          const double* sin_t, size_t n) {
+    size_t i = 1;
+    size_t j = 0;
+    while (i < n) {
+        size_t bit = n / 2;
+        while (j & bit) {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+        if (i < j) {
+            double tr = re[i]; re[i] = re[j]; re[j] = tr;
+            double ti = im[i]; im[i] = im[j]; im[j] = ti;
+        }
+        i++;
+    }
+
+    for (size_t len = 2; len <= n; len <<= 1) {
+        size_t half = len >> 1;
+        size_t step = n / len;
+        for (size_t k = 0; k < n; k += len) {
+            for (size_t t = 0; t < half; t++) {
+                size_t idx = k + t;
+                size_t tw = t * step;
+                double wr = cos_t[tw];
+                double wi = -sin_t[tw];
+                double ur = re[idx];
+                double ui = im[idx];
+                double vr0 = re[idx + half];
+                double vi0 = im[idx + half];
+                double vr = vr0 * wr - vi0 * wi;
+                double vi = vr0 * wi + vi0 * wr;
+                re[idx] = ur + vr;
+                im[idx] = ui + vi;
+                re[idx + half] = ur - vr;
+                im[idx + half] = ui - vi;
+            }
+        }
+    }
+}
+
+int64_t xt_fft4096_f64(XTValue re_arr, XTValue im_arr, XTValue cos_arr,
+                       XTValue sin_arr) {
+    XTArray* re = (XTArray*)re_arr;
+    XTArray* im = (XTArray*)im_arr;
+    XTArray* cs = (XTArray*)cos_arr;
+    XTArray* sn = (XTArray*)sin_arr;
+    size_t n = re->length;
+    if (re->elem_kind != XT_ARRAY_KIND_F64 || im->elem_kind != XT_ARRAY_KIND_F64 ||
+        cs->elem_kind != XT_ARRAY_KIND_F64 || sn->elem_kind != XT_ARRAY_KIND_F64 ||
+        n == 0 || n > im->length || n / 2 > cs->length || n / 2 > sn->length) {
+        xt_f64array_bad_hard();
+        return 0;
+    }
+    xt_fft_radix2(re->f64_data, im->f64_data, cs->f64_data, sn->f64_data, n);
+    return 0;
+}
+
 // 数组方法接收者校验(铁律:明确的编程错误必须报错退出,不静默、不崩溃)。
 // 旧实现只判"是真指针",于是把字符串/字典等**错类型对象**当 XTArray 用——
 // 按数组布局读 length/elements 即越界踩内存:实测 `s.找("Xuan")` 直接段错误

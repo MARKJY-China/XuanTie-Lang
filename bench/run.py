@@ -299,7 +299,7 @@ def _run_fft_peer(name, runs):
 
 
 def bench_fft_xt(xtc, runs):
-    src = FFT_DIR / 'xt_fft.xt'
+    src = FFT_DIR / 'xt_fft_c.xt'
     work = Path(tempfile.mkdtemp(prefix='xt_fft_'))
     exe = work / 'xt_fft.exe'
     t0 = time.perf_counter()

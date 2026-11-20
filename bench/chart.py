@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """玄铁性能对比图生成器。
 
@@ -49,7 +49,7 @@ LANG_STYLE = {
     "小数数组": {"label": "小数数组", "color": "#8B5CF6", "bold": False},
     "标量":     {"label": "标量对照", "color": "#4E9B7A", "bold": False},
     "玄铁旧":   {"label": "玄铁 rc.5（外部）", "color": "#7C8395", "bold": True},
-    "玄铁小数数组": {"label": "玄铁 + 小数数组（本机）", "color": "#8B5CF6", "bold": False},
+    "玄铁小数数组": {"label": "玄铁 + C 内核（本机）", "color": "#8B5CF6", "bold": False},
 }
 
 # xt_bench.xt 的输出顺序；不在表里的新用例追加到末尾。
@@ -72,7 +72,7 @@ SPECIAL_RESULTS = [
     RESULTS / "2026-11-20-issue168-fft-f64array.json",
 ]
 TITLE_OVERRIDE = {
-    "FFT4096点": "FFT 4096 点 · 单次",
+    "FFT4096点": "FFT 4096 点 · 玄铁 C 内核",
     "FFT小数数组": "FFT 4096 点 · 小数数组优化",
     "小数数组4096x500": "小数数组微基准 · 4096×500",
 }

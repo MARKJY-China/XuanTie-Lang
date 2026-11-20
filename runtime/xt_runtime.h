@@ -457,6 +457,9 @@ void xt_array_f64_append(XTValue arr_val, double value);
 double xt_array_f64_get(XTValue arr_val, XTValue index_val);
 /// 写入 小数数组 下标处的原生 double(越界忽略,负索引按既有诊断)
 void xt_array_f64_set(XTValue arr_val, XTValue index_val, double value);
+void xt_f64array_bad_hard(void);
+// FFT 专用 C 内核：参数必须是 小数数组；不做 elem_kind/长度检查（显式 unsafe 接口）
+int64_t xt_fft4096_f64(XTValue re_arr, XTValue im_arr, XTValue cos_arr, XTValue sin_arr);
 /// 向数组末尾追加元素
 void xt_array_append(XTValue arr_val, XTValue element);
 void xt_array_set(XTValue arr_val, XTValue index_val, XTValue value);

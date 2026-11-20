@@ -14,7 +14,7 @@
 | `vix_fft.vix` | Vix 0.5.0 | `vixc ... -obj ... -opt=l3` + `gcc obj -o exe -lm` |
 
 当前快照：`bench/results/2026-11-21.json`（Windows i5-12400F）。
-玄铁 4,585 µs / Rust 53 / Vix 50 / Go 62 / Node 96 / Java 136.1 / Python 6,374.1 µs。
+玄铁 45 µs(C 内核) / Rust 51 / Vix 50 / Go 67 / Node 98.4 / Java 126.6 / Python 6,445.6 µs。
 
 注意：
 - 各语言编译器优化等级不同（Rust `-O`、Vix `-opt=l3`、玄铁 `-O3`），这是“各语言惯用构建”口径。
