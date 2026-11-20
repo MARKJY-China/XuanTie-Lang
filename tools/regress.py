@@ -101,6 +101,8 @@ def normalize(text, sort_lines):
     text = text.replace(str(ROOT).replace("\\", "/"), "<ROOT>")
     # issue #110:运行时错误位置带平台路径分隔符;基线跨 Windows/Linux 统一成 "/"
     text = text.replace("<ROOT>\\", "<ROOT>/")
+    # 同一行含 <ROOT> 的路径把剩余分隔符也统一成 "/"(Linux 基线/Windows 基线互认)
+    text = "\n".join(_line.replace("\\", "/") if "<ROOT>" in _line else _line for _line in text.split("\n"))
     for pat, rep in VOLATILE:
         text = pat.sub(rep, text)
     lines = []
@@ -193,6 +195,7 @@ def one_test(xtfile, record):
     g_body = "\n".join(glines[2:])
     # issue #110:基线里的 <ROOT>\Test 与 Linux 的 <ROOT>/Test 视为同一路径
     g_body = g_body.replace("<ROOT>\\", "<ROOT>/")
+    g_body = "\n".join(_line.replace("\\", "/") if "<ROOT>" in _line else _line for _line in g_body.split("\n"))
 
     if not compile_ok:
         if g_compile:
