@@ -508,7 +508,7 @@ async function main() {
     );
     check('用例5: 解析失败后服务器仍存活', client.child.exitCode === null);
 
-    // --- 用例 6:空白文档普通补全回归(重建 xt_lsp 后应含 时/文件/数学 3 个命名空间,总数 73) ---
+    // --- 用例 6:空白文档普通补全回归(重建 xt_lsp 后应含 时/文件/数学 3 个命名空间,总数 74) ---
     const textE = '设 甲 = 1\n';
     const uriE = await openDoc('回归.xt', textE);
     const completionE = await client.request('textDocument/completion', {
@@ -521,7 +521,7 @@ async function main() {
       ['时', '文件', '数学'].every((ns) => labelsE.includes(ns)),
       `共 ${labelsE.length} 项`,
     );
-    check('用例6: 普通补全总数仍为 73(重建 xt_lsp 后含 化 等内建)', labelsE.length === 73, `共 ${labelsE.length} 项: ${labelsE.join(',')}`);
+    check('用例6: 普通补全总数仍为 74(重建 xt_lsp 后含 产出/化 等内建)', labelsE.length === 74, `共 ${labelsE.length} 项: ${labelsE.join(',')}`);
 
     // --- 用例 7:前端补全触发字符含双引号(契约:ide/src/lsp/features.ts) ---
     if (existsSync(IDE_FEATURES)) {
