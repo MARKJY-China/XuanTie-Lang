@@ -14,6 +14,10 @@
 # dev 通道不产安装器、不签名、不发 arm64 / 铸造厂 IDE —— 那些仍只走 release.yml。
 # hotfix 短分支不触发 dev 构建(dev 只认 develop)。
 #
+# 发布门禁:
+#   - 仅改动 `docs/`、`GUIDE/`、`ide/` 或任意 `.md` 时不重发 dev Release(语言包未变化);
+#     判断基线 = 上一次 dev 滚动 tag 的提交;无旧 dev tag/手动 dispatch 时正常发布。
+#
 # 保留策略:
 #   - GitHub:滚动 tag `dev` 只保留最近一次构建(每次先删旧 release+tag 再重建,不新建 latest);
 #   - ROS:每次写入 releases/<dev 版本>/,按“最近 14 天或最近 5 个”策略清理(本工作流暂不自动删除,见 release/RELEASE_README.md);
@@ -42,7 +46,57 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changed:
+    name: 判断是否需要重发 dev
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.gate.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: gate
+        name: 对比上一版 dev tag,仅 docs/IDE 改动则跳过
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "手动触发:强制发布"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --tags --force --quiet origin || true
+          BASE=""
+          if git rev-parse -q --verify 'refs/tags/dev^{commit}' >/dev/null; then
+            BASE=$(git rev-parse 'refs/tags/dev^{commit}')
+          fi
+          if [ -z "$BASE" ]; then
+            echo "尚无旧 dev tag:按需要发布处理"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD)
+          if [ -z "$CHANGED" ]; then
+            echo "提交与上一版 dev 相同:不重发"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "===== 相对上一版 dev($BASE)的改动 ====="
+          echo "$CHANGED"
+          echo "=========================================="
+          # 任何非 docs/、非 ide/、非 Markdown 的路径 = 语言/工具链/构建变化,必须发布
+          if echo "$CHANGED" | grep -Evq '^(docs/|GUIDE/|ide/)|\.md$'; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "仅 docs/IDE/Markdown 改动:不重发 dev Release"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
   meta:
+    needs: changed
+    if: needs.changed.outputs.publish == 'true'
     name: 解析 dev 版本号
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -118,7 +172,8 @@ jobs:
 
   build:
     name: 构建 dev 包 (${{ matrix.slug }})
-    needs: meta
+    needs: [changed, meta]
+    if: needs.changed.outputs.publish == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -251,7 +306,8 @@ jobs:
 
   publish:
     name: 发布 dev 滚动 Release + latest-dev.json
-    needs: [meta, build]
+    needs: [changed, meta, build]
+    if: needs.changed.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

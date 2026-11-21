@@ -55,6 +55,8 @@ v<下一个待发布版本>-dev.<N>
 
 dev 通道**不产安装器、不签名/不公证、不发 arm64 与铸造厂 IDE**（这些只走 `release.yml`）；产物格式为 tar.gz。
 
+> **dev 发布门禁**：workflow 对比上一次滚动 tag `dev`，若改动仅落在 `docs/`、`GUIDE/`、`ide/` 或 Markdown，则不重发 dev Release（保留旧版）；手动 `workflow_dispatch` 强制发布。
+
 > **dev Release 正文规则**：除版本/提交/通道说明外，必须包含自动生成的「对比 Latest」段；仅写构建元数据不合规。
 
 ### `release.yml`（push tag `v*`）
