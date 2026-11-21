@@ -10,6 +10,16 @@
 #include <string.h>
 #include <errno.h>
 
+// 默认 UA:完整 Chrome 串(实测取舍——空 UA 被知乎/GitHub 等返回跳转壳或拒答;
+// "compatible" 简式 UA 被百度返回 JS 级 https→http 跳板页,全串直取真页)。
+// 单参 GET 与双参 求 共用；双参可经 头.User-Agent 覆写。
+#define XT_DEFAULT_UA "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+#if defined(_WIN32)
+#define xt_strcasecmp _stricmp
+#else
+#define xt_strcasecmp strcasecmp
+#endif
+
 // 线程入口函数：仅 Windows（_beginthreadex）要求 __stdcall + unsigned 返回，POSIX pthread 用普通约定 + void*
 #if defined(_WIN32)
 #define XT_THREAD_PROC __stdcall
@@ -316,8 +326,8 @@ static char* http_fetch_raw(const char* url, int connect_ms, int io_ms,
     // "compatible" 简式 UA 被百度返回 JS 级 https→http 跳板页,全串直取真页)。
     // 双参形态可经 头.User-Agent 覆写。
     snprintf(req, sizeof(req),
-             "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\nConnection: close\r\n\r\n",
-             path, host);
+             "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\nConnection: close\r\n\r\n",
+             path, host, XT_DEFAULT_UA);
 
     if (use_tls) {
         if (xt_tls_send(tls, req, (int)strlen(req)) != 0) {
@@ -792,6 +802,7 @@ XTValue xt_http_request_ex(XTValue url_val, XTValue opts_val) {
 
     // 自定义请求头(字典逐键)
     XTValue hdrs = XT_NULL;
+    int has_ua = 0;
     if (XT_IS_REAL_PTR(opts_val) && ((XTObject*)opts_val)->type_id == XT_TYPE_DICT) {
         XTString* hk = xt_string_new("头");
         hdrs = xt_dict_get(opts_val, (XTValue)hk);
@@ -806,11 +817,16 @@ XTValue xt_http_request_ex(XTValue url_val, XTValue opts_val) {
                 if (!XT_IS_REAL_PTR(k) || ((XTObject*)k)->type_id != XT_TYPE_STRING) continue;
                 XTValue v = xt_dict_get(hdrs, k);
                 if (!XT_IS_REAL_PTR(v) || ((XTObject*)v)->type_id != XT_TYPE_STRING) continue;
+                if (xt_strcasecmp(((XTString*)k)->data, "User-Agent") == 0) has_ua = 1;
                 snprintf(line, sizeof(line), "%s: %s\r\n", ((XTString*)k)->data, ((XTString*)v)->data);
                 buf_add(&req, line, (int)strlen(line));
             }
             xt_release(keys);
         }
+    }
+    if (!has_ua) {
+        snprintf(line, sizeof(line), "User-Agent: %s\r\n", XT_DEFAULT_UA);
+        buf_add(&req, line, (int)strlen(line));
     }
 
     if (body_len > 0) {
