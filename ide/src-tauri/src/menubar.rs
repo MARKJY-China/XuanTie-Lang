@@ -56,6 +56,9 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
 }
 
 fn file_menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
+    let new_window = MenuItemBuilder::with_id("new-window", "打开新窗口")
+        .accelerator("CmdOrCtrl+Shift+N")
+        .build(app)?;
     let open_folder = MenuItemBuilder::with_id("open-folder", "打开文件夹…")
         .accelerator("CmdOrCtrl+O")
         .build(app)?;
@@ -78,6 +81,7 @@ fn file_menu(app: &AppHandle) -> tauri::Result<Submenu<Wry>> {
     let save_all = MenuItemBuilder::with_id("save-all", "全部保存").build(app)?;
     let refresh_tree = MenuItemBuilder::with_id("refresh-tree", "刷新文件树").build(app)?;
     let file = SubmenuBuilder::new(app, "文件")
+        .item(&new_window)
         .item(&open_folder)
         .item(&new_project)
         .item(&recent)

@@ -59,6 +59,8 @@ import { PreflightConsole } from './ui/preflight-console';
 // 平台判据(模块级,全文件共用):WKWebView 的 UA 可能不含 Macintosh,platform 双保险
 const isMac = navigator.platform === 'MacIntel' || navigator.userAgent.includes('Macintosh');
 const isWin = navigator.userAgent.includes('Windows');
+// 文件→打开新窗口:新窗口从欢迎页启动,不自动恢复主窗口工程/标签,避免会话互写
+const newWindowMode = new URLSearchParams(location.search).get('new') === '1';
 /** 可执行文件后缀:Windows=.exe,其他平台无后缀 */
 const EXE = isWin ? '.exe' : '';
 import { XUANTIE_PRIMER } from './ai/xuantie-primer';
@@ -204,6 +206,7 @@ const tabs = new TabManager(
       syncEditorView();
       designerPanel.refreshIfOpen();
     },
+    onSessionChange: () => saveWorkspaceSession(),
   },
   (p) => confirmBox('关闭未保存', `${basename(p)} 有未保存的更改,放弃并关闭?`),
 );
@@ -213,12 +216,16 @@ const mdReader = new MarkdownReader(L.markdownHost, {
   openFile: (p) => openEditorFile(p),
 });
 /** 统一编辑器打开入口:二进制文件只提示、不进编辑器;其它文件照常打开。 */
-function openEditorFile(p: string, reveal?: { line: number; column: number }): void {
+function openEditorFile(
+  p: string,
+  reveal?: { line: number; column: number },
+  preview = false,
+): void {
   if (isBinaryEditorPath(p)) {
     showToast('编辑器不支持打开二进制文件。\n你可以右键该文件点击“运行”来启动。', 'err');
     return;
   }
-  void tabs.openFile(p, reveal).catch((err: unknown) => showToast(`打开失败: ${String(err)}`, 'err'));
+  void tabs.openFile(p, reveal, preview).catch((err: unknown) => showToast(`打开失败: ${String(err)}`, 'err'));
 }
 
 const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outputHost);
@@ -1206,7 +1213,7 @@ editor.onDidChangeCursorPosition((e) => {
 });
 
 const fileTree = new FileTree(L.treeHost, {
-  openFile: (p) => openEditorFile(p),
+  openFile: (p, preview) => openEditorFile(p, undefined, preview),
   onContext: (e, node) => showTreeMenu(e, node),
 });
 
@@ -1299,6 +1306,85 @@ sbLsp.addEventListener('keydown', (ev) => {
     void restartLsp();
   }
 });
+
+// ---- 工作区标签会话(localStorage;按工作区隔离) ----
+interface WorkspaceSessionState {
+  tabs: string[];
+  active: string | null;
+  preview: string | null;
+}
+const SESSION_KEY = 'xuantie.workspaceSessions.v1';
+let restoringSession = false;
+
+function readWorkspaceSessions(): Record<string, WorkspaceSessionState> {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return {};
+    const v = JSON.parse(raw) as unknown;
+    return v && typeof v === 'object' ? (v as Record<string, WorkspaceSessionState>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function pathUnderWorkspace(p: string): boolean {
+  if (!workspace) return false;
+  const root = workspace.replace(/[\\/]+$/, '').toLowerCase();
+  const norm = p.replace(/\\/g, '/').toLowerCase();
+  const rootNorm = root.replace(/\\/g, '/');
+  return norm === rootNorm || norm.startsWith(rootNorm + '/');
+}
+
+function saveWorkspaceSession(): void {
+  if (!workspace || restoringSession || newWindowMode) return;
+  try {
+    const state = tabs.getSessionState();
+    const openPaths = state.tabs.filter(pathUnderWorkspace);
+    const sessions = readWorkspaceSessions();
+    if (openPaths.length === 0) {
+      delete sessions[workspace];
+    } else {
+      sessions[workspace] = {
+        tabs: openPaths,
+        active: state.active && openPaths.includes(state.active) ? state.active : null,
+        preview: state.preview && openPaths.includes(state.preview) ? state.preview : null,
+      };
+    }
+    localStorage.setItem(SESSION_KEY, JSON.stringify(sessions));
+  } catch {
+    // localStorage 不可用/配额满:会话恢复退化为无,不影响编辑
+  }
+}
+
+/** 打开工程后恢复该工作区上次的标签;只恢复仍能读取的普通文件。 */
+async function restoreWorkspaceSession(): Promise<void> {
+  if (!workspace || newWindowMode) return;
+  const saved = readWorkspaceSessions()[workspace];
+  if (!saved || saved.tabs.length === 0) return;
+  restoringSession = true;
+  try {
+    const preview = saved.preview;
+    for (const p of saved.tabs) {
+      if (p === preview || tabs.isOpen(p) || isBinaryEditorPath(p)) continue;
+      try {
+        await tabs.openFile(p);
+      } catch {
+        // 文件已删除/不可读:跳过,不阻塞其余标签
+      }
+    }
+    if (preview && !tabs.isOpen(preview) && !isBinaryEditorPath(preview)) {
+      try {
+        await tabs.openFile(preview, undefined, true);
+      } catch {
+        // 同上
+      }
+    }
+    if (saved.active && tabs.isOpen(saved.active)) tabs.activate(saved.active);
+  } finally {
+    restoringSession = false;
+    saveWorkspaceSession();
+  }
+}
 
 /** 把警告码写入工程根 玄铁.配置.toml 的「忽略警告」,并让 LSP 立即重发诊断。 */
 async function ignoreWarningForProject(code: string): Promise<void> {
@@ -1435,6 +1521,8 @@ void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
 });
 
 async function openWorkspace(dir: string): Promise<void> {
+  // 切工程前:旧工程标签会话先落盘
+  saveWorkspaceSession();
   // 切工程前:旧工程会话落盘,会话指针重置(会话按工程区隔离)
   try {
     const old = aiPanel.getMessages();
@@ -1462,6 +1550,8 @@ async function openWorkspace(dir: string): Promise<void> {
   L.sidebarTitle.textContent = basename(dir);
   sbProject.textContent = entryFile ? `${basename(dir)} · 入口 ${entryFile}` : basename(dir);
   await startLsp();
+  // 恢复上次该工作区打开的标签(含预览标签);新窗口模式不恢复
+  await restoreWorkspaceSession();
   // 打开工程即后台跑玄铁环境自检(不阻塞后续流程;结果注入 AI 快照)
   void startPreflight();
   const s = getSettings();
@@ -3164,6 +3254,7 @@ function bindUi(): void {
       {
         btn: L.menubarFileBtn,
         items: [
+          { act: 'new-window', label: '打开新窗口' },
           { act: 'open-folder', label: '打开文件夹…' },
           { act: 'new-project', label: '新建工程…' },
           {
@@ -3244,7 +3335,9 @@ function bindUi(): void {
   // macOS 系统菜单桥接:系统菜单点击走同一动作链(菜单项 id 即 act);
   // 自绘菜单行隐藏,由屏幕顶部系统菜单接管(Windows/Linux 保留自绘菜单行)
   function handleMenuAct(act: string): void {
-      if (act === 'open-folder') openFolder();
+      if (act === 'new-window') {
+        void backend.openIdeWindow().catch((err: unknown) => showToast(`打开新窗口失败: ${String(err)}`, 'err'));
+      } else if (act === 'open-folder') openFolder();
       else if (act === 'new-project') void newProjectModal();
       else if (act.startsWith('recent-open:')) {
         const idx = Number(act.slice('recent-open:'.length));
@@ -3566,7 +3659,7 @@ async function boot(): Promise<void> {
   void refreshAiPrimer();
   updateAccountLabel();
   const s = getSettings();
-  if (s.lastWorkspace) {
+  if (!newWindowMode && s.lastWorkspace) {
     L.welcomeRec.textContent = `最近打开:${s.lastWorkspace}`;
     L.welcomeRec.addEventListener('click', () => void openWorkspace(s.lastWorkspace));
     if (await backend.fsExists(s.lastWorkspace)) {

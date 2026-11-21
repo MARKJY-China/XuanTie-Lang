@@ -10,6 +10,14 @@ export interface TabHooks {
   onDidSave(path: string): void;
   onDidClose(path: string): void;
   onActivate(path: string | null): void;
+  /** 标签集合/活动标签/预览态变化(会话持久化用) */
+  onSessionChange?(): void;
+}
+
+export interface TabSessionState {
+  tabs: string[];
+  active: string | null;
+  preview: string | null;
 }
 
 export interface RevealTarget {
@@ -27,6 +35,8 @@ interface OpenDoc {
   private encodings = new Map<string, string>();
   private order: string[] = [];
   private activePath: string | null = null;
+  /** 单击文件树产生的预览标签(唯一);编辑/双击后转正 */
+  private previewPath: string | null = null;
 
   constructor(
     private tabBar: HTMLElement,
@@ -37,6 +47,7 @@ interface OpenDoc {
     editor.onDidChangeModelContent(() => {
       const doc = this.active();
       if (!doc) return;
+      if (this.previewPath === doc.path) this.pin(doc.path);
       this.refreshDirty(doc);
       this.hooks.onDidChange(doc.path, doc.model.getValue());
     });
@@ -56,6 +67,10 @@ interface OpenDoc {
 
   getAllPaths(): string[] {
     return [...this.order];
+  }
+
+  getSessionState(): TabSessionState {
+    return { tabs: [...this.order], active: this.activePath, preview: this.previewPath };
   }
 
   getText(path: string): string | null {
@@ -136,13 +151,15 @@ interface OpenDoc {
     return 'reloaded';
   }
 
-  async openFile(path: string, reveal?: RevealTarget): Promise<void> {
+  async openFile(path: string, reveal?: RevealTarget, preview = false): Promise<void> {
     const existing = this.docs.get(path);
     if (existing) {
       this.activate(path);
+      if (!preview) this.pin(path);
       if (reveal) this.reveal(existing.model, reveal);
       return;
     }
+    const previousPreview = this.previewPath;
     const res = await backend.fsReadFile(path);
     const text = res.text;
     const uri = monaco.Uri.file(path);
@@ -159,9 +176,47 @@ interface OpenDoc {
     this.docs.set(path, { path, model, tabEl, savedText: text });
     this.encodings.set(path, res.encoding);
     this.order.push(path);
+    // 旧预览若有未保存修改,先转正,不能被新预览状态覆盖
+    const promotePrevious =
+      preview && !!previousPreview && previousPreview !== path && this.docs.has(previousPreview) &&
+      this.isDirty(previousPreview);
+    if (promotePrevious) this.pin(previousPreview);
+    if (preview) {
+      this.previewPath = path;
+      tabEl.classList.add('preview');
+    } else {
+      tabEl.classList.remove('preview');
+    }
     this.hooks.onDidOpen(path, text);
     this.activate(path);
+    // 新预览替换旧预览(旧预览干净时丢弃;脏的已在上面转正)
+    if (preview && previousPreview && previousPreview !== path && !promotePrevious && this.docs.has(previousPreview)) {
+      this.discardDoc(previousPreview);
+    }
+    this.hooks.onSessionChange?.();
     if (reveal) this.reveal(model, reveal);
+  }
+
+  /** 预览标签 → 正式标签(双击、编辑内容时自动调用) */
+  private pin(path: string): void {
+    if (this.previewPath !== path) return;
+    this.previewPath = null;
+    this.docs.get(path)?.tabEl.classList.remove('preview');
+    this.hooks.onSessionChange?.();
+  }
+
+  /** 丢弃一个干净标签(仅内部替换预览用;不弹保存确认) */
+  private discardDoc(path: string): void {
+    const doc = this.docs.get(path);
+    if (!doc) return;
+    const idx = this.order.indexOf(path);
+    if (idx >= 0) this.order.splice(idx, 1);
+    this.docs.delete(path);
+    if (this.previewPath === path) this.previewPath = null;
+    if (this.activePath === path) this.activePath = null;
+    doc.tabEl.remove();
+    doc.model.dispose();
+    this.hooks.onDidClose(path);
   }
 
   activate(path: string | null): void {
@@ -173,6 +228,7 @@ interface OpenDoc {
     const doc = this.active();
     this.editor.setModel(doc ? doc.model : null);
     this.hooks.onActivate(path);
+    this.hooks.onSessionChange?.();
   }
 
   async save(path: string): Promise<void> {
@@ -201,6 +257,7 @@ interface OpenDoc {
     const idx = this.order.indexOf(path);
     this.order.splice(idx, 1);
     this.docs.delete(path);
+    if (this.previewPath === path) this.previewPath = null;
     doc.tabEl.remove();
     if (this.activePath === path) {
       const next = this.order.length > 0 ? this.order[this.order.length - 1] : null;
@@ -208,6 +265,7 @@ interface OpenDoc {
     }
     doc.model.dispose();
     this.hooks.onDidClose(path);
+    this.hooks.onSessionChange?.();
     return true;
   }
 
@@ -252,8 +310,10 @@ interface OpenDoc {
     }
     oldModel.dispose();
     // 标签元素里的点击/关闭回调闭包捕获了旧路径,必须重建元素而不是只改文字
+    if (this.previewPath === from) this.previewPath = to;
     const fresh = this.buildTab(to);
     fresh.classList.toggle('active', wasActive);
+    fresh.classList.toggle('preview', this.previewPath === to);
     doc.tabEl.replaceWith(fresh);
     doc.tabEl = fresh;
     this.refreshDirty(doc);
@@ -262,6 +322,7 @@ interface OpenDoc {
     this.hooks.onDidClose(from);
     this.hooks.onDidOpen(to, text);
     if (wasActive) this.hooks.onActivate(to);
+    this.hooks.onSessionChange?.();
     return true;
   }
 

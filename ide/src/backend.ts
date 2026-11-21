@@ -180,6 +180,11 @@ export function execCapture(
   return invoke('exec_capture', { program, args, cwd, timeoutSecs: timeoutSecs ?? null });
 }
 
+// 打开一个新的铸造厂 IDE 窗口(欢迎页,不自动接管主窗口工作区)
+export function openIdeWindow(): Promise<void> {
+  return invoke('open_ide_window');
+}
+
 // 在独立的新命令行窗口运行外部程序(不捕获输出)
 export function spawnExternal(program: string, args: string[], cwd: string): Promise<void> {
   return invoke('spawn_external', { program, args, cwd });

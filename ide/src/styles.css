@@ -725,6 +725,7 @@ body {
 }
 .tab.active { background: var(--bg); color: var(--fg); border-top: 1px solid var(--accent); }
 .tab .tname { overflow: hidden; text-overflow: ellipsis; }
+.tab.preview .tname { font-style: italic; opacity: 0.82; }
 .tab .dirty { color: var(--accent); display: none; }
 .tab.dirty .dirty { display: inline; }
 .tab .tclose {

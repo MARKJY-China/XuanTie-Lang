@@ -6,7 +6,8 @@
     "main",
     "ai-console",
     "tiepm-window",
-    "docs-window"
+    "docs-window",
+    "ide-*"
   ],
   "permissions": [
     "core:default",

@@ -8,7 +8,8 @@ import { relativeTo } from '../util';
 import xtIco from '../assets/xuantie.ico';
 
 export interface TreeHooks {
-  openFile(path: string): void;
+  /** preview=true 表示单击预览(不固定);双击传 false */
+  openFile(path: string, preview: boolean): void;
   // node === null 表示右键在空白区域(对工程根操作)
   onContext(e: MouseEvent, node: FileNode | null): void;
 }
@@ -327,8 +328,13 @@ export class FileTree {
         this.render();
       } else {
         this.applySelection();
-        this.hooks.openFile(node.path);
+        this.hooks.openFile(node.path, true);
       }
+    });
+    row.addEventListener('dblclick', (e) => {
+      if (node.isDir) return;
+      e.preventDefault();
+      this.hooks.openFile(node.path, false);
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
