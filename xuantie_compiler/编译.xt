@@ -4256,7 +4256,12 @@
                     
                     此.写出(strLabel & ":")
                     设 sLen = 此.符(此.取新寄存器())
-                    此.写出("  " & sLen & " = call i64 @xt_string_byte_length(i64 " & 此.符(对象寄存器) & ")")
+                    // issue #172：字符串 .长度 从 rc.6-dev.5 起按字符计；字节数只认 .字节数
+                    若 节点.成员名称 == "字节数" 或 节点.成员名称 == "大小" {
+                        此.写出("  " & sLen & " = call i64 @xt_string_byte_length(i64 " & 此.符(对象寄存器) & ")")
+                    } 否 {
+                        此.写出("  " & sLen & " = call i64 @xt_string_char_count(i64 " & 此.符(对象寄存器) & ")")
+                    }
                     此.写出("  store i64 " & sLen & ", i64* " & resAddr)
                     此.写出("  br label %" & mergeLabel)
                     
