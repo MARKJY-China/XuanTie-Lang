@@ -231,6 +231,13 @@ export class XtLspClient {
     });
   }
 
+  /** 通知 LSP 项目配置/被监视文件变化:服务器会对所有已打开文档重新发布诊断。 */
+  didChangeWatchedFiles(paths: string[]): void {
+    this.notify('workspace/didChangeWatchedFiles', {
+      changes: paths.map((p) => ({ uri: pathToUri(p), type: 2 })),
+    });
+  }
+
   didClose(path: string): void {
     const uri = pathToUri(path);
     const timer = this.changeTimers.get(uri);

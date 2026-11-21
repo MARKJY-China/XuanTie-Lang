@@ -1068,6 +1068,7 @@ attachLspFeatures(lsp, editor, {
   openMethodDocs: (name) => {
     void openDocsWindow(`method:${name}`).catch((err: unknown) => showToast(`打开 API 文档书失败: ${String(err)}`, 'err'));
   },
+  ignoreWarningProject: (code) => { void ignoreWarningForProject(code); },
   onDiagnostics: (p, diags) => {
     problems.update(p, diags);
     renderProblemsBadge();
@@ -1298,6 +1299,45 @@ sbLsp.addEventListener('keydown', (ev) => {
     void restartLsp();
   }
 });
+
+/** 把警告码写入工程根 玄铁.配置.toml 的「忽略警告」,并让 LSP 立即重发诊断。 */
+async function ignoreWarningForProject(code: string): Promise<void> {
+  if (!workspace) {
+    showToast('请先打开工程后再应用忽略警告', 'err');
+    return;
+  }
+  const cfgPath = backend.joinPath(workspace, '玄铁.配置.toml');
+  let text = '';
+  try {
+    text = (await backend.fsReadFile(cfgPath)).text;
+  } catch {
+    text = '';
+  }
+  const lines = text.split(/\r?\n/);
+  let found = false;
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^(\s*忽略警告\s*=\s*)\[(.*?)\](\s*(?:#.*)?)$/.exec(lines[i]);
+    if (!m) continue;
+    const items = m[2]
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (!items.some((it) => it.replace(/^["']|["']$/g, '') === code)) items.push(`"${code}"`);
+    lines[i] = `${m[1]}[${items.join(', ')}]${m[3] ?? ''}`;
+    found = true;
+    break;
+  }
+  const next = found
+    ? lines.join('\n')
+    : (text.trim() ? text.replace(/\s*$/, '') + '\n' : '') + `忽略警告 = ["${code}"]\n`;
+  try {
+    await backend.fsWriteFile(cfgPath, next);
+    lsp.didChangeWatchedFiles([cfgPath]);
+    showToast(`已加入项目忽略警告:${code}`, 'ok');
+  } catch (err) {
+    showToast(`写入工程配置失败: ${String(err)}`, 'err');
+  }
+}
 
 async function reloadTree(silent = false): Promise<void> {
   if (!workspace) return;

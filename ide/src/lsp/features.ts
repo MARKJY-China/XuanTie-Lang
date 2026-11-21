@@ -16,6 +16,8 @@ export interface FeatureHooks {
   onDiagnostics(path: string, diags: DiagnosticDto[]): void;
   /** 内置方法 Ctrl+点击/跳定义兜底:打开 API 文档书方法页 */
   openMethodDocs?(name: string): void;
+  /** 把警告码加入项目 玄铁.配置.toml 的 忽略警告 */
+  ignoreWarningProject?(code: string): void;
 }
 
 function mapCompletionKind(k: number | undefined): monaco.languages.CompletionItemKind {
@@ -285,6 +287,72 @@ export function attachLspFeatures(
         return { range: undefined, contents: [{ value: hover.contents.value }] };
       },
     }),
+  );
+
+  // 警告悬停里的快速修复:忽略(行级 @允许) / 忽略并应用于整项目(玄铁.配置.toml)
+  const IGNORE_WARNING_PROJECT_CMD = 'xuantie.ignoreWarningProject';
+  disposables.push(
+    monaco.editor.registerCommand(IGNORE_WARNING_PROJECT_CMD, (_accessor: unknown, code: unknown) => {
+      if (typeof code === 'string' && code) hooks.ignoreWarningProject?.(code);
+    }),
+  );
+  disposables.push(
+    monaco.languages.registerCodeActionProvider(
+      XT_LANGUAGE_ID,
+      {
+        provideCodeActions(model, _range, context) {
+          const actions: monaco.languages.CodeAction[] = [];
+          const seen = new Set<string>();
+          for (const marker of context.markers) {
+            if (marker.severity !== monaco.MarkerSeverity.Warning) continue;
+            const m = /\[([A-Z]\d{3})\]/.exec(marker.message);
+            if (!m) continue;
+            const code = m[1];
+            const key = `${code}|${marker.startLineNumber}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            const lineText = model.getLineContent(marker.startLineNumber);
+            const indent = /^\s*/.exec(lineText)?.[0] ?? '';
+            const prev = marker.startLineNumber > 1 ? model.getLineContent(marker.startLineNumber - 1) : '';
+            const allowedArg = /@允许\(([^)]*)\)/.exec(prev)?.[1] ?? '';
+            const alreadyAllowed = allowedArg.split(',').map((s) => s.trim()).includes(code);
+            if (!alreadyAllowed) {
+              actions.push({
+                title: '忽略',
+                kind: 'quickfix',
+                diagnostics: [marker],
+                isPreferred: true,
+                edit: {
+                  edits: [
+                    {
+                      resource: model.uri,
+                      versionId: model.getVersionId(),
+                      textEdit: {
+                        range: new monaco.Range(marker.startLineNumber, 1, marker.startLineNumber, 1),
+                        text: `${indent}@允许(${code})\n`,
+                      },
+                    },
+                  ],
+                },
+              });
+            }
+            actions.push({
+              title: '忽略并应用于整项目',
+              kind: 'quickfix',
+              diagnostics: [marker],
+              command: {
+                id: IGNORE_WARNING_PROJECT_CMD,
+                title: '忽略并应用于整项目',
+                arguments: [code],
+              },
+            });
+          }
+          return { actions, dispose: () => undefined };
+        },
+      },
+      { providedCodeActionKinds: ['quickfix'] },
+    ),
   );
 
   // 内置方法悬停:与 LSP hover 并行;LSP 不提供成员文档时这里兜住。
