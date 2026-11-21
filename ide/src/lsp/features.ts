@@ -6,6 +6,8 @@ import { XT_LANGUAGE_ID } from '../lang/xt';
 import type { XtLspClient } from './client';
 import { withPinyinFilter } from '../pinyin';
 import { pathToUri, uriToPath } from '../uri';
+import * as backend from '../backend';
+import { dirname } from '../util';
 import type { CompletionItemDto, DiagnosticDto, HoverDto, LocationDto, SymbolInfoDto } from '../types';
 
 export interface FeatureHooks {
@@ -43,6 +45,50 @@ function mapSeverity(s: number): monaco.MarkerSeverity {
 
 function modelPath(model: monaco.editor.ITextModel): string {
   return uriToPath(model.uri.toString());
+}
+
+// ---- 引 "路径" 文件补全 ----
+// 只在双引号字符串内、且该字符串是 引 的第一个实参时触发;LSP 未连接也可用。
+// 目录一律插 "/"(玄铁相对路径规范,反斜杠会触发 W006)。
+function isAbsoluteFsPath(p: string): boolean {
+  return /^[a-zA-Z]:[\\/]/.test(p) || p.startsWith('\\') || p.startsWith('/');
+}
+
+function importPathContext(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+): { dir: string; leaf: string; startColumn: number } | null {
+  const before = model.getLineContent(position.lineNumber).slice(0, position.column - 1);
+  // 引 前面不能是标识符字符，后面允许空白；捕获当前尚未闭合的路径前缀
+  const m = /(?:^|[^\w\u4e00-\u9fff])引\s+"([^"]*)$/.exec(before);
+  if (!m) return null;
+  const partial = m[1];
+  const sep = Math.max(partial.lastIndexOf('/'), partial.lastIndexOf('\\'));
+  const dirPart = sep >= 0 ? partial.slice(0, sep + 1) : '';
+  const leaf = partial.slice(sep + 1);
+  const baseDir = dirname(modelPath(model));
+  const dir = dirPart
+    ? isAbsoluteFsPath(dirPart)
+      ? dirPart
+      : baseDir + (baseDir.includes('\\') ? '\\' : '/') + dirPart
+    : baseDir;
+  return { dir, leaf, startColumn: position.column - leaf.length };
+}
+
+const importDirCache = new Map<string, { at: number; names: string[] }>();
+const IMPORT_DIR_CACHE_MS = 1500;
+
+async function listImportDir(dir: string): Promise<string[]> {
+  const key = dir.toLowerCase();
+  const hit = importDirCache.get(key);
+  if (hit && Date.now() - hit.at < IMPORT_DIR_CACHE_MS) return hit.names;
+  try {
+    const names = await backend.fsListDir(dir);
+    importDirCache.set(key, { at: Date.now(), names });
+    return names;
+  } catch {
+    return [];
+  }
 }
 
 // 静态符号兜底:逐行提取顶层 函/型/口/设/常 声明(LSP 不可用或请求失败时,大纲仍然可用)
@@ -125,6 +171,55 @@ export function attachLspFeatures(
             range,
           }),
         );
+        return { suggestions };
+      },
+    }),
+  );
+
+  // 引 "…" 文件路径补全:目录进目录、.xt 文件直接补全;与 LSP 补全并行存在。
+  disposables.push(
+    monaco.languages.registerCompletionItemProvider(XT_LANGUAGE_ID, {
+      triggerCharacters: ['/', '\\', '"'],
+      async provideCompletionItems(model, position, _context, token) {
+        const ctx = importPathContext(model, position);
+        if (!ctx) return { suggestions: [] };
+        const entries = await listImportDir(ctx.dir);
+        if (token.isCancellationRequested) return { suggestions: [] };
+        const range = new monaco.Range(
+          position.lineNumber,
+          ctx.startColumn,
+          position.lineNumber,
+          position.column,
+        );
+        const suggestions: monaco.languages.CompletionItem[] = [
+          {
+            label: '../',
+            kind: monaco.languages.CompletionItemKind.Folder,
+            detail: '上一级目录',
+            sortText: '00_..',
+            filterText: '../',
+            insertText: '../',
+            range,
+          },
+        ];
+        for (const raw of entries) {
+          const isDir = raw.endsWith('/');
+          const name = isDir ? raw.slice(0, -1) : raw;
+          if (!name) continue;
+          if (!isDir && !/\.xt$/i.test(name)) continue;
+          const insertText = isDir ? name + '/' : name;
+          suggestions.push({
+            label: insertText,
+            kind: isDir
+              ? monaco.languages.CompletionItemKind.Folder
+              : monaco.languages.CompletionItemKind.File,
+            detail: isDir ? '目录' : '玄铁模块',
+            sortText: (isDir ? '0_' : '1_') + name.toLowerCase(),
+            filterText: insertText,
+            insertText,
+            range,
+          });
+        }
         return { suggestions };
       },
     }),
