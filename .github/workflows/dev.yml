@@ -191,6 +191,9 @@ jobs:
     timeout-minutes: 180
     env:
       DEV_VERSION: ${{ needs.meta.outputs.version }}
+      # make_pkg 据此把 dev 版本常量补丁从“源码 dirty”里区分出来
+      BUILD_PATCH_PATH: xuantie_compiler/玄铁.xt
+      BUILD_PATCH_VALUE: ${{ needs.meta.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -200,7 +203,14 @@ jobs:
           set -e
           f=xuantie_compiler/玄铁.xt
           grep -q '设 版本号 =' "$f"
-          sed -i.bak -E 's/(设 版本号 = ")[^"]*(")/\1'"$DEV_VERSION"'\2/' "$f"
+          # 不用 sed -i.bak:备份文件会以未跟踪文件污染 git status。
+          # 写临时文件再覆盖原文件,既保留原文件权限,也不在工作区留下 .bak。
+          tmp=$(mktemp "${TMPDIR:-/tmp}/xt-dev-version.XXXXXX")
+          trap 'rm -f "$tmp"' EXIT
+          sed -E 's/(设 版本号 = ")[^"]*(")/\1'"$DEV_VERSION"'\2/' "$f" > "$tmp"
+          cat "$tmp" > "$f"
+          rm -f "$tmp"
+          trap - EXIT
           grep -m1 '设 版本号 =' "$f"
           grep -q '设 版本号 = "'"$DEV_VERSION"'"' "$f"
 

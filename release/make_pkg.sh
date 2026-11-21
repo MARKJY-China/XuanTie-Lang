@@ -414,7 +414,23 @@ PKG_VER=$("$PKG/$XTC_NAME" -h 2>/dev/null | head -1 | sed 's/.*驱动 //' | tr -
 XTC_MD5=$(MD5 "$PKG/$XTC_NAME")
 XTC_SIZE=$(FSIZE "$PKG/$XTC_NAME")
 COMMIT=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "(非 git 工作区,无法记录提交)")
-DIRTY=$(git -C "$ROOT" status --porcelain 2>/dev/null | head -1 || true)
+# dev 构建会故意改一行版本常量且不提交。把该路径从 dirty 判定中精确剔除,
+# 并在清单里显式记为「构建期补丁」;其余未提交文件仍逐行列名,不掩盖真正的脏。
+BUILD_PATCH_PATH=${BUILD_PATCH_PATH:-}
+BUILD_PATCH_VALUE=${BUILD_PATCH_VALUE:-}
+STATUS=$(git -C "$ROOT" -c core.quotePath=false status --porcelain 2>/dev/null || true)
+DIRTY_FILES=""
+if [ -n "$STATUS" ]; then
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _path=${_line:3}
+    if [ -n "$BUILD_PATCH_PATH" ] && [ "$_path" = "$BUILD_PATCH_PATH" ]; then
+      continue
+    fi
+    DIRTY_FILES="${DIRTY_FILES}${_path}"$'\n'
+  done <<< "$STATUS"
+fi
+DIRTY=$(printf '%s' "$DIRTY_FILES" | sed '/^$/d')
 DDC_P=$(MD5 "$ROOT/build/xtc_s${PREV_N}.exe" 2>/dev/null || echo "(缺)")
 DDC_T=$(MD5 "$ROOT/build/xtc_s${TOP_N}.exe" 2>/dev/null || echo "(缺)")
 CLANG_V=$(clang --version 2>/dev/null | head -1 || echo "(未知)")
@@ -447,7 +463,23 @@ GCC_V=$("$TDM_DIR/bin/gcc.exe" --version 2>/dev/null | head -1 || gcc --version 
     echo "$_f  $(MD5 "$_f")  $(FSIZE "$_f")"
   done)
   echo
-  echo "[工作区状态] $( [ -n "$DIRTY" ] && echo '有未提交改动 —— 包内文件可能含未进任何提交的内容,发布前请先提交' || echo '干净(包内容全部对应上面记录的提交)' )"
+  if [ -n "$BUILD_PATCH_PATH" ]; then
+    echo "[构建期补丁] $BUILD_PATCH_PATH 的版本号 → ${BUILD_PATCH_VALUE:-$PKG_VER}(未提交,仅本次构建;不表示源码含未提交内容)"
+  fi
+  if [ -n "$DIRTY" ]; then
+    if [ -n "$BUILD_PATCH_PATH" ]; then
+      echo "[工作区状态] 有未提交改动(不含构建期补丁) —— 包内文件可能含未进任何提交的内容,请核对以下文件:"
+    else
+      echo "[工作区状态] 有未提交改动 —— 包内文件可能含未进任何提交的内容,发布前请先提交:"
+    fi
+    printf '%s\n' "$DIRTY" | sed 's/^/  - /'
+  else
+    if [ -n "$BUILD_PATCH_PATH" ]; then
+      echo "[工作区状态] 干净(除构建期补丁外,包内容全部对应上面记录的提交)"
+    else
+      echo "[工作区状态] 干净(包内容全部对应上面记录的提交)"
+    fi
+  fi
 } > $PKG/MANIFEST.txt
 echo "清单: MANIFEST.txt($(grep -c . $PKG/MANIFEST.txt) 行, 含 $(grep -c '  ' $PKG/MANIFEST.txt) 条含哈希记录)"
 

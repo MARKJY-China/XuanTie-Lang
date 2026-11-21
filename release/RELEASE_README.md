@@ -40,6 +40,7 @@ v<下一个待发布版本>-dev.<N>
 - `N` 由 `dev.yml` 的 meta job 读取 GitHub 滚动 `dev` Release 的 name 后 +1；没有旧 Release 或基准不匹配时从 1 开始。
 - 由 `dev.yml` 的 build job 在 checkout 后把 `设 版本号` **临时 patch 成该 dev 版本**（仅 CI 工作区，不提交），因此 dev 包内 `-V` 与 MANIFEST 均为 dev 版本。
 - 滚动 tag 仍固定为 `dev`（prerelease）；包内 MANIFEST「版本:」== dev 版本，`-V` 显示 `通道=dev`，升级器仍以清单 `commit` 做最强校验。
+- **MANIFEST 区分构建期补丁**：dev 构建临时改动的 `xuantie_compiler/玄铁.xt` 版本号会在清单写成「[构建期补丁]」，并从 dirty 判定中精确剔除；其余未提交文件仍逐行列名。stable/release 无该补丁时保持严格 dirty 口径。
 
 ## 2. 工作流
 
