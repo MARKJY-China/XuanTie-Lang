@@ -34,7 +34,7 @@ import { ProblemsPanel } from './ui/problems';
 import { SelectionTools } from './ui/selection-tools';
 import { DesignerPanel } from './ui/designer/panel';
 import { MarkdownReader } from './ui/md-reader';
-import { DocsBook } from './ui/docs-book';
+import { openDocsWindow } from './docs/bridge';
 import {
   confirmBox,
   CONTEXT_SEP,
@@ -215,8 +215,6 @@ function openEditorFile(p: string, reveal?: { line: number; column: number }): v
   }
   void tabs.openFile(p, reveal).catch((err: unknown) => showToast(`打开失败: ${String(err)}`, 'err'));
 }
-
-const docsBook = new DocsBook();
 
 const term = new TerminalPane(L.termHost, L.termSessionBar, L.buildHost, L.outputHost);
 // 一键运行/停止共用顶部一个按钮:会话开始与退出都回写按钮状态
@@ -1062,7 +1060,9 @@ attachLspFeatures(lsp, editor, {
   openAt: (p, line, column) => {
     openEditorFile(p, { line, column });
   },
-  openMethodDocs: (name) => docsBook.openMethod(name),
+  openMethodDocs: (name) => {
+    void openDocsWindow(`method:${name}`).catch((err: unknown) => showToast(`打开 API 文档书失败: ${String(err)}`, 'err'));
+  },
   onDiagnostics: (p, diags) => {
     problems.update(p, diags);
     renderProblemsBadge();
@@ -3171,7 +3171,7 @@ function bindUi(): void {
       } else if (act === 'term-close') {
         void term.closeActive();
       } else if (act === 'help-api-docs') {
-        docsBook.open();
+        void openDocsWindow().catch((err: unknown) => showToast(`打开 API 文档书失败: ${String(err)}`, 'err'));
       } else if (act === 'help-docs') {
         void openUrl('https://xt.markjy.com');
       } else if (act === 'help-about') {

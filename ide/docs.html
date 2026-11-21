@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>玄铁 API 文档书</title>
+  <style>
+    :root {
+      --bg: #1e1e1e;
+      --bg-panel: #252526;
+      --bg-deep: #181818;
+      --bg-hover: #2a2d2e;
+      --bg-active: #37373d;
+      --border: #3c3c3c;
+      --fg: #d4d4d4;
+      --fg-dim: #9d9d9d;
+      --accent: #e8842c;
+      --accent-dim: #a05a1e;
+      --ok: #4ec9b0;
+      --warn: #cca700;
+      --err: #f14c4c;
+      --mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+      color-scheme: dark;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #f8f8f8;
+        --bg-panel: #ffffff;
+        --bg-deep: #eeeeee;
+        --bg-hover: #e6e6e6;
+        --bg-active: #dcdcdc;
+        --border: #d0d0d0;
+        --fg: #1f1f1f;
+        --fg-dim: #666;
+        --accent: #c2410c;
+        --accent-dim: #e8842c;
+        --ok: #1a7f5a;
+        --warn: #9a6700;
+        --err: #c62828;
+        color-scheme: light;
+      }
+    }
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: var(--bg); color: var(--fg);
+      font-family: system-ui, "Microsoft YaHei UI", sans-serif; font-size: 13px;
+      user-select: none; -webkit-user-select: none;
+    }
+  </style>
+</head>
+<body>
+  <script type="module" src="/src/docs/window.ts"></script>
+</body>
+</html>

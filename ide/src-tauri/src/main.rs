@@ -5,6 +5,7 @@
 
 mod ailog;
 mod docs;
+mod docs_win;
 mod fsops;
 mod exec;
 mod http;
@@ -289,6 +290,7 @@ fn main() {
             tools::tiepm_remove,
             tools::tiepm_clean,
             tiepmwin::open_tiepm_window,
+            docs_win::open_docs_window,
             tiepmwin::tiepm_install_start,
             tiepmwin::tiepm_install_cancel,
             tiepmwin::tiepm_install_busy,

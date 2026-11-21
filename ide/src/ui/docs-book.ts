@@ -5,8 +5,10 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import 'katex/dist/katex.min.css';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { DOC_PAGES, METHOD_DOCS, type DocPage } from '../docs/api-docs.generated';
 import { showToast } from './dialogs';
+import './docs-book.css';
 
 const PAGE_BY_ID = new Map(DOC_PAGES.map((p) => [p.id, p]));
 const GROUP_ORDER = ['语言内建', '库 API', '手册'];
@@ -53,6 +55,11 @@ function resolvePageLink(href: string, fromId: string): string | null {
   return id;
 }
 
+export interface DocsBookOptions {
+  /** 独立窗口模式:关闭按钮/Esc 关闭当前 Tauri 窗口,而非隐藏覆盖层 */
+  standalone?: boolean;
+}
+
 export class DocsBook {
   private readonly root: HTMLElement;
   private readonly nav: HTMLElement;
@@ -61,16 +68,25 @@ export class DocsBook {
   private currentPageId = '';
   private navEntries: { el: HTMLElement; search: string }[] = [];
 
-  constructor() {
+  constructor(private readonly opts: DocsBookOptions = {}) {
     this.root = document.createElement('div');
     this.root.id = 'docs-book';
-    this.root.className = 'hidden';
+    this.root.className = 'hidden' + (this.opts.standalone ? ' docs-standalone' : '');
+    const winControls = this.opts.standalone
+      ? `<div class="docs-win-controls">
+          <button class="docs-win-btn" data-win="min" title="最小化"><i class="codicon codicon-chrome-minimize"></i></button>
+          <button class="docs-win-btn" data-win="max" title="最大化"><i class="codicon codicon-chrome-maximize"></i></button>
+          <button class="docs-win-btn close" data-win="close" title="关闭"><i class="codicon codicon-chrome-close"></i></button>
+        </div>`
+      : `<button class="docs-close" title="关闭 (Esc)"><i class="codicon codicon-close"></i></button>`;
     this.root.innerHTML = `
       <div class="docs-head">
-        <i class="codicon codicon-book"></i>
+        <button class="docs-icon-btn" id="docs-nav-toggle" title="收起目录"><i class="codicon codicon-layout-sidebar-left"></i></button>
+        <i class="codicon codicon-book docs-brand"></i>
         <span class="docs-title">玄铁 API 文档书</span>
         <input class="docs-search" type="search" placeholder="搜索页面 / 方法…" spellcheck="false" />
-        <button class="docs-close" title="关闭 (Esc)"><i class="codicon codicon-close"></i></button>
+        <div class="docs-head-spacer"></div>
+        ${winControls}
       </div>
       <div class="docs-main">
         <aside class="docs-nav"></aside>
@@ -82,15 +98,76 @@ export class DocsBook {
     this.search = this.root.querySelector('.docs-search') as HTMLInputElement;
     this.nav.addEventListener('click', (ev) => this.onNavClick(ev));
     this.content.addEventListener('click', (ev) => this.onContentClick(ev));
-    this.root.querySelector('.docs-close')?.addEventListener('click', () => this.close());
+    this.root.querySelector('.docs-close')?.addEventListener('click', () => this.requestClose());
     this.search.addEventListener('input', () => this.filterNav());
+    this.initWindowChrome();
     document.addEventListener('keydown', (ev) => {
       if (ev.key === 'Escape' && !this.root.classList.contains('hidden')) {
         ev.preventDefault();
-        this.close();
+        this.requestClose();
       }
     });
     this.renderNav();
+  }
+
+  /** 独立窗口自绘标题栏:拖动区、最小化/最大化/关闭、侧栏收起。 */
+  private initWindowChrome(): void {
+    const toggle = this.root.querySelector<HTMLButtonElement>('#docs-nav-toggle');
+    let collapsed = false;
+    try {
+      collapsed = localStorage.getItem('xuantie.docs.navCollapsed') === '1';
+    } catch {
+      // localStorage 不可用时保持展开
+    }
+    const applyCollapsed = (v: boolean): void => {
+      this.root.classList.toggle('nav-collapsed', v);
+      const ico = toggle?.querySelector('i');
+      if (ico) ico.className = 'codicon ' + (v ? 'codicon-layout-sidebar-left-off' : 'codicon-layout-sidebar-left');
+      if (toggle) toggle.title = v ? '展开目录' : '收起目录';
+      try {
+        localStorage.setItem('xuantie.docs.navCollapsed', v ? '1' : '0');
+      } catch {
+        // 忽略
+      }
+    };
+    applyCollapsed(collapsed);
+    toggle?.addEventListener('click', () => applyCollapsed(!this.root.classList.contains('nav-collapsed')));
+
+    if (!this.opts.standalone) return;
+    const win = getCurrentWindow();
+    const head = this.root.querySelector<HTMLElement>('.docs-head');
+    this.root.querySelectorAll<HTMLButtonElement>('[data-win]').forEach((btn) => {
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        const act = btn.dataset.win;
+        if (act === 'min') void win.minimize().catch(() => undefined);
+        else if (act === 'max') void win.toggleMaximize().then(() => this.syncMaxIcon()).catch(() => undefined);
+        else if (act === 'close') void win.close().catch(() => undefined);
+      });
+    });
+    head?.addEventListener('mousedown', (ev) => {
+      if (ev.button !== 0) return;
+      if ((ev.target as HTMLElement).closest('button,input,select,textarea')) return;
+      // 与主窗口同口径:手动 startDragging,不依赖 data-tauri-drag-region
+      void win.startDragging().catch(() => undefined);
+    });
+    head?.addEventListener('dblclick', (ev) => {
+      if ((ev.target as HTMLElement).closest('button,input,select,textarea')) return;
+      void win.toggleMaximize().then(() => this.syncMaxIcon()).catch(() => undefined);
+    });
+    void this.syncMaxIcon();
+    void win.onResized(() => void this.syncMaxIcon()).catch(() => undefined);
+  }
+
+  private async syncMaxIcon(): Promise<void> {
+    const ico = this.root.querySelector<HTMLElement>('[data-win="max"] i');
+    if (!ico) return;
+    try {
+      const max = await getCurrentWindow().isMaximized();
+      ico.className = 'codicon ' + (max ? 'codicon-chrome-restore' : 'codicon-chrome-maximize');
+    } catch {
+      // 窗口关闭竞态
+    }
   }
 
   open(): void {
@@ -142,6 +219,12 @@ export class DocsBook {
     this.content.innerHTML = this.renderMarkdown(md, `method:${name}`);
     this.search.value = '';
     this.filterNav();
+  }
+
+  /** 独立窗口直接关窗口;主窗口覆盖层模式只隐藏。 */
+  private requestClose(): void {
+    if (this.opts.standalone) void getCurrentWindow().close();
+    else this.close();
   }
 
   close(): void {
