@@ -120,6 +120,7 @@ typedef uintptr_t XTValue;
 #define XT_TYPE_FILE      15 ///< 流式文件句柄
 #define XT_TYPE_HANDLE    16 ///< 通用外部句柄(原生包用;带析构钩子)
 #define XT_TYPE_PROCESS   17 ///< 子进程句柄(标准输入可写;关闭并等待释放)
+#define XT_TYPE_BYTES_VIEW 18 ///< 字节视图(零拷贝窗口，持有源字节集引用)
 
 // 内存管理常量
 #define XT_REF_COUNT_IMMORTAL 0x7FFFFFFF ///< Arena 对象的引用计数，防止被释放
@@ -157,7 +158,19 @@ typedef struct {
     uint8_t* data;
     size_t length;
     size_t capacity;
+    uint64_t revision; ///< 长度/容量变更版本；字节视图据此拒绝失效访问
 } XTBytes;
+
+/**
+ * @brief 字节视图：源字节集的只读/可写窗口，不复制数据
+ */
+typedef struct {
+    XTObject header;
+    XTBytes* source;  ///< 持有引用，视图存活期间源不会释放
+    size_t start;
+    size_t length;
+    uint64_t revision; ///< 创建时的源版本；源扩容/清空后失配
+} XTBytesView;
 
 /**
  * @brief 异步任务结构
@@ -461,6 +474,15 @@ void xt_f64array_bad_hard(void);
 // 字节集拼接/清空（#175，#173 的追加字节集出口）
 void xt_bytes_append_bytes(XTValue dst, XTValue src);
 void xt_bytes_clear(XTValue bytes_val);
+// 字节预置(n)：长度 n、内容全 0（#138）
+XTValue xt_bytes_preset(XTValue length_val);
+// 字节视图：零拷贝窗口（#175）；结束位置 -1 表示到源末尾
+XTValue xt_bytes_view(XTValue bytes_val, XTValue start_val, XTValue end_val);
+XTValue xt_bytes_view_length(XTValue view_val);
+XTValue xt_bytes_view_get(XTValue view_val, XTValue index_val);
+XTValue xt_bytes_view_set(XTValue view_val, XTValue index_val, XTValue byte_val);
+XTValue xt_bytes_view_read_le(XTValue view_val, XTValue offset_val, XTValue width_val);
+XTValue xt_bytes_view_write_le(XTValue view_val, XTValue offset_val, XTValue value_val, XTValue width_val);
 // 定长小端读写（#175）：n=1..8；读返回无符号值（超出 62 位报错），写返回布尔
 XTValue xt_bytes_read_le(XTValue bytes_val, XTValue offset, XTValue width);
 XTValue xt_bytes_write_le(XTValue bytes_val, XTValue offset, XTValue value, XTValue width);

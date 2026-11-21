@@ -1811,6 +1811,11 @@ static void xt_free_obj(XTObject* obj) {
             }
             break;
         }
+        case XT_TYPE_BYTES_VIEW: {
+            XTBytesView* view = (XTBytesView*)obj;
+            if (view->source) xt_release((XTValue)view->source);
+            break;
+        }
         case XT_TYPE_TASK: {
             XTTask* task = (XTTask*)obj;
             if (task->result != XT_NULL) xt_release(task->result);
@@ -2291,6 +2296,7 @@ static const char* xt_type_label_zh(XTValue v) {
         case XT_TYPE_RESULT:   return "结果容器";
         case XT_TYPE_FUNCTION: return "函数";
         case XT_TYPE_BYTES:    return "字节";
+    case XT_TYPE_BYTES_VIEW: return "字节视图";
         case XT_TYPE_TASK:     return "任务";
         case XT_TYPE_CHANNEL:  return "通道";
         case XT_TYPE_SOCKET:   return "网络流";
@@ -3293,6 +3299,7 @@ int xt_is_type(XTValue v, XTValue name) {
     if (!strcmp(s, "结果")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_RESULT;
     if (!strcmp(s, "实例")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_INSTANCE;
     if (!strcmp(s, "字节")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_BYTES;
+    if (!strcmp(s, "字节视图")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_BYTES_VIEW;
     if (!strcmp(s, "任务")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_TASK;
     if (!strcmp(s, "道") || !strcmp(s, "通道")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_CHANNEL;
     if (!strcmp(s, "函数")) return xt_is_real_ptr(v) && ((XTObject*)v)->type_id == XT_TYPE_FUNCTION;
@@ -3498,7 +3505,7 @@ XTValue xt_file_exists(XTValue path_val) {
 XTValue xt_bytes_new(size_t capacity) {
     XTBytes* b = (XTBytes*)xt_malloc(sizeof(XTBytes), XT_TYPE_BYTES);
     b->data = g_current_arena ? (uint8_t*)xt_arena_alloc_raw(capacity) : (uint8_t*)malloc(capacity);
-    b->length = 0; b->capacity = capacity;
+    b->length = 0; b->capacity = capacity; b->revision = 0;
     return (XTValue)b;
 }
 
@@ -3542,11 +3549,14 @@ void xt_bytes_append_bytes(XTValue dst_val, XTValue src_val) {
     }
     memcpy(dst->data + dst->length, src->data, src->length);
     dst->length = needed;
+    dst->revision++;
 }
 
 void xt_bytes_clear(XTValue bytes_val) {
     xt_require_bytes(bytes_val, "清空");
-    ((XTBytes*)bytes_val)->length = 0;
+    XTBytes* b = (XTBytes*)bytes_val;
+    b->length = 0;
+    b->revision++;
 }
 
 XTValue xt_bytes_read_le(XTValue bytes_val, XTValue offset_val, XTValue width_val) {
@@ -3624,6 +3634,7 @@ void xt_bytes_append(XTValue bytes_val, uint8_t b_val) {
         b->capacity = new_capacity;
     }
     b->data[b->length++] = b_val;
+    b->revision++;
 }
 
 // --- 任务与通道 (v0.2: 已加互斥锁保护，对接线程池) ---
@@ -5430,6 +5441,7 @@ static XTBytes* _xt_bytes_from_raw(const uint8_t* data, size_t len) {
     b->data = (uint8_t*)malloc(b->capacity);
     if (len > 0) memcpy(b->data, data, len);
     b->length = len;
+    b->revision = 0;
     return b;
 }
 
@@ -5461,6 +5473,118 @@ XTValue xt_bytes_slice(XTValue bytes_val, XTValue start_val, XTValue end_val) {
     if ((size_t)start > b->length) start = (int64_t)b->length;
     if (end < start) end = start;
     return (XTValue)_xt_bytes_from_raw(b->data + start, (size_t)(end - start));
+}
+
+// 字节预置(n)：长度 n、内容全 0；与 字节(n)（容量 n、长度 0）区分
+XTValue xt_bytes_preset(XTValue length_val) {
+    int64_t n = xt_to_int(length_val);
+    if (n < 0) {
+        fprintf(stderr, "运行时错误: 字节预置 的长度不能为负数\n");
+        exit(1);
+    }
+    XTValue v = xt_bytes_new((size_t)n);
+    XTBytes* b = (XTBytes*)v;
+    b->length = (size_t)n;
+    if (n > 0) memset(b->data, 0, (size_t)n);
+    return v;
+}
+
+static XTBytesView* _xt_view_of(XTValue v) {
+    if (!XT_IS_REAL_PTR(v)) return NULL;
+    if (((XTObject*)v)->type_id != XT_TYPE_BYTES_VIEW) return NULL;
+    return (XTBytesView*)v;
+}
+
+static XTBytesView* _xt_view_guard(XTValue v, const char* method) {
+    XTBytesView* view = _xt_view_of(v);
+    if (!view) {
+        fprintf(stderr, "运行时错误: 方法 '%s' 的接收者不是字节视图\n", method);
+        exit(1);
+    }
+    if (!view->source || view->source->revision != view->revision) {
+        fprintf(stderr, "运行时错误: 字节视图已失效（源 字节 追加/清空/扩容后不能再访问）\n");
+        fprintf(stderr, "  提示: 重新调用 源.视图(起, 止) 建视图；不要跨扩容持有旧视图。\n");
+        exit(1);
+    }
+    return view;
+}
+
+// 源.视图(起, 止?)：零拷贝窗口；持有源引用
+XTValue xt_bytes_view(XTValue bytes_val, XTValue start_val, XTValue end_val) {
+    XTBytes* b = _xt_bytes_of(bytes_val);
+    if (!b) {
+        fprintf(stderr, "运行时错误: 视图 的接收者不是字节集\n");
+        exit(1);
+    }
+    int64_t start = xt_to_int(start_val);
+    int64_t end = xt_to_int(end_val);
+    if (end < 0 || (size_t)end > b->length) end = (int64_t)b->length;
+    if (start < 0) start = 0;
+    if ((size_t)start > b->length) start = (int64_t)b->length;
+    if (end < start) end = start;
+    XTBytesView* view = (XTBytesView*)xt_malloc(sizeof(XTBytesView), XT_TYPE_BYTES_VIEW);
+    view->source = b;
+    view->start = (size_t)start;
+    view->length = (size_t)(end - start);
+    view->revision = b->revision;
+    xt_retain(bytes_val);
+    return (XTValue)view;
+}
+
+XTValue xt_bytes_view_length(XTValue view_val) {
+    return XT_FROM_INT((int64_t)_xt_view_guard(view_val, "长度")->length);
+}
+
+XTValue xt_bytes_view_get(XTValue view_val, XTValue index_val) {
+    XTBytesView* view = _xt_view_guard(view_val, "取字节");
+    int64_t i = xt_to_int(index_val);
+    if (i < 0 || (size_t)i >= view->length) return XT_FROM_INT(-1);
+    return XT_FROM_INT((int64_t)view->source->data[view->start + (size_t)i]);
+}
+
+XTValue xt_bytes_view_set(XTValue view_val, XTValue index_val, XTValue byte_val) {
+    XTBytesView* view = _xt_view_guard(view_val, "写字节");
+    int64_t i = xt_to_int(index_val);
+    int64_t b = xt_to_int(byte_val);
+    if (i < 0 || (size_t)i >= view->length || b < 0 || b > 255) return XT_FALSE;
+    view->source->data[view->start + (size_t)i] = (uint8_t)b;
+    return XT_TRUE;
+}
+
+XTValue xt_bytes_view_read_le(XTValue view_val, XTValue offset_val, XTValue width_val) {
+    XTBytesView* view = _xt_view_guard(view_val, "读小端");
+    int64_t off = xt_to_int(offset_val);
+    int64_t width = xt_to_int(width_val);
+    if (width < 1 || width > 8 || off < 0 || (uint64_t)off + (uint64_t)width > view->length) {
+        return XT_FROM_INT(0);
+    }
+    uint64_t v = 0;
+    for (int64_t i = 0; i < width; i++) {
+        v |= (uint64_t)view->source->data[view->start + (size_t)off + (size_t)i] << (8 * i);
+    }
+    if (v > (uint64_t)4611686018427387903LL) {
+        fprintf(stderr, "运行时错误: 读小端 %lld 字节的结果超出整可表示域 ±(2^62-1)\n", (long long)width);
+        exit(1);
+    }
+    return XT_FROM_INT((int64_t)v);
+}
+
+XTValue xt_bytes_view_write_le(XTValue view_val, XTValue offset_val, XTValue value_val, XTValue width_val) {
+    XTBytesView* view = _xt_view_guard(view_val, "写小端");
+    int64_t off = xt_to_int(offset_val);
+    int64_t width = xt_to_int(width_val);
+    int64_t value = xt_to_int(value_val);
+    if (width < 1 || width > 8 || off < 0 || (uint64_t)off + (uint64_t)width > view->length) {
+        return XT_FALSE;
+    }
+    if (value < 0 || (width < 8 && (uint64_t)value >= (1ULL << (8 * width)))) {
+        return XT_FALSE;
+    }
+    for (int64_t i = 0; i < width; i++) {
+        view->source->data[view->start + (size_t)off + (size_t)i] =
+            (uint8_t)((uint64_t)value >> (8 * i));
+    }
+    return XT_TRUE;
 }
 
 // 字节集.寻找(子字节集, 起始?) → 字节位置,找不到 -1
