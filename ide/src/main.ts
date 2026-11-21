@@ -1206,12 +1206,39 @@ function byId(id: string): HTMLElement {
   return el;
 }
 
+let lspStatus: LspStatus = 'disconnected';
+let lspRestarting = false;
+
 function updateLspStatus(s: LspStatus, detail: string): void {
+  lspStatus = s;
   const label = s === 'connected' ? 'LSP 已连接' : s === 'connecting' ? 'LSP 连接中' : 'LSP 未连接';
   const dotCls = s === 'connected' ? 'ok' : s === 'connecting' ? 'pending' : 'bad';
   sbLsp.innerHTML = `<span class="dot ${dotCls}"></span>`;
   sbLsp.appendChild(document.createTextNode(label));
-  sbLsp.title = detail;
+  sbLsp.title = (detail ? detail + '\n' : '') + '双击重启 LSP';
+  sbLsp.classList.toggle('busy', lspRestarting);
+}
+
+/** 点击状态栏 LSP 项:重启 LSP(停旧进程 → 重新解析服务器/xtc → 给已打开文档补 didOpen)。 */
+async function restartLsp(): Promise<void> {
+  if (lspRestarting) return;
+  if (lspStatus === 'connecting') {
+    showToast('LSP 正在连接,请稍候', '');
+    return;
+  }
+  lspRestarting = true;
+  sbLsp.classList.add('busy');
+  showToast('正在重启 LSP…', '');
+  try {
+    await startLsp();
+    if (lsp.connected) showToast('LSP 已重启', 'ok');
+  } catch (err) {
+    updateLspStatus('disconnected', String(err));
+    showToast(`LSP 重启失败: ${String(err)}`, 'err');
+  } finally {
+    lspRestarting = false;
+    sbLsp.classList.remove('busy');
+  }
 }
 
 function setBottomTab(which: 'term' | 'output' | 'build' | 'problems'): void {
@@ -1254,6 +1281,14 @@ async function startLsp(): Promise<void> {
     if (text !== null) lsp.didOpen(p, text);
   }
 }
+
+sbLsp.addEventListener('dblclick', () => { void restartLsp(); });
+sbLsp.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' || ev.key === ' ') {
+    ev.preventDefault();
+    void restartLsp();
+  }
+});
 
 async function reloadTree(): Promise<void> {
   if (!workspace) return;

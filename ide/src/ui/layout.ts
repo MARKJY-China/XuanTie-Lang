@@ -204,7 +204,7 @@ const TEMPLATE = `
 </div>
 <div id="statusbar">
   <span class="sb-item" id="sb-project">未打开工程</span>
-  <span class="sb-item" id="sb-lsp"><span class="dot pending"></span>LSP 未连接</span>
+  <span class="sb-item sb-click" id="sb-lsp" title="双击重启 LSP" tabindex="0" role="button"><span class="dot pending"></span>LSP 未连接</span>
   <span class="sb-item sb-click" id="sb-preflight" style="display:none" title="双击查看校验详情"></span>
   <span class="spacer"></span>
   <span class="sb-item sb-click sb-update" id="sb-update" style="display:none"></span>
