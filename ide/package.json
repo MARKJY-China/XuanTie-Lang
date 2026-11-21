@@ -5,6 +5,7 @@
   "description": "玄铁铸造厂 —— 玄铁语言 IDE(v0.2:Tauri 2 壳 + Monaco + xt_lsp + xterm)",
   "scripts": {
     "dev": "vite",
+    "docs:gen": "node ../tools/gen-ide-api-docs.mjs",
     "build": "tsc --noEmit && vite build",
     "test:designer": "esbuild src/ui/designer/designer.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/designer-test.mjs && node node_modules/.tmp/designer-test.mjs",
     "build:app": "tauri build --features custom-protocol",

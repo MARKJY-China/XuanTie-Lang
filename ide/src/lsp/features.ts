@@ -8,11 +8,14 @@ import { withPinyinFilter } from '../pinyin';
 import { pathToUri, uriToPath } from '../uri';
 import * as backend from '../backend';
 import { dirname } from '../util';
+import { METHOD_DOCS } from '../docs/api-docs.generated';
 import type { CompletionItemDto, DiagnosticDto, HoverDto, LocationDto, SymbolInfoDto } from '../types';
 
 export interface FeatureHooks {
   openAt(path: string, line: number, column: number): void;
   onDiagnostics(path: string, diags: DiagnosticDto[]): void;
+  /** 内置方法 Ctrl+点击/跳定义兜底:打开 API 文档书方法页 */
+  openMethodDocs?(name: string): void;
 }
 
 function mapCompletionKind(k: number | undefined): monaco.languages.CompletionItemKind {
@@ -45,6 +48,44 @@ function mapSeverity(s: number): monaco.MarkerSeverity {
 
 function modelPath(model: monaco.editor.ITextModel): string {
   return uriToPath(model.uri.toString());
+}
+
+/** 光标处的成员方法名(`源.取字节` 的 取字节),用于内置方法悬停/跳文档。 */
+function methodAtPosition(
+  model: monaco.editor.ITextModel,
+  position: monaco.Position,
+): { name: string; range: monaco.Range } | null {
+  const word = model.getWordAtPosition(position);
+  if (!word) return null;
+  const line = model.getLineContent(position.lineNumber);
+  const before = line.slice(0, word.startColumn - 1);
+  if (!before.endsWith('.')) return null;
+  let name = word.word;
+  let endColumn = word.endColumn;
+  const after = line.charAt(endColumn - 1);
+  if (after === '?' || after === '？') {
+    name += after;
+    endColumn += 1;
+  }
+  return {
+    name,
+    range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, endColumn),
+  };
+}
+
+/** 内置方法悬停内容:同一方法名可能有字符串/字节/数组多份实现,逐一列出。 */
+function methodHoverMarkdown(name: string): string | null {
+  const seen = new Set<string>();
+  const blocks: string[] = [];
+  for (const d of METHOD_DOCS) {
+    if (d.name !== name) continue;
+    const key = `${d.receiver}|${d.signature}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    blocks.push(`**${d.receiver}.${name}**\n\n\`${d.signature}\`\n\n${d.summary}`);
+  }
+  if (blocks.length === 0) return null;
+  return blocks.join('\n\n---\n\n') + '\n\n_按住 Ctrl 点击方法名打开 API 文档书_';
 }
 
 // ---- 引 "路径" 文件补全 ----
@@ -246,6 +287,19 @@ export function attachLspFeatures(
     }),
   );
 
+  // 内置方法悬停:与 LSP hover 并行;LSP 不提供成员文档时这里兜住。
+  disposables.push(
+    monaco.languages.registerHoverProvider(XT_LANGUAGE_ID, {
+      provideHover(model, position) {
+        const hit = methodAtPosition(model, position);
+        if (!hit) return null;
+        const body = methodHoverMarkdown(hit.name);
+        if (!body) return null;
+        return { range: hit.range, contents: [{ value: body }] };
+      },
+    }),
+  );
+
   disposables.push(
     monaco.languages.registerDocumentSymbolProvider(XT_LANGUAGE_ID, {
       async provideDocumentSymbols(model) {
@@ -305,10 +359,19 @@ export function attachLspFeatures(
     hooks.onDiagnostics(path, diags);
   });
 
-  async function goToDefinition(): Promise<void> {
+  async function goToDefinition(posOverride?: monaco.Position): Promise<void> {
     const model = editor.getModel();
-    const pos = editor.getPosition();
-    if (!model || !pos || !client.connected) return;
+    const pos = posOverride ?? editor.getPosition();
+    if (!model || !pos) return;
+    const methodHit = methodAtPosition(model, pos);
+    const openDocs = (): void => {
+      if (methodHit) hooks.openMethodDocs?.(methodHit.name);
+    };
+    // LSP 断线时仍允许内置方法跳文档
+    if (!client.connected) {
+      openDocs();
+      return;
+    }
     let result: unknown;
     try {
       result = await client.request('textDocument/definition', {
@@ -316,19 +379,23 @@ export function attachLspFeatures(
         position: { line: pos.lineNumber - 1, character: pos.column - 1 },
       });
     } catch {
+      openDocs();
       return;
     }
     const loc = result as LocationDto | null;
-    if (!loc || !loc.range) return;
+    if (!loc || !loc.range) {
+      openDocs();
+      return;
+    }
     hooks.openAt(uriToPath(loc.uri), loc.range.start.line + 1, loc.range.start.character + 1);
   }
 
   // addCommand 返回命令 id(string|null)而非 IDisposable,不进 disposables
-  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.F12, goToDefinition);
+  editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.F12, () => void goToDefinition());
   disposables.push(
     editor.onMouseDown((e) => {
       if (e.event.leftButton && (e.event.ctrlKey || e.event.metaKey) && e.target.position) {
-        void goToDefinition();
+        void goToDefinition(e.target.position);
       }
     }),
   );

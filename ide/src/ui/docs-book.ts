@@ -1,0 +1,279 @@
+// 铸造厂内置 API 文档书:浏览 GUIDE/API、GUIDE/关键字 与标准库手册。
+// 数据由 tools/gen-ide-api-docs.mjs 生成并随 IDE 打包,离线可用。
+// 与编辑器联动:方法悬停用 METHOD_DOCS,Ctrl+点击打开对应方法页。
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import 'katex/dist/katex.min.css';
+import { openUrl } from '@tauri-apps/plugin-opener';
+import { DOC_PAGES, METHOD_DOCS, type DocPage } from '../docs/api-docs.generated';
+import { showToast } from './dialogs';
+
+const PAGE_BY_ID = new Map(DOC_PAGES.map((p) => [p.id, p]));
+const GROUP_ORDER = ['语言内建', '库 API', '手册'];
+const METHOD_NAMES = [...new Set(METHOD_DOCS.map((m) => m.name))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function slugify(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+/** 把文档里的相对链接解析成打包页 id;解析不到返回 null。 */
+function resolvePageLink(href: string, fromId: string): string | null {
+  let clean = href.split('#')[0].split('?')[0].trim();
+  if (!clean) return null;
+  if (clean.startsWith('doc:')) clean = clean.slice(4);
+  try {
+    clean = decodeURIComponent(clean);
+  } catch {
+    // 保留原样
+  }
+  if (/^(?:https?:|mailto:|data:)/i.test(clean) || clean.startsWith('#')) return null;
+  clean = clean.replace(/\\/g, '/').replace(/^\/+/, '');
+  const parts = fromId.split('/');
+  parts.pop();
+  for (const seg of clean.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  let id = parts.join('/').replace(/\.md$/i, '');
+  // GUIDE 旧链接可能省略/改动层级;尝试直接按 id 再匹配一次
+  if (!PAGE_BY_ID.has(id)) {
+    const noExt = clean.replace(/\.md$/i, '');
+    if (PAGE_BY_ID.has(noExt)) id = noExt;
+    else if (PAGE_BY_ID.has('关键字/' + noExt)) id = '关键字/' + noExt;
+    else return null;
+  }
+  return id;
+}
+
+export class DocsBook {
+  private readonly root: HTMLElement;
+  private readonly nav: HTMLElement;
+  private readonly content: HTMLElement;
+  private readonly search: HTMLInputElement;
+  private currentPageId = '';
+  private navEntries: { el: HTMLElement; search: string }[] = [];
+
+  constructor() {
+    this.root = document.createElement('div');
+    this.root.id = 'docs-book';
+    this.root.className = 'hidden';
+    this.root.innerHTML = `
+      <div class="docs-head">
+        <i class="codicon codicon-book"></i>
+        <span class="docs-title">玄铁 API 文档书</span>
+        <input class="docs-search" type="search" placeholder="搜索页面 / 方法…" spellcheck="false" />
+        <button class="docs-close" title="关闭 (Esc)"><i class="codicon codicon-close"></i></button>
+      </div>
+      <div class="docs-main">
+        <aside class="docs-nav"></aside>
+        <section class="docs-content"></section>
+      </div>`;
+    document.body.appendChild(this.root);
+    this.nav = this.root.querySelector('.docs-nav') as HTMLElement;
+    this.content = this.root.querySelector('.docs-content') as HTMLElement;
+    this.search = this.root.querySelector('.docs-search') as HTMLInputElement;
+    this.nav.addEventListener('click', (ev) => this.onNavClick(ev));
+    this.content.addEventListener('click', (ev) => this.onContentClick(ev));
+    this.root.querySelector('.docs-close')?.addEventListener('click', () => this.close());
+    this.search.addEventListener('input', () => this.filterNav());
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && !this.root.classList.contains('hidden')) {
+        ev.preventDefault();
+        this.close();
+      }
+    });
+    this.renderNav();
+  }
+
+  open(): void {
+    this.root.classList.remove('hidden');
+    if (!this.currentPageId) this.openPage('API/README');
+  }
+
+  openPage(id: string): void {
+    this.root.classList.remove('hidden');
+    const page = PAGE_BY_ID.get(id);
+    if (!page) {
+      showToast(`文档中未找到页面:${id}`, 'err');
+      return;
+    }
+    this.currentPageId = id;
+    this.markActive(`page:${id}`);
+    this.content.scrollTop = 0;
+    this.content.innerHTML = this.renderMarkdown(page.markdown, id);
+    this.search.value = '';
+    this.filterNav();
+  }
+
+  openMethod(name: string): void {
+    this.root.classList.remove('hidden');
+    const entries = METHOD_DOCS.filter((m) => m.name === name);
+    this.currentPageId = `method:${name}`;
+    this.markActive(`method:${name}`);
+    this.content.scrollTop = 0;
+    if (entries.length === 0) {
+      this.content.innerHTML = `<article class="docs-article"><h1>${escapeHtml(name)}</h1><p>API 文档中暂未收录方法 <code>${escapeHtml(name)}</code>。</p></article>`;
+      return;
+    }
+    const sections = entries
+      .map((e) => {
+        const link = `[查看《${e.pageTitle}》完整文档](doc:${e.pageId})`;
+        return [
+          `## ${e.receiver}.${e.name}`,
+          '',
+          `**签名**：\`${e.signature}\``,
+          '',
+          e.summary,
+          '',
+          link,
+          '',
+        ].join('\n');
+      })
+      .join('\n');
+    const md = [`# 方法：${name}`, '', '> 语言内建方法。悬停与 Ctrl+点击共用本索引。', '', sections].join('\n');
+    this.content.innerHTML = this.renderMarkdown(md, `method:${name}`);
+    this.search.value = '';
+    this.filterNav();
+  }
+
+  close(): void {
+    this.root.classList.add('hidden');
+  }
+
+  private renderNav(): void {
+    this.nav.innerHTML = '';
+    this.navEntries = [];
+    const section = (title: string): HTMLElement => {
+      const h = document.createElement('div');
+      h.className = 'docs-nav-group';
+      h.textContent = title;
+      this.nav.appendChild(h);
+      return h;
+    };
+    const item = (label: string, key: string, search: string, cls = ''): void => {
+      const b = document.createElement('button');
+      b.className = 'docs-nav-item' + (cls ? ' ' + cls : '');
+      b.textContent = label;
+      b.dataset.key = key;
+      this.nav.appendChild(b);
+      this.navEntries.push({ el: b, search });
+    };
+
+    section('内建方法');
+    for (const name of METHOD_NAMES) item(name, `method:${name}`, name, 'docs-nav-method');
+
+    const groups = new Map<string, DocPage[]>();
+    for (const p of DOC_PAGES) {
+      if (!groups.has(p.group)) groups.set(p.group, []);
+      groups.get(p.group)!.push(p);
+    }
+    for (const g of GROUP_ORDER) {
+      const pages = groups.get(g);
+      if (!pages || pages.length === 0) continue;
+      section(g);
+      for (const p of pages) item(p.title, `page:${p.id}`, `${p.title} ${p.id}`);
+    }
+  }
+
+  private onNavClick(ev: MouseEvent): void {
+    const btn = (ev.target as HTMLElement).closest<HTMLElement>('.docs-nav-item');
+    if (!btn?.dataset.key) return;
+    const key = btn.dataset.key;
+    if (key.startsWith('method:')) this.openMethod(key.slice('method:'.length));
+    else if (key.startsWith('page:')) this.openPage(key.slice('page:'.length));
+  }
+
+  private markActive(key: string): void {
+    for (const it of this.navEntries) it.el.classList.toggle('active', it.el.dataset.key === key);
+    const active = this.navEntries.find((it) => it.el.dataset.key === key)?.el;
+    active?.scrollIntoView({ block: 'nearest' });
+  }
+
+  private filterNav(): void {
+    const q = this.search.value.trim().toLowerCase();
+    for (const it of this.navEntries) {
+      it.el.classList.toggle('hidden', q !== '' && !it.search.toLowerCase().includes(q));
+    }
+  }
+
+  private renderMarkdown(markdown: string, fromId: string): string {
+    let raw = '';
+    try {
+      raw = marked.parse(markdown, { async: false, gfm: true, breaks: false }) as string;
+    } catch (err) {
+      return `<article class="docs-article"><h1>文档渲染失败</h1><pre>${escapeHtml(String(err))}</pre></article>`;
+    }
+    const tpl = document.createElement('template');
+    tpl.innerHTML = raw;
+
+    const used = new Map<string, number>();
+    tpl.content.querySelectorAll('h1,h2,h3,h4,h5,h6').forEach((el) => {
+      const base = slugify(el.textContent ?? '');
+      const n = (used.get(base) ?? 0) + 1;
+      used.set(base, n);
+      el.id = n === 1 ? base : `${base}-${n}`;
+    });
+
+    tpl.content.querySelectorAll<HTMLAnchorElement>('a[href]').forEach((a) => {
+      const href = a.getAttribute('href') ?? '';
+      a.removeAttribute('href');
+      if (href.startsWith('#')) {
+        a.setAttribute('data-doc-anchor', href.slice(1));
+      } else if (/^(?:https?:|mailto:)/i.test(href)) {
+        a.setAttribute('data-doc-external', href);
+      } else if (href.startsWith('doc:')) {
+        a.setAttribute('data-doc-page', href.slice(4));
+      } else {
+        const id = resolvePageLink(href, fromId);
+        if (id) a.setAttribute('data-doc-page', id);
+        else a.setAttribute('data-doc-missing', href);
+      }
+      a.setAttribute('rel', 'noopener noreferrer');
+    });
+
+    // 文档图片不随页面打包:保留 alt,避免 WebView 去请求相对路径
+    tpl.content.querySelectorAll<HTMLImageElement>('img[src]').forEach((img) => {
+      const src = img.getAttribute('src') ?? '';
+      if (!/^(?:data:|https?:)/i.test(src)) {
+        img.removeAttribute('src');
+        img.classList.add('docs-image-missing');
+      }
+    });
+
+    const clean = DOMPurify.sanitize(tpl.innerHTML, {
+      ADD_ATTR: ['data-doc-anchor', 'data-doc-page', 'data-doc-external', 'data-doc-missing'],
+    });
+    return `<article class="docs-article">${clean}</article>`;
+  }
+
+  private onContentClick(ev: MouseEvent): void {
+    const a = (ev.target as HTMLElement).closest<HTMLAnchorElement>('a[data-doc-page],a[data-doc-anchor],a[data-doc-external],a[data-doc-missing]');
+    if (!a) return;
+    ev.preventDefault();
+    const page = a.getAttribute('data-doc-page');
+    if (page) {
+      this.openPage(page);
+      return;
+    }
+    const anchor = a.getAttribute('data-doc-anchor');
+    if (anchor) {
+      this.content.querySelector<HTMLElement>(`#${CSS.escape(anchor)}`)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return;
+    }
+    const external = a.getAttribute('data-doc-external');
+    if (external) {
+      void openUrl(external).catch(() => undefined);
+      return;
+    }
+    const missing = a.getAttribute('data-doc-missing');
+    if (missing) showToast(`该链接未随 IDE 打包:${missing}`, '');
+  }
+}
