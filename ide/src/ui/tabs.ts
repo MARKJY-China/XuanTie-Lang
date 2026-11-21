@@ -67,6 +67,23 @@ interface OpenDoc {
     return this.encodings.get(path) ?? null;
   }
 
+  /** 最后一次成功读/存盘的文本(外部修改检测基线;不含未保存编辑) */
+  getSavedText(path: string): string | null {
+    return this.docs.get(path)?.savedText ?? null;
+  }
+
+  /** 用户确认“重新加载”后从磁盘覆盖缓冲区,丢弃未保存编辑;不触发关闭确认。 */
+  async reloadFromDisk(path: string): Promise<boolean> {
+    const doc = this.docs.get(path);
+    if (!doc) return false;
+    const res = await backend.fsReadFile(path);
+    doc.model.setValue(res.text);
+    doc.savedText = res.text;
+    this.encodings.set(path, res.encoding);
+    this.refreshDirty(doc);
+    return true;
+  }
+
   async reopenWith(path: string, encoding: string): Promise<void> {
     const doc = this.docs.get(path);
     if (!doc) return;

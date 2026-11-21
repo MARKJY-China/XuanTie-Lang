@@ -169,11 +169,14 @@ const problems = new ProblemsPanel(
     aiPanel.addRef({ kind: 'problem', path: '问题项', text });
   },
 );
+// 外部修改检测:记住用户明确“保留当前内容”的磁盘文本,磁盘再变才重新询问
+const externalDeclined = new Map<string, string>();
 const tabs = new TabManager(
   L.tabbar,
   editor,
   {
     onDidOpen: (p, text) => {
+      externalDeclined.delete(p);
       if (isXtPath(p)) lsp.didOpen(p, text);
       else problems.update(p, []);
       syncEditorView();
@@ -185,10 +188,12 @@ const tabs = new TabManager(
       syncUnsaved();
     },
     onDidSave: (p) => {
+      externalDeclined.delete(p);
       if (isXtPath(p)) lsp.didSave(p);
       syncUnsaved();
     },
     onDidClose: (p) => {
+      externalDeclined.delete(p);
       if (isXtPath(p)) lsp.didClose(p);
       problems.update(p, []);
       renderProblemsBadge();
@@ -1294,14 +1299,100 @@ sbLsp.addEventListener('keydown', (ev) => {
   }
 });
 
-async function reloadTree(): Promise<void> {
+async function reloadTree(silent = false): Promise<void> {
   if (!workspace) return;
   try {
     fileTree.setTree(await backend.fsListTree(workspace), workspace);
   } catch (err) {
-    showToast(`刷新文件树失败: ${String(err)}`, 'err');
+    if (!silent) showToast(`刷新文件树失败: ${String(err)}`, 'err');
   }
 }
+
+/** 外部改动询问:确定=从磁盘重新加载(丢弃未保存编辑);取消=保留当前内容。 */
+async function askExternalReload(path: string, dirty: boolean): Promise<boolean> {
+  return (
+    (await showCustomModal('文件已被修改', (body, close) => {
+      const line = document.createElement('div');
+      line.textContent = `文件「${basename(path)}」在磁盘上已被其他程序修改。`;
+      body.appendChild(line);
+      const hint = document.createElement('div');
+      hint.className = 'm-subtitle';
+      hint.textContent = dirty
+        ? '当前文件有未保存修改;重新加载会丢弃这些修改。'
+        : '是否从磁盘重新加载该文件?';
+      body.appendChild(hint);
+      const foot = document.createElement('div');
+      foot.className = 'm-foot';
+      const keep = document.createElement('button');
+      keep.className = 'mbtn';
+      keep.textContent = '保留当前内容';
+      keep.addEventListener('click', () => close('keep'));
+      const reload = document.createElement('button');
+      reload.className = 'mbtn primary';
+      reload.textContent = '重新加载';
+      reload.addEventListener('click', () => close('reload'));
+      foot.append(keep, reload);
+      body.appendChild(foot);
+    })) === 'reload'
+  );
+}
+
+let externalCheckBusy = false;
+
+/** 窗口从后台回到前台:静默刷新目录树;已打开文件有外部改动则逐个询问重载。 */
+async function checkExternalChangesOnFocus(): Promise<void> {
+  if (externalCheckBusy) return;
+  externalCheckBusy = true;
+  try {
+    const changed: { path: string; diskText: string }[] = [];
+    for (const p of tabs.getAllPaths()) {
+      const saved = tabs.getSavedText(p);
+      if (saved === null) continue;
+      let disk: string;
+      try {
+        disk = (await backend.fsReadFile(p)).text;
+      } catch {
+        continue; // 被删除/暂时不可读:交给目录树刷新反映,不弹重载窗
+      }
+      if (disk === saved) {
+        externalDeclined.delete(p);
+        continue;
+      }
+      if (externalDeclined.get(p) === disk) continue;
+      changed.push({ path: p, diskText: disk });
+    }
+    // 只有目录里的未打开文件变化时,这里静默刷新,不打扰用户
+    await reloadTree(true);
+    for (const c of changed) {
+      if (!tabs.isOpen(c.path)) continue;
+      const reload = await askExternalReload(c.path, tabs.isDirty(c.path));
+      if (reload) {
+        try {
+          await tabs.reloadFromDisk(c.path);
+          externalDeclined.delete(c.path);
+          showToast(`已重新加载 ${basename(c.path)}`, 'ok');
+        } catch (err) {
+          showToast(`重新加载失败: ${String(err)}`, 'err');
+        }
+      } else {
+        externalDeclined.set(c.path, c.diskText);
+      }
+    }
+  } finally {
+    externalCheckBusy = false;
+  }
+}
+
+let mainWindowWasBlurred = false;
+void getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+  if (!focused) {
+    mainWindowWasBlurred = true;
+    return;
+  }
+  if (!mainWindowWasBlurred) return;
+  mainWindowWasBlurred = false;
+  void checkExternalChangesOnFocus();
+});
 
 async function openWorkspace(dir: string): Promise<void> {
   // 切工程前:旧工程会话落盘,会话指针重置(会话按工程区隔离)
