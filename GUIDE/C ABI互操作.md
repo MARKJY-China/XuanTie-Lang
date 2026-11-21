@@ -1,6 +1,6 @@
 # C ABI 互操作（实验）
 
-> 对标编译器 v1.0-rc.5。本页描述 `-lib` 实验性 C ABI 导出（issue #164），ABI 在 1.0 前不承诺稳定。
+> 对标编译器 v1.0-rc.6-dev.5。本页描述 `-lib` 实验性 C ABI 导出（issue #164），ABI 在 1.0 前不承诺稳定。
 
 ## 能做什么
 
@@ -85,4 +85,4 @@ gcc -std=c11 demo.c libxtmath.o runtime/*.o \
 2. 检查 `.h` 声明与 `nm` ASCII 导出符号、无 `main`、无中文全局符号；
 3. 用 gcc/clang 链接 C demo 并运行整数/布尔/字符串断言。
 
-<sub><span style="color:#999">最后更新：2026-11-20</span></sub>
+<sub><span style="color:#999">最后更新：2026-11-21</span></sub>
