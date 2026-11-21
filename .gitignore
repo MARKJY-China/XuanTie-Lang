@@ -1,6 +1,9 @@
 
 # 过滤所有 .exe 文件
 _test_*
+# 发布构建生成的 Unix 可执行文件(Windows 由 *.exe 覆盖)
+/lsp/xt_lsp
+/tiepm/tiepm
 *_traced.xt
 *.exe
 *.ll
