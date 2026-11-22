@@ -17,7 +17,7 @@ export interface TreeHooks {
 // 已知文本扩展(专属图标或正常显示)
 const KNOWN_EXT = new Set([
   'md', 'txt', 'toml', 'json', 'jsonl', 'yaml', 'yml', 'xml', 'csv', 'ini', 'cfg', 'lock',
-  'html', 'css', 'js', 'ts', 'rs', 'go', 'c', 'h', 'py', 'sh', 'bat', 'ps1',
+  'html', 'css', 'js', 'ts', 'rs', 'go', 'c', 'h', 'py', 'vl', 'sh', 'bat', 'ps1',
 ]);
 // 二进制/构建产物扩展
 const BINARY_EXT = new Set([

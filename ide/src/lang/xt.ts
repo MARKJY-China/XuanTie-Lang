@@ -31,7 +31,8 @@ export function languageIdForPath(path: string): string {
     [['.c', '.h'], 'c'],
     [['.cc', '.cpp', '.cxx', '.hpp', '.hh'], 'cpp'],
     [['.rs'], 'rust'],
-    [['.py'], 'python'],
+    // .vl 文件内容是 Python,直接复用 Monaco 的 Python 高亮
+    [['.py', '.vl'], 'python'],
     [['.go'], 'go'],
     [['.java'], 'java'],
     [['.lua'], 'lua'],
