@@ -1,6 +1,6 @@
 [package]
 name = "xuantie-foundry"
-version = "0.8.0"
+version = "0.9.0"
 description = "玄铁铸造厂 — XuanTieLang IDE"
 edition = "2021"
 
