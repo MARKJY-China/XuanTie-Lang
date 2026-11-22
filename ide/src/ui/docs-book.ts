@@ -12,7 +12,6 @@ import './docs-book.css';
 
 const PAGE_BY_ID = new Map(DOC_PAGES.map((p) => [p.id, p]));
 const GROUP_ORDER = ['语言内建', '库 API', '手册'];
-const METHOD_NAMES = [...new Set(METHOD_DOCS.map((m) => m.name))].sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -67,6 +66,7 @@ export class DocsBook {
   private readonly search: HTMLInputElement;
   private currentPageId = '';
   private navEntries: { el: HTMLElement; search: string }[] = [];
+  private navDetails: HTMLDetailsElement[] = [];
 
   constructor(private readonly opts: DocsBookOptions = {}) {
     this.root = document.createElement('div');
@@ -234,6 +234,7 @@ export class DocsBook {
   private renderNav(): void {
     this.nav.innerHTML = '';
     this.navEntries = [];
+    this.navDetails = [];
     const section = (title: string): HTMLElement => {
       const h = document.createElement('div');
       h.className = 'docs-nav-group';
@@ -241,28 +242,82 @@ export class DocsBook {
       this.nav.appendChild(h);
       return h;
     };
-    const item = (label: string, key: string, search: string, cls = ''): void => {
+    const details = (label: string): HTMLDetailsElement => {
+      const d = document.createElement('details');
+      d.className = 'docs-nav-details';
+      const summary = document.createElement('summary');
+      summary.className = 'docs-nav-subgroup';
+      const chev = document.createElement('i');
+      chev.className = 'codicon codicon-chevron-right';
+      const text = document.createElement('span');
+      text.textContent = label;
+      summary.append(chev, text);
+      d.appendChild(summary);
+      this.nav.appendChild(d);
+      this.navDetails.push(d);
+      return d;
+    };
+    const item = (parent: HTMLElement, label: string, key: string, search: string, cls = ''): void => {
       const b = document.createElement('button');
       b.className = 'docs-nav-item' + (cls ? ' ' + cls : '');
       b.textContent = label;
       b.dataset.key = key;
-      this.nav.appendChild(b);
+      parent.appendChild(b);
       this.navEntries.push({ el: b, search });
     };
 
-    section('内建方法');
-    for (const name of METHOD_NAMES) item(name, `method:${name}`, name, 'docs-nav-method');
+    const order = ['数组', '字节', '字符串', '字', '字典', '结果', '文件', '系统', '时', '数学', '进程'];
+    const byGroup = (group: string): Map<string, typeof METHOD_DOCS> => {
+      const m = new Map<string, typeof METHOD_DOCS>();
+      for (const md of METHOD_DOCS) {
+        if (md.group !== group) continue;
+        const arr = m.get(md.pageTitle) ?? [];
+        arr.push(md);
+        m.set(md.pageTitle, arr);
+      }
+      return m;
+    };
+    const sortedGroups = (m: Map<string, typeof METHOD_DOCS>): [string, typeof METHOD_DOCS][] =>
+      [...m.entries()].sort((a, b) => {
+        const ia = order.indexOf(a[0]);
+        const ib = order.indexOf(b[0]);
+        if (ia >= 0 || ib >= 0) return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+        return a[0].localeCompare(b[0], 'zh-CN');
+      });
 
-    const groups = new Map<string, DocPage[]>();
+    const builtin = byGroup('语言内建');
+    if (builtin.size > 0) {
+      section('内建方法');
+      for (const [pageTitle, entries] of sortedGroups(builtin)) {
+        const d = details(`${pageTitle} (${entries.length})`);
+        for (const e of entries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))) {
+          item(d, e.name, `method:${e.name}`, `${e.name} ${e.receiver} ${e.pageTitle} ${e.signature}`, 'docs-nav-method');
+        }
+      }
+    }
+
+    const lib = byGroup('库 API');
+    if (lib.size > 0) {
+      section('库 API 成员');
+      for (const [pageTitle, entries] of [...lib.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))) {
+        const d = details(`${pageTitle} (${entries.length})`);
+        for (const e of entries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'))) {
+          item(d, e.name, `method:${e.name}`, `${e.name} ${e.receiver} ${e.pageTitle} ${e.signature}`, 'docs-nav-method');
+        }
+      }
+    }
+
+    const pagesByGroup = new Map<string, DocPage[]>();
     for (const p of DOC_PAGES) {
-      if (!groups.has(p.group)) groups.set(p.group, []);
-      groups.get(p.group)!.push(p);
+      if (!pagesByGroup.has(p.group)) pagesByGroup.set(p.group, []);
+      pagesByGroup.get(p.group)!.push(p);
     }
     for (const g of GROUP_ORDER) {
-      const pages = groups.get(g);
+      const pages = pagesByGroup.get(g);
       if (!pages || pages.length === 0) continue;
-      section(g);
-      for (const p of pages) item(p.title, `page:${p.id}`, `${p.title} ${p.id}`);
+      section(`${g}文档`);
+      const d = details(`全部 ${g}文档 (${pages.length})`);
+      for (const p of pages) item(d, p.title, `page:${p.id}`, `${p.title} ${p.id}`);
     }
   }
 
@@ -278,12 +333,19 @@ export class DocsBook {
     for (const it of this.navEntries) it.el.classList.toggle('active', it.el.dataset.key === key);
     const active = this.navEntries.find((it) => it.el.dataset.key === key)?.el;
     active?.scrollIntoView({ block: 'nearest' });
+    active?.closest('details')?.setAttribute('open', '');
   }
 
   private filterNav(): void {
     const q = this.search.value.trim().toLowerCase();
     for (const it of this.navEntries) {
       it.el.classList.toggle('hidden', q !== '' && !it.search.toLowerCase().includes(q));
+    }
+    for (const d of this.navDetails) {
+      const items = [...d.querySelectorAll<HTMLElement>('.docs-nav-item')];
+      const any = items.some((it) => !it.classList.contains('hidden'));
+      d.classList.toggle('hidden', q !== '' && !any);
+      if (q !== '' && any) d.open = true;
     }
   }
 
