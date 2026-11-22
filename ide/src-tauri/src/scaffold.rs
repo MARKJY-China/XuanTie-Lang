@@ -14,6 +14,9 @@ const MAIN_CONSOLE: &str = r#"// 主.xt —— 玄铁控制台示例
 "#;
 
 const MAIN_EMPTY: &str = "// 主.xt\n";
+const MAIN_LAN_IM: &str = include_str!("../templates/lan-im.xt");
+const MAIN_CUBE3D: &str = include_str!("../templates/cube3d.xt");
+const MAIN_MARIO2D: &str = include_str!("../templates/mario2d.xt");
 
 #[tauri::command]
 pub async fn scaffold_project(dir: String, name: String, template: String) -> Result<String, String> {
@@ -30,6 +33,9 @@ pub async fn scaffold_project(dir: String, name: String, template: String) -> Re
     let main_src = match template.as_str() {
         "console" => MAIN_CONSOLE,
         "empty" => MAIN_EMPTY,
+        "lan-im" => MAIN_LAN_IM,
+        "cube3d" => MAIN_CUBE3D,
+        "mario2d" => MAIN_MARIO2D,
         other => {
             // 清掉半成品目录:模板名非法是编程错误,报错而非静默
             let _ = std::fs::remove_dir_all(&root);
