@@ -3553,7 +3553,7 @@ async function boot(): Promise<void> {
   // 重新 setSize 会把窗口强制跳回记忆尺寸(用户刚手动调过的窗口被拉回旧值),
   // 叠加无边框窗口在 macOS 上 resize 时渲染区不同步 → 窗口反复乱闪/内容错位。
   // sessionStorage 在同一窗口的热重载后保留,冷启动为空 → 只在冷启动执行一次。
-  // onResized 的 payload 是物理像素,旧版误当逻辑尺寸存过(Retina 2x 下放大 2 倍,
+  // onResized 的 payload 是帧缓冲像素,旧版误当逻辑尺寸存过(Retina 2x 下放大 2 倍,
   // 窗口 5120×3328 超出屏幕只露左上角 → 其余空白);故启动时用主显示器逻辑尺寸
   // 校验记忆值,超屏(脏物理数据)则忽略,回落到配置默认窗口尺寸。
   const uiPrev = getSettings().ui;
@@ -3579,7 +3579,7 @@ async function boot(): Promise<void> {
     void backend.openAiConsole().catch((err: unknown) => showToast(`打开控制台失败: ${String(err)}`, 'err'));
   });
   // 窗口尺寸记忆(防抖;最大化时不记)
-  // onResized 的 payload 是物理像素(Retina 下 = 逻辑×2);记录时按 scaleFactor
+  // onResized 的 payload 是帧缓冲像素(Retina 下 = 逻辑×2);记录时按 scaleFactor
   // 归一为逻辑尺寸,启动恢复时才不会把窗口放大 2 倍超出屏幕。
   let sizeTimer: number | undefined;
   getCurrentWindow().onResized((e) => {
