@@ -11,9 +11,9 @@
 
 - 桥新增 `XT_LoadRenderTexture` / `XT_RenderTextureTexture` / `XT_BeginTextureMode` / `XT_EndTextureMode` / `XT_UnloadRenderTexture` / `XT_DrawRenderTexture` / `XT_DrawRenderTextureRegion` / `XT_SetRenderTextureFilter`，以及 `XT_LoadShaderFromMemory` / `XT_BeginShaderMode` / `XT_EndShaderMode` / `XT_GetShaderLocation` / `XT_SetShaderValueTexture` / `XT_SetShaderValueFloat` / `XT_SetShaderValueVec2` / `XT_UnloadShader`。离屏纹理池 8 个、着色器池 8 个，句柄沿用「槽位池 + 标记整数、0 表示失败」。
 - **性能**：整帧离屏是每帧一次 GPU 内拷贝（1600×1200 量级 <1ms）；但它要求「这一帧所有绘制都发生在离屏期间」，漏画的图元不会进纹理。与 `截图` 那条 `LoadImageFromScreen` 完全不同——后者是同步 `glReadPixels`，会让 GPU 停顿，只适合静止画面。
-- **坐标与混合（实测踩出来的两条）**：离屏宽高与内部绘制坐标都是**帧缓冲像素**（Retina 下用 取渲染宽/取渲染高 建、坐标自行乘像素比；与面板原生分辨率无关），贴回目标用逻辑坐标；`rlScalef` / `rlOrtho` 两种自动补偿实测均无效。贴回采用**覆盖写入**而非按 alpha 混合——离屏纹理的 alpha 在半透明叠加后会被打折（0.5 的叠加 → alpha 0.75），按 alpha 贴回会把颜色再乘一次而偏暗；代价是目标区域被整块盖掉。另：1 像素宽的线/描边/字号属"厚度类"，窗口里是逻辑单位（Retina 下 2 物理像素），离屏里就是 1 物理像素，会细一半。
+- **坐标与混合（实测踩出来的两条）**：离屏宽高与内部绘制坐标都是**帧缓冲像素**（Retina 下用 取渲染宽/取渲染高 建、坐标自行乘像素比；与面板原生分辨率无关），贴回目标用逻辑坐标；`rlScalef` / `rlOrtho` 两种自动补偿实测均无效。贴回采用**覆盖写入**而非按 alpha 混合——离屏纹理的 alpha 在半透明叠加后会被打折（0.5 的叠加 → alpha 0.75），按 alpha 贴回会把颜色再乘一次而偏暗；代价是目标区域被整块盖掉。另：1 像素宽的线/描边/字号属"厚度类"，窗口里是逻辑单位（Retina 下 2 帧缓冲像素），离屏里就是 1 帧缓冲像素，会细一半。
 - **两个贴回入口必须走同一条混合路径**：`贴回离屏区` 早期版本漏了覆盖写入，半透明区会偏暗（灰条 (69,69,76)→(52,52,57)）；同时它的源矩形方向也是错的（正高 + `height - 源y - 源高` 会导致整块上下颠倒），正确写法是 `{ 源x, height - 源y - 源高, 源宽, -源高 }`。两处已统一到同一个 `xt_blend_overwrite_begin()`。
-- **逐像素比对结果**：400×300 窗口（800×600 物理）同一场景两条路各截图比对，修掉 alpha 问题后差异 0.57%（整张贴回与局部贴回同口径，均为 0.57%），只剩边缘抗锯齿与上述线宽差（RenderTexture 无 MSAA，窗口 4x）。
+- **逐像素比对结果**：400×300 窗口（800×600 帧缓冲）同一场景两条路各截图比对，修掉 alpha 问题后差异 0.57%（整张贴回与局部贴回同口径，均为 0.57%），只剩边缘抗锯齿与上述线宽差（RenderTexture 无 MSAA，窗口 4x）。
 
 ## v1.3.11
 
