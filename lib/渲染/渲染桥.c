@@ -350,7 +350,7 @@ uintptr_t XT_GetScreenHeight(void) {
     return XT_FROM_INT(GetScreenHeight());
 }
 
-// framebuffer 物理像素(HIGHDPI 下为屏幕逻辑尺寸 × 缩放比;issue #22 缩放语义)
+// framebuffer 帧缓冲像素(HIGHDPI 下为屏幕逻辑尺寸 × 缩放比;issue #22 缩放语义)
 uintptr_t XT_GetRenderWidth(void) {
     return XT_FROM_INT(GetRenderWidth());
 }
@@ -359,21 +359,21 @@ uintptr_t XT_GetRenderHeight(void) {
     return XT_FROM_INT(GetRenderHeight());
 }
 
-// 窗口缩放系数 = framebuffer 物理像素 / 逻辑画布（HIGHDPI @2x 下为 2.0，100% 下为 1.0；issue #22 坐标系抽象）
+// 窗口缩放系数 = framebuffer 帧缓冲像素 / 逻辑画布（HIGHDPI @2x 下为 2.0，100% 下为 1.0；issue #22 坐标系抽象）
 uintptr_t XT_GetWindowScale(void) {
     int sw = GetScreenWidth();
     if (sw <= 0) return xt_make_float(1.0);
     return xt_make_float((double)GetRenderWidth() / (double)sw);
 }
 
-// 逻辑单位 → 物理像素（换算在桥内完成，玄铁侧函数体无浮点算术）
+// 逻辑单位 → 帧缓冲像素（换算在桥内完成，玄铁侧函数体无浮点算术）
 uintptr_t XT_ScaleToPixel(uintptr_t v) {
     int sw = GetScreenWidth();
     if (sw <= 0) return xt_make_float(xt_get_float(v));
     return xt_make_float(xt_get_float(v) * (double)GetRenderWidth() / (double)sw);
 }
 
-// 物理像素 → 逻辑单位（截图工具量出的物理像素反算回逻辑坐标）
+// 帧缓冲像素 → 逻辑单位（截图工具量出的帧缓冲像素反算回逻辑坐标）
 uintptr_t XT_ScaleToLogical(uintptr_t v) {
     int sw = GetScreenWidth();
     if (sw <= 0) return xt_make_float(xt_get_float(v));
@@ -858,7 +858,7 @@ uintptr_t XT_LoadTexture(uintptr_t filename) {
     int dataSize = 0;
     unsigned char* data = NULL;
     // 2x 屏幕(HIGHDPI)自动选 @2x 变体:优先 路径@2x.扩展名,存在则用;否则回退原图(issue #22)。
-    // 命名沿 macOS 惯例(图标@2x.png),与渲染缓冲物理像素匹配;仅 2x 及以上触发,1x 不折腾。
+    // 命名沿 macOS 惯例(图标@2x.png),与渲染缓冲的像素尺寸匹配;仅 2x 及以上触发,1x 不折腾。
     {
         int rw = GetRenderWidth();
         int sw = GetScreenWidth();
@@ -2339,7 +2339,7 @@ uintptr_t XT_LoadFontEx(uintptr_t filename, uintptr_t fontSize, uintptr_t refTex
 
 /* ---- HIGHDPI 高清入口(issue: Retina 模糊) ----
    加载函数的「字号」对调用方是显示字号、对库是图集光栅化字号——低 DPI 下恰好相等,
-   2x 屏必然分离:图集 24、绘制 40 逻辑像素 = 80 物理像素,3.3 倍放大笔画毛糙。
+   2x 屏必然分离:图集 24、绘制 40 逻辑像素 = 80 帧缓冲像素,3.3 倍放大笔画毛糙。
    这两个入口把换算收进库内:以 逻辑字号 × 取缩放系数() 光栅化,参数语义 =「屏幕上看到多大」,
    位图按出生尺寸 1:1 贴屏,放大采样不再发生。倍率取 GetRenderWidth/GetScreenWidth(与
    XT_GetWindowScale 同口径):1x 屏算出 = 原字号,图集零增量;Mac Retina 原生缩放即 2x。
