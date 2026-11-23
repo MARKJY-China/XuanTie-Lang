@@ -3384,6 +3384,7 @@ void XT_SetIMEPos(uintptr_t x, uintptr_t y) { (void)x; (void)y; }
 // ============================================================
 
 RLAPI void rlPushMatrix(void);
+RLAPI void rlSetBlendFactors(int src, int dst, int equation);
 RLAPI void rlPopMatrix(void);
 RLAPI void rlTranslatef(float x, float y, float z);
 RLAPI void rlRotatef(float angle, float x, float y, float z);
@@ -3474,4 +3475,239 @@ void XT_Translate3D(uintptr_t x, uintptr_t y, uintptr_t z) {
 }
 void XT_Rotate3D(uintptr_t angle, uintptr_t ax, uintptr_t ay, uintptr_t az) {
     rlRotatef((float)xt_get_float(angle), (float)xt_get_float(ax), (float)xt_get_float(ay), (float)xt_get_float(az));
+}
+
+// ============================================================
+// 离屏渲染与着色器
+// ============================================================
+// 用途:需要"读取本帧已画完的画面、再变形贴回"的效果——折射、玻璃水珠、
+// 镜头雨、屏幕空间模糊、全屏调色。这类效果靠重放绘制是做不圆的(只有矩形裁剪)。
+//
+// 性能提示:
+//   · 整帧离屏是每帧一次 GPU 内的拷贝(1600×1200 量级 <1ms),但它要求"这一帧
+//     的所有绘制都发生在离屏期间"。漏画(直接画到窗口上)的图元不会进纹理,
+//     表现为贴回时少一层——所以切换目标必须包住整帧,不能包半截。
+//   · 与 XT_Screenshot 的 LoadImageFromScreen 不是一回事:那条是同步 glReadPixels,
+//     会让 GPU 停顿等 CPU,只适合静止画面;要每帧采样必须用本节的 RenderTexture。
+//
+// 句柄:沿用"槽位池 + XT_FROM_INT(槽号+1)",0 = 失败/池满,与纹理池一致。
+
+#define XT_RT_MAX 8
+#define XT_SHADER_MAX 8
+
+typedef struct {
+    RenderTexture2D rt;
+    int tex_slot; // 该离屏纹理在普通纹理池中的槽位,供既有 绘纹理/绘纹理区 直接画
+} xt_rt_entry;
+
+static xt_rt_entry xt_rt_pool[XT_RT_MAX];
+static int xt_rt_used[XT_RT_MAX];
+static Shader xt_shader_pool[XT_SHADER_MAX];
+static int xt_shader_used[XT_SHADER_MAX];
+
+static xt_rt_entry* xt_get_rt(uintptr_t v) {
+    if (!IS_INT(v)) return NULL;
+    int64_t idx = XT_TO_INT(v);
+    if (idx < 1 || idx > XT_RT_MAX) return NULL;
+    if (!xt_rt_used[idx - 1]) return NULL;
+    return &xt_rt_pool[idx - 1];
+}
+
+static Shader* xt_get_shader(uintptr_t v) {
+    if (!IS_INT(v)) return NULL;
+    int64_t idx = XT_TO_INT(v);
+    if (idx < 1 || idx > XT_SHADER_MAX) return NULL;
+    if (!xt_shader_used[idx - 1]) return NULL;
+    return &xt_shader_pool[idx - 1];
+}
+
+// 建离屏纹理;宽高为逻辑像素。返回句柄,失败返回 0。
+// 采样过滤默认点采样(像素风缩放不应糊);需要线性时用 XT_SetRenderTextureFilter。
+uintptr_t XT_LoadRenderTexture(uintptr_t w, uintptr_t h) {
+    int wi = (int)xt_ni(w);
+    int hi = (int)xt_ni(h);
+    if (wi <= 0 || hi <= 0) {
+        fprintf(stderr, "[渲染库][错误] 建离屏纹理:宽高须 > 0(收到 %d×%d)\n", wi, hi);
+        return XT_FROM_INT(0);
+    }
+    int slot = -1;
+    for (int i = 0; i < XT_RT_MAX; i++) {
+        if (!xt_rt_used[i]) { slot = i; break; }
+    }
+    if (slot < 0) {
+        fprintf(stderr, "[渲染库][错误] 离屏纹理池已满(%d 个),释放后再建\n", XT_RT_MAX);
+        return XT_FROM_INT(0);
+    }
+    int tslot = xt_tex_alloc();
+    if (tslot < 0) return XT_FROM_INT(0);
+    RenderTexture2D rt = LoadRenderTexture(wi, hi);
+    if (rt.id == 0) {
+        fprintf(stderr, "[渲染库][错误] 建离屏纹理:raylib 返回空纹理(%d×%d)\n", wi, hi);
+        return XT_FROM_INT(0);
+    }
+    SetTextureFilter(rt.texture, TEXTURE_FILTER_POINT);
+    xt_rt_pool[slot].rt = rt;
+    xt_rt_pool[slot].tex_slot = tslot;
+    xt_rt_used[slot] = 1;
+    xt_tex_pool[tslot] = rt.texture;
+    xt_tex_used[tslot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
+// 离屏纹理对应的普通纹理句柄(可交给 绘纹理/绘纹理区,或当作着色器采样源)。
+uintptr_t XT_RenderTextureTexture(uintptr_t rtv) {
+    xt_rt_entry* e = xt_get_rt(rtv);
+    if (!e) return XT_FROM_INT(0);
+    return XT_FROM_INT(e->tex_slot + 1);
+}
+
+// 进入/退出离屏绘制。进入后请自己清屏(调 清屏),不要指望本函数清。
+// 注意:进入期间所有绘制都落在离屏纹理上,窗口此刻不更新。
+void XT_BeginTextureMode(uintptr_t rtv) {
+    xt_rt_entry* e = xt_get_rt(rtv);
+    if (!e) {
+        fprintf(stderr, "[渲染库][错误] 进入离屏绘制:句柄无效(句柄须为建离屏纹理的返回值)\n");
+        return;
+    }
+    BeginTextureMode(e->rt);
+}
+void XT_EndTextureMode(void) { EndTextureMode(); }
+
+void XT_UnloadRenderTexture(uintptr_t rtv) {
+    xt_rt_entry* e = xt_get_rt(rtv);
+    if (!e) return;
+    int tslot = e->tex_slot;
+    if (tslot >= 0 && tslot < XT_TEX_MAX && xt_tex_used[tslot]) {
+        xt_tex_pool[tslot].id = 0;
+        xt_tex_used[tslot] = 0;
+    }
+    UnloadRenderTexture(e->rt);
+    e->tex_slot = -1;
+    int64_t idx = XT_TO_INT(rtv);
+    xt_rt_used[idx - 1] = 0;
+}
+
+// 贴回:把离屏纹理整张画到窗口。离屏纹理在 GL 里是上下翻转的,
+// 这里已替调用方处理源矩形高度取负,不要自己再用 绘纹理区 画它(会上下颠倒)。
+// dx/dy/dw/dh 为千分定点(×1000),允许亚像素缩放。
+// 离屏纹理里存的是"已合成好的不透明画面",但它的 alpha 通道在半透明叠加后
+// 会被打折(实测 0.5 的叠加 → alpha 0.75)。若按 alpha 贴回,颜色会被再乘一次
+// 而偏暗。所以贴回一律忽略纹理 alpha,直接覆盖写入。
+// 两个贴回入口必须走同一路径——否则只修整张贴回、局部贴回仍会偏暗。
+static void xt_blend_overwrite_begin(void) {
+    BeginBlendMode(BLEND_CUSTOM);
+    rlSetBlendFactors(1 /*RL_ONE*/, 0 /*RL_ZERO*/, 0x8006 /*RL_FUNC_ADD*/);
+}
+
+void XT_DrawRenderTexture(uintptr_t rtv, uintptr_t dxq, uintptr_t dyq,
+                          uintptr_t dwq, uintptr_t dhq,
+                          uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    xt_rt_entry* e = xt_get_rt(rtv);
+    if (!e) return;
+    Texture2D t = e->rt.texture;
+    Rectangle src = { 0.0f, 0.0f, (float)t.width, -(float)t.height };
+    Rectangle dst = { xt_kf(dxq), xt_kf(dyq), xt_kf(dwq), xt_kf(dhq) };
+    xt_blend_overwrite_begin();
+    DrawTexturePro(t, src, dst, (Vector2){ 0.0f, 0.0f }, 0.0f, xt_color4(r, g, b, a));
+    EndBlendMode();
+}
+
+// 贴回局部:源矩形(像素) + 目标矩形(千分定点),用于水珠那种"取一块放大变形"。
+void XT_DrawRenderTextureRegion(uintptr_t rtv,
+                                uintptr_t sx, uintptr_t sy, uintptr_t sw, uintptr_t sh,
+                                uintptr_t dxq, uintptr_t dyq, uintptr_t dwq, uintptr_t dhq,
+                                uintptr_t r, uintptr_t g, uintptr_t b, uintptr_t a) {
+    xt_rt_entry* e = xt_get_rt(rtv);
+    if (!e) return;
+    Texture2D t = e->rt.texture;
+    float fx = xt_nf(sx), fy = xt_nf(sy), fw = xt_nf(sw), fh = xt_nf(sh);
+    if (fw <= 0.0f || fh <= 0.0f) return;
+    // 离屏纹理是倒像(和整张贴回同一个坑):源高必须取负才正立,而且负高时
+    // y 是从"视觉底部"量的,所以"从上往下"的 源y 要翻成 height - 源y - 源高。
+    Rectangle src = { fx, (float)t.height - fy - fh, fw, -fh };
+    Rectangle dst = { xt_kf(dxq), xt_kf(dyq), xt_kf(dwq), xt_kf(dhq) };
+    xt_blend_overwrite_begin();
+    DrawTexturePro(t, src, dst, (Vector2){ 0.0f, 0.0f }, 0.0f, xt_color4(r, g, b, a));
+    EndBlendMode();
+}
+
+// 采样过滤:0=点采样(默认,像素风),1=线性(缩放平滑)
+void XT_SetRenderTextureFilter(uintptr_t rtv, uintptr_t mode) {
+    xt_rt_entry* e = xt_get_rt(rtv);
+    if (!e) return;
+    SetTextureFilter(e->rt.texture, xt_ni(mode) ? TEXTURE_FILTER_BILINEAR : TEXTURE_FILTER_POINT);
+}
+
+// ---- 着色器 ----
+// 顶点/片元源码以字符串传入。桌面端 GLSL 版本用 #version 330(macOS/Linux 同一套)。
+// 注意:着色器是"引擎资源",不属于内容包;源码建议随引擎版本走。
+uintptr_t XT_LoadShaderFromMemory(uintptr_t vs, uintptr_t fs) {
+    int slot = -1;
+    for (int i = 0; i < XT_SHADER_MAX; i++) {
+        if (!xt_shader_used[i]) { slot = i; break; }
+    }
+    if (slot < 0) {
+        fprintf(stderr, "[渲染库][错误] 着色器池已满(%d 个)\n", XT_SHADER_MAX);
+        return XT_FROM_INT(0);
+    }
+    Shader s = LoadShaderFromMemory(xt_get_cstr(vs), xt_get_cstr(fs));
+    if (s.id == 0) {
+        fprintf(stderr, "[渲染库][错误] 编译着色器失败,检查 GLSL 版本与语法\n");
+        return XT_FROM_INT(0);
+    }
+    xt_shader_pool[slot] = s;
+    xt_shader_used[slot] = 1;
+    return XT_FROM_INT(slot + 1);
+}
+
+void XT_UnloadShader(uintptr_t shv) {
+    Shader* s = xt_get_shader(shv);
+    if (!s) return;
+    UnloadShader(*s);
+    int64_t idx = XT_TO_INT(shv);
+    xt_shader_used[idx - 1] = 0;
+}
+
+void XT_BeginShaderMode(uintptr_t shv) {
+    Shader* s = xt_get_shader(shv);
+    if (!s) {
+        fprintf(stderr, "[渲染库][错误] 用着色器绘制:句柄无效\n");
+        return;
+    }
+    BeginShaderMode(*s);
+}
+void XT_EndShaderMode(void) { EndShaderMode(); }
+
+// 取 uniform 位置;找不到返回 -1(可据此判断名字拼错)
+uintptr_t XT_GetShaderLocation(uintptr_t shv, uintptr_t name) {
+    Shader* s = xt_get_shader(shv);
+    if (!s) return XT_FROM_INT(-1);
+    return XT_FROM_INT(GetShaderLocation(*s, xt_get_cstr(name)));
+}
+
+// 把纹理绑到 sampler2D uniform
+void XT_SetShaderValueTexture(uintptr_t shv, uintptr_t loc, uintptr_t texHandle) {
+    Shader* s = xt_get_shader(shv);
+    Texture2D* t = xt_get_tex(texHandle);
+    if (!s || !t) {
+        fprintf(stderr, "[渲染库][错误] 绑定采样纹理:着色器或纹理句柄无效\n");
+        return;
+    }
+    SetShaderValueTexture(*s, (int)XT_TO_INT(loc), *t);
+}
+
+// 传一个 float 标量(千分定点 ×1000,与 绘矩形精 等一致)
+void XT_SetShaderValueFloat(uintptr_t shv, uintptr_t loc, uintptr_t vq) {
+    Shader* s = xt_get_shader(shv);
+    if (!s) return;
+    float v = xt_kf(vq);
+    SetShaderValue(*s, (int)XT_TO_INT(loc), &v, SHADER_UNIFORM_FLOAT);
+}
+
+// 传一个 vec2(千分定点 ×1000)
+void XT_SetShaderValueVec2(uintptr_t shv, uintptr_t loc, uintptr_t xq, uintptr_t yq) {
+    Shader* s = xt_get_shader(shv);
+    if (!s) return;
+    float v[2] = { xt_kf(xq), xt_kf(yq) };
+    SetShaderValue(*s, (int)XT_TO_INT(loc), v, SHADER_UNIFORM_VEC2);
 }
