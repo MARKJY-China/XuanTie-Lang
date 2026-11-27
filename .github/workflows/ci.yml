@@ -39,6 +39,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: IDE API 文档生成校验
+        run: node tools/gen-ide-api-docs.mjs --check
+
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod

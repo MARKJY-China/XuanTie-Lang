@@ -4,15 +4,44 @@
 // 覆盖:GUIDE/API/*.md(库 API)、GUIDE/关键字/*.md(语言内建)、手册/06_标准库与RuntimeAPI.md。
 // 方法索引从 Markdown 表格与正文里的 `接收者.方法(...)` 代码片段提取,
 // 供悬停与 Ctrl+点击跳文档使用。
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = join(ROOT, 'ide', 'src', 'docs', 'api-docs.generated.ts');
+const CHECK_ONLY = process.argv.includes('--check');
+const ALLOW_PAGE_DROP = process.argv.includes('--allow-page-drop');
+
+function fail(message) {
+  console.error(`[ide-api-docs] 错误: ${message}`);
+  process.exit(1);
+}
+
+// GUIDE/API 是 tools/gen-api.mjs 的生成物且被 .gitignore 忽略；
+// 新克隆/CI 里可能不存在。缺失时从 lib/*/*.xt 现场生成到临时目录，
+// 不再静默跳过（issue #194）。
+const API_SOURCE = join(ROOT, 'GUIDE', 'API');
+let apiDir = API_SOURCE;
+let tempApiDir = '';
+const hasApiMarkdown = (dir) => existsSync(dir) && readdirSync(dir).some((name) => name.endsWith('.md'));
+const genApi = join(ROOT, 'tools', 'gen-api.mjs');
+const canRegenerate = existsSync(genApi) && existsSync(join(ROOT, 'lib'));
+if (canRegenerate) {
+  tempApiDir = mkdtempSync(join(tmpdir(), 'xuantie-api-docs-'));
+  const r = spawnSync(process.execPath, [genApi, '--out', tempApiDir], { cwd: ROOT, stdio: 'inherit' });
+  if (r.status !== 0 || !hasApiMarkdown(tempApiDir)) {
+    fail(`从 lib/*/*.xt 生成 GUIDE/API 失败（exit ${r.status ?? 'null'}）`);
+  }
+  apiDir = tempApiDir;
+} else if (!hasApiMarkdown(API_SOURCE)) {
+  fail(`缺少 GUIDE/API，且无法从 lib/*/*.xt 重新生成（检查 ${genApi} 与 lib/）`);
+}
 
 const SOURCES = [
-  { dir: join(ROOT, 'GUIDE', 'API'), group: '库 API', idPrefix: 'API' },
+  { dir: apiDir, group: '库 API', idPrefix: 'API' },
   { dir: join(ROOT, 'GUIDE', '关键字'), group: '语言内建', idPrefix: '关键字' },
   {
     file: join(ROOT, 'GUIDE', '手册', '06_标准库与RuntimeAPI.md'),
@@ -193,16 +222,17 @@ const pages = [];
 const methods = [];
 for (const src of SOURCES) {
   if (src.file) {
-    if (!existsSync(src.file)) continue;
+    if (!existsSync(src.file)) fail(`缺少源文件: ${src.file}（拒绝静默跳过）`);
     const md = readFileSync(src.file, 'utf8');
     const page = { id: src.id, title: titleOf(md, '标准库与 Runtime API'), group: src.group, markdown: md };
     pages.push(page);
     methods.push(...collectMethods(page));
     continue;
   }
-  if (!existsSync(src.dir)) continue;
-  for (const name of readdirSync(src.dir)) {
-    if (!name.endsWith('.md')) continue;
+  if (!existsSync(src.dir)) fail(`缺少源目录: ${src.dir}（拒绝静默跳过；库 API 源应位于 GUIDE/API）`);
+  const mdNames = readdirSync(src.dir).filter((name) => name.endsWith('.md'));
+  if (mdNames.length === 0) fail(`源目录没有 Markdown: ${src.dir}（拒绝产出空分组）`);
+  for (const name of mdNames) {
     const full = join(src.dir, name);
     if (!statSync(full).isFile()) continue;
     const md = readFileSync(full, 'utf8');
@@ -246,19 +276,47 @@ methods.sort(
     a.receiver.localeCompare(b.receiver, 'zh-CN'),
 );
 
+// 页数下降护栏:生成物已有的页数不得静默减少(issue #194)。
+let oldPageCount = null;
+if (existsSync(OUT)) {
+  const old = readFileSync(OUT, 'utf8');
+  const a = old.indexOf('export const DOC_PAGES: DocPage[] = ');
+  const b = old.indexOf('export const METHOD_DOCS: MethodDoc[] = ');
+  if (a >= 0 && b > a) {
+    try {
+      oldPageCount = JSON.parse(old.slice(a + 'export const DOC_PAGES: DocPage[] = '.length, b).replace(/;\s*$/, '')).length;
+    } catch {
+      fail(`无法解析既有生成物页数: ${OUT}`);
+    }
+  }
+}
+if (oldPageCount !== null && pages.length < oldPageCount && !ALLOW_PAGE_DROP) {
+  fail(`生成页数下降: ${oldPageCount} → ${pages.length}（如确需删页，加 --allow-page-drop）`);
+}
+
 mkdirSync(dirname(OUT), { recursive: true });
 const header =
   '// 由 tools/gen-ide-api-docs.mjs 从 GUIDE/API、GUIDE/关键字、GUIDE/手册 生成,请勿手改。\n' +
-  '// 重新生成:node tools/gen-ide-api-docs.mjs\n';
+  '// 重新生成:node tools/gen-ide-api-docs.mjs；校验:node tools/gen-ide-api-docs.mjs --check\n';
 const body =
   'export interface DocPage { id: string; title: string; group: string; markdown: string }\n' +
   'export interface MethodDoc { name: string; receiver: string; signature: string; summary: string; pageId: string; pageTitle: string; group: string; heading: string; anchor: string; kind: string }\n' +
   `export const DOC_PAGES: DocPage[] = ${JSON.stringify(pages)};\n` +
   `export const METHOD_DOCS: MethodDoc[] = ${JSON.stringify(methods)};\n`;
-writeFileSync(OUT, header + body, 'utf8');
-console.log(`[ide-api-docs] ${pages.length} 页, ${methods.length} 条方法索引 → ${OUT}`);
+const content = header + body;
+if (CHECK_ONLY) {
+  const current = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
+  if (current !== content) {
+    fail('生成物与源文档不一致；请运行 node tools/gen-ide-api-docs.mjs 后提交');
+  }
+  console.log(`[ide-api-docs] 校验通过: ${pages.length} 页, ${methods.length} 条方法索引`);
+} else {
+  writeFileSync(OUT, content, 'utf8');
+  console.log(`[ide-api-docs] ${pages.length} 页, ${methods.length} 条方法索引 → ${OUT}`);
+}
 console.log(
   `[ide-api-docs] 示例: ${['追加', '截取', '取字节', '写字节']
     .flatMap((name) => methods.filter((m) => m.name === name).map((m) => `${m.receiver}.${m.name}`))
     .join(', ')}`,
 );
+if (tempApiDir) rmSync(tempApiDir, { recursive: true, force: true });

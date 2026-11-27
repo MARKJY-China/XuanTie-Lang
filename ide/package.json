@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "docs:gen": "node ../tools/gen-ide-api-docs.mjs",
+    "docs:check": "node ../tools/gen-ide-api-docs.mjs --check",
     "build": "tsc --noEmit && vite build",
     "test:designer": "esbuild src/ui/designer/designer.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/designer-test.mjs && node node_modules/.tmp/designer-test.mjs",
     "build:app": "tauri build --features custom-protocol",
