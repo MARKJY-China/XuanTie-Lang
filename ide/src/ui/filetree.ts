@@ -204,6 +204,25 @@ export class FileTree {
     this.render();
   }
 
+  /** 在文件树中展开祖先并选中某文件(标签右键「在文件树中显示」) */
+  revealPath(path: string): void {
+    if (!this.rootPath) return;
+    const rel = relativeTo(this.rootPath, path);
+    if (!rel || rel === path || rel.startsWith('..')) return;
+    const sep = this.rootPath.includes('/') ? '/' : '\\';
+    const root = this.rootPath.replace(/[\\/]+$/, '');
+    const parts = rel.split(/[\\/]/).filter(Boolean);
+    let cur = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      cur = cur + sep + parts[i];
+      this.expanded.add(cur);
+    }
+    this.selected = new Set([path]);
+    this.anchor = path;
+    this.render();
+    this.rowEls.get(path)?.scrollIntoView({ block: 'nearest' });
+  }
+
   setTree(nodes: FileNode[], rootPath?: string): void {
     this.roots = nodes;
     if (rootPath !== undefined) this.rootPath = rootPath;

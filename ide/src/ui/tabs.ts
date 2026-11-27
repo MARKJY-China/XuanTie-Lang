@@ -12,6 +12,8 @@ export interface TabHooks {
   onActivate(path: string | null): void;
   /** 标签集合/活动标签/预览态变化(会话持久化用) */
   onSessionChange?(): void;
+  /** 标签页右键菜单;坐标为视口坐标 */
+  onContextMenu?(path: string, x: number, y: number): void;
 }
 
 export interface TabSessionState {
@@ -71,6 +73,40 @@ interface OpenDoc {
 
   getSessionState(): TabSessionState {
     return { tabs: [...this.order], active: this.activePath, preview: this.previewPath };
+  }
+
+  isPreview(path: string): boolean {
+    return this.previewPath === path;
+  }
+
+  /** 显式固定预览标签(标签右键「固定标签页」用) */
+  pinTab(path: string): void {
+    this.pin(path);
+  }
+
+  /** 依次关闭多个标签;单个脏标签仍会弹保存确认 */
+  async closeMany(paths: string[]): Promise<void> {
+    for (const p of paths) {
+      if (this.docs.has(p)) await this.close(p);
+    }
+  }
+
+  async closeOthers(path: string): Promise<void> {
+    await this.closeMany(this.order.filter((p) => p !== path));
+  }
+
+  async closeRight(path: string): Promise<void> {
+    const idx = this.order.indexOf(path);
+    if (idx < 0) return;
+    await this.closeMany(this.order.slice(idx + 1));
+  }
+
+  async closeSaved(): Promise<void> {
+    await this.closeMany(this.order.filter((p) => !this.isDirty(p)));
+  }
+
+  async closeAll(): Promise<void> {
+    await this.closeMany([...this.order]);
   }
 
   getText(path: string): string | null {
@@ -355,6 +391,12 @@ interface OpenDoc {
     closeBtn.appendChild(closeIco);
     tab.append(name, dot, closeBtn);
     tab.addEventListener('click', () => this.activate(path));
+    tab.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.activate(path);
+      this.hooks.onContextMenu?.(path, e.clientX, e.clientY);
+    });
     closeBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       void this.close(path);

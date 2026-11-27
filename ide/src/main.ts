@@ -10,7 +10,7 @@ import { open as pickDialog } from '@tauri-apps/plugin-dialog';
 import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { openUrl } from '@tauri-apps/plugin-opener';
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener';
 import { getVersion } from '@tauri-apps/api/app';
 import { initUpdater, manualCheck, resetSkip } from './update/updater';
 import '@vscode/codicons/dist/codicon.css';
@@ -207,6 +207,7 @@ const tabs = new TabManager(
       designerPanel.refreshIfOpen();
     },
     onSessionChange: () => saveWorkspaceSession(),
+    onContextMenu: (path, x, y) => showTabMenu(path, x, y),
   },
   (p) => confirmBox('关闭未保存', `${basename(p)} 有未保存的更改,放弃并关闭?`),
 );
@@ -1662,6 +1663,57 @@ function showTreeMenu(e: MouseEvent, node: FileNode | null): void {
     action: () => void deleteNodes(删除目标),
   });
   showContextMenu(e.clientX, e.clientY, items);
+}
+
+// ---- 编辑器标签右键 ----
+function showTabMenu(path: string, x: number, y: number): void {
+  const order = tabs.getAllPaths();
+  const idx = order.indexOf(path);
+  const savedCount = order.filter((p) => !tabs.isDirty(p)).length;
+  const items: ContextMenuEntry[] = [
+    { label: '关闭', action: () => void tabs.close(path) },
+    { label: '关闭其他', disabled: order.length <= 1, action: () => void tabs.closeOthers(path) },
+    { label: '关闭右侧标签页', disabled: idx < 0 || idx >= order.length - 1, action: () => void tabs.closeRight(path) },
+    { label: '关闭已保存', disabled: savedCount === 0, action: () => void tabs.closeSaved() },
+    { label: '全部关闭', action: () => void tabs.closeAll() },
+    CONTEXT_SEP,
+    {
+      label: '复制路径',
+      action: () => {
+        void copyText(path).then((ok) => showToast(ok ? '已复制路径' : '复制失败', ok ? 'ok' : 'err'));
+      },
+    },
+  ];
+  if (workspace) {
+    items.push({
+      label: '复制相对路径',
+      action: () => {
+        void copyText(relativeTo(workspace, path)).then((ok) => showToast(ok ? '已复制相对路径' : '复制失败', ok ? 'ok' : 'err'));
+      },
+    });
+  }
+  items.push(CONTEXT_SEP);
+  if (tabs.isPreview(path)) {
+    items.push({ label: '固定标签页', action: () => tabs.pinTab(path) });
+  }
+  items.push({
+    label: '将文件添加到对话',
+    action: () => {
+      setAiDock(true);
+      aiPanel.addRef({ kind: 'path', path, text: '' });
+    },
+  });
+  items.push(CONTEXT_SEP);
+  if (workspace) {
+    items.push({ label: '在文件树中显示', action: () => fileTree.revealPath(path) });
+  }
+  items.push({
+    label: '在系统资源管理器中显示',
+    action: () => {
+      void revealItemInDir(path).catch((err: unknown) => showToast(`显示文件失败: ${String(err)}`, 'err'));
+    },
+  });
+  showContextMenu(x, y, items);
 }
 
 async function newFileIn(dir: string): Promise<void> {
