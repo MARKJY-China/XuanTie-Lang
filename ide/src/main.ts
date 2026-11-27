@@ -1987,7 +1987,14 @@ function settingsModal(): Promise<void> {
       fSize.min = '10';
       fSize.max = '28';
       fSize.value = String(s.editor?.fontSize ?? 14);
-      const fFont = document.createElement('select');
+      const fFont = document.createElement('button');
+      fFont.type = 'button';
+      fFont.className = 'mbtn font-picker';
+      const fFontText = document.createElement('span');
+      fFontText.className = 'font-picker-text';
+      const fFontChev = document.createElement('i');
+      fFontChev.className = 'codicon codicon-chevron-down';
+      fFont.append(fFontText, fFontChev);
       const fontLine = document.createElement('div');
       fontLine.className = 'rowline';
       const fImport = document.createElement('button');
@@ -2000,68 +2007,64 @@ function settingsModal(): Promise<void> {
       fFontRow.appendChild(document.createElement('label')).textContent = '字体';
       fFontRow.appendChild(fontLine);
       fFontRow.style.gridColumn = '1 / -1';
+      const fontPreview = document.createElement('div');
+      fontPreview.className = 'font-preview';
+      const fontPreviewLabel = document.createElement('div');
+      fontPreviewLabel.className = 'font-preview-label';
+      fontPreviewLabel.textContent = '字体预览';
+      const fontPreviewText = document.createElement('div');
+      fontPreviewText.className = 'font-preview-text';
+      fontPreviewText.textContent = '玄铁 XuanTie 0123456789  <=>  { } [ ]  abcdefg';
+      fontPreview.append(fontPreviewLabel, fontPreviewText);
+      fFontRow.appendChild(fontPreview);
       let importedFonts = [...(s.importedFonts ?? [])];
       let systemFonts: string[] = [];
       let selectedFont = s.editor?.fontFamily ?? '';
-      const rebuildFontOptions = (): void => {
-        const has = (value: string): boolean =>
-          [...fFont.options].some((o) => o.value === value);
-        fFont.innerHTML = '';
-        const def = document.createElement('option');
-        def.value = '';
-        def.textContent = '默认（Cascadia Mono）';
-        fFont.appendChild(def);
-        if (importedFonts.length > 0) {
-          const grp = document.createElement('optgroup');
-          grp.label = '已导入';
-          for (const f of importedFonts) {
-            if (has(f.family)) continue;
-            const o = document.createElement('option');
-            o.value = f.family;
-            o.textContent = f.family;
-            grp.appendChild(o);
-          }
-          if (grp.childElementCount > 0) fFont.appendChild(grp);
-        }
-        const sys = document.createElement('optgroup');
-        sys.label = '系统字体';
-        if (systemFonts.length === 0) {
-          const loading = document.createElement('option');
-          loading.value = '__loading__';
-          loading.textContent = '正在读取系统字体…';
-          loading.disabled = true;
-          sys.appendChild(loading);
-        } else {
-          for (const name of systemFonts) {
-            if (has(name)) continue;
-            const o = document.createElement('option');
-            o.value = name;
-            o.textContent = name;
-            sys.appendChild(o);
-          }
-        }
-        fFont.appendChild(sys);
-        if (selectedFont && !has(selectedFont)) {
-          const o = document.createElement('option');
-          o.value = selectedFont;
-          o.textContent = '自定义/旧设置';
-          fFont.appendChild(o);
-        }
-        fFont.value = selectedFont;
+      const applyFontSelection = (value: string): void => {
+        selectedFont = value;
+        fFontText.textContent = value || '默认（Cascadia Mono）';
+        fontPreviewText.style.fontFamily = cssFontFamily(value);
       };
-      rebuildFontOptions();
-      fFont.addEventListener('change', () => {
-        selectedFont = fFont.value;
+      const fontMenuItems = (): ContextMenuEntry[] => {
+        const items: ContextMenuEntry[] = [
+          {
+            label: '默认（Cascadia Mono）',
+            checked: selectedFont === '',
+            action: () => applyFontSelection(''),
+          },
+        ];
+        const seen = new Set<string>();
+        if (importedFonts.length > 0) {
+          items.push({ label: '已导入', header: true });
+          for (const f of importedFonts) {
+            if (seen.has(f.family)) continue;
+            seen.add(f.family);
+            items.push({ label: f.family, checked: selectedFont === f.family, action: () => applyFontSelection(f.family) });
+          }
+        }
+        items.push({ label: systemFonts.length > 0 ? '系统字体' : '系统字体（读取中…）', header: true });
+        for (const name of systemFonts) {
+          if (seen.has(name)) continue;
+          seen.add(name);
+          items.push({ label: name, checked: selectedFont === name, action: () => applyFontSelection(name) });
+        }
+        if (selectedFont && !seen.has(selectedFont)) {
+          items.push({ label: '自定义/旧设置', checked: true, action: () => applyFontSelection(selectedFont) });
+        }
+        return items;
+      };
+      fFont.addEventListener('click', () => {
+        const r = fFont.getBoundingClientRect();
+        showContextMenu(r.left, r.bottom + 2, fontMenuItems(), 'font-menu');
       });
+      applyFontSelection(selectedFont);
       void backend
         .listSystemFonts()
         .then((fonts) => {
           systemFonts = fonts;
-          rebuildFontOptions();
         })
         .catch(() => {
           systemFonts = [];
-          rebuildFontOptions();
         });
       fImport.addEventListener('click', () => {
         void (async () => {
@@ -2082,8 +2085,7 @@ function settingsModal(): Promise<void> {
             await registerImportedFont(f.family, f.dataUrl);
             importedFonts = importedFonts.filter((x) => x.path !== f.path && x.family !== f.family);
             importedFonts.push({ family: f.family, path: f.path });
-            selectedFont = f.family;
-            rebuildFontOptions();
+            applyFontSelection(f.family);
             showToast(`已导入字体:${f.family}`, 'ok');
           } catch (err) {
             showToast(`导入字体失败: ${String(err)}`, 'err');
@@ -2222,7 +2224,7 @@ function settingsModal(): Promise<void> {
           autoCheckTiepmUpdates: cb.checked,
           imeAutoSwitch: imeCb.checked,
           devMode: devCb.checked,
-          editor: { fontSize: Math.max(10, Math.min(28, Number(fSize.value) || 14)), fontFamily: fFont.value.trim() },
+          editor: { fontSize: Math.max(10, Math.min(28, Number(fSize.value) || 14)), fontFamily: selectedFont.trim() },
           importedFonts,
           zoom: Number(zSel.sel.value) || 1,
           theme: (tSel.sel.value === 'light' ? 'light' : 'dark') as 'dark' | 'light',

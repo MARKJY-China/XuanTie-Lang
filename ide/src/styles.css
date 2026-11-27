@@ -1053,6 +1053,15 @@ body.light #statusbar .sb-update { color: #0b63b8; }
 .mbtn:hover { border-color: var(--fg-dim); }
 .mbtn.wide { width: 100%; justify-content: center; }
 .mbtn:disabled { opacity: 0.55; cursor: default; }
+.font-picker { flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; text-align: left; }
+.font-picker-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.font-picker .codicon { font-size: 12px; color: var(--fg-dim); flex: none; }
+.font-preview {
+  margin-top: 8px; padding: 9px 11px;
+  background: var(--bg-deep); border: 1px solid var(--border); border-radius: 7px;
+}
+.font-preview-label { font-size: 11px; color: var(--fg-dim); margin-bottom: 5px; }
+.font-preview-text { font-size: 16px; line-height: 1.55; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mbtn.primary { background: var(--accent-dim); border-color: var(--accent-dim); color: #fff; }
 .mbtn.primary:hover { background: var(--accent); border-color: var(--accent); }
 .linkish { color: var(--accent); cursor: pointer; }
@@ -1112,6 +1121,16 @@ body.light #statusbar .sb-update { color: #0b63b8; }
 }
 /* 收起动画:closeContextMenu 先加 .ctx-closing,动画结束后才真正移除 */
 .ctx-menu.ctx-closing { animation: ctx-out 0.1s ease-in forwards; pointer-events: none; }
+.ctx-menu.font-menu {
+  border-radius: 10px; padding: 5px;
+  max-height: min(70vh, 420px);
+  scrollbar-width: thin;
+}
+.ctx-menu.font-menu::-webkit-scrollbar { width: 5px; height: 5px; }
+.ctx-menu.font-menu::-webkit-scrollbar-track { background: transparent; }
+.ctx-menu.font-menu::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.38); border-radius: 3px; }
+.ctx-menu.font-menu::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.6); }
+.ctx-menu.font-menu .ctx-item { padding: 7px 12px; border-radius: 6px; }
 @keyframes ctx-in {
   from { opacity: 0; transform: translateY(-4px) scaleY(0.96); }
   to { opacity: 1; transform: none; }

@@ -118,11 +118,16 @@ function renderMenuEntry(menu: HTMLElement, item: ContextMenuItem): void {
   menu.appendChild(row);
 }
 
-export function showContextMenu(x: number, y: number, items: ContextMenuEntry[]): void {
+export function showContextMenu(
+  x: number,
+  y: number,
+  items: ContextMenuEntry[],
+  menuClass = '',
+): void {
   const root = document.getElementById('ctx-root') as HTMLElement;
   root.classList.add('open');
   root.innerHTML = '';
-  const menu = el('div', 'ctx-menu');
+  const menu = el('div', 'ctx-menu' + (menuClass ? ' ' + menuClass : ''));
   for (const item of items) {
     if (item === CONTEXT_SEP) {
       menu.appendChild(el('div', 'ctx-sep'));
