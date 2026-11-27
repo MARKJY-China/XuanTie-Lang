@@ -6,6 +6,7 @@
 mod ailog;
 mod docs;
 mod docs_win;
+mod fonts;
 mod idewin;
 mod fsops;
 mod exec;
@@ -303,6 +304,9 @@ fn main() {
             tools::settings_load,
             tools::settings_save,
             scaffold::scaffold_project,
+            fonts::list_system_fonts,
+            fonts::import_font,
+            fonts::font_data_url,
             exec::exec_capture,
             exec::kill_all_exec,
             exec::spawn_external,

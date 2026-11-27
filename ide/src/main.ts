@@ -1983,10 +1983,109 @@ function settingsModal(): Promise<void> {
       fSize.min = '10';
       fSize.max = '28';
       fSize.value = String(s.editor?.fontSize ?? 14);
-      const fFont = document.createElement('input');
-      fFont.type = 'text';
-      fFont.value = s.editor?.fontFamily ?? '';
-      fFont.placeholder = '默认 Cascadia Mono';
+      const fFont = document.createElement('select');
+      const fontLine = document.createElement('div');
+      fontLine.className = 'rowline';
+      const fImport = document.createElement('button');
+      fImport.type = 'button';
+      fImport.className = 'mbtn';
+      fImport.textContent = '导入字体…';
+      fontLine.append(fFont, fImport);
+      const fFontRow = document.createElement('div');
+      fFontRow.className = 'mrow';
+      fFontRow.appendChild(document.createElement('label')).textContent = '字体';
+      fFontRow.appendChild(fontLine);
+      fFontRow.style.gridColumn = '1 / -1';
+      let importedFonts = [...(s.importedFonts ?? [])];
+      let systemFonts: string[] = [];
+      let selectedFont = s.editor?.fontFamily ?? '';
+      const rebuildFontOptions = (): void => {
+        const has = (value: string): boolean =>
+          [...fFont.options].some((o) => o.value === value);
+        fFont.innerHTML = '';
+        const def = document.createElement('option');
+        def.value = '';
+        def.textContent = '默认（Cascadia Mono）';
+        fFont.appendChild(def);
+        if (importedFonts.length > 0) {
+          const grp = document.createElement('optgroup');
+          grp.label = '已导入';
+          for (const f of importedFonts) {
+            if (has(f.family)) continue;
+            const o = document.createElement('option');
+            o.value = f.family;
+            o.textContent = f.family;
+            grp.appendChild(o);
+          }
+          if (grp.childElementCount > 0) fFont.appendChild(grp);
+        }
+        const sys = document.createElement('optgroup');
+        sys.label = '系统字体';
+        if (systemFonts.length === 0) {
+          const loading = document.createElement('option');
+          loading.value = '__loading__';
+          loading.textContent = '正在读取系统字体…';
+          loading.disabled = true;
+          sys.appendChild(loading);
+        } else {
+          for (const name of systemFonts) {
+            if (has(name)) continue;
+            const o = document.createElement('option');
+            o.value = name;
+            o.textContent = name;
+            sys.appendChild(o);
+          }
+        }
+        fFont.appendChild(sys);
+        if (selectedFont && !has(selectedFont)) {
+          const o = document.createElement('option');
+          o.value = selectedFont;
+          o.textContent = '自定义/旧设置';
+          fFont.appendChild(o);
+        }
+        fFont.value = selectedFont;
+      };
+      rebuildFontOptions();
+      fFont.addEventListener('change', () => {
+        selectedFont = fFont.value;
+      });
+      void backend
+        .listSystemFonts()
+        .then((fonts) => {
+          systemFonts = fonts;
+          rebuildFontOptions();
+        })
+        .catch(() => {
+          systemFonts = [];
+          rebuildFontOptions();
+        });
+      fImport.addEventListener('click', () => {
+        void (async () => {
+          let path: string | null = null;
+          try {
+            const picked = await pickDialog({
+              multiple: false,
+              title: '导入字体',
+              filters: [{ name: '字体文件', extensions: ['ttf', 'otf'] }],
+            });
+            path = typeof picked === 'string' ? picked : null;
+          } catch {
+            return;
+          }
+          if (!path) return;
+          try {
+            const f = await backend.importFont(path);
+            await registerImportedFont(f.family, f.dataUrl);
+            importedFonts = importedFonts.filter((x) => x.path !== f.path && x.family !== f.family);
+            importedFonts.push({ family: f.family, path: f.path });
+            selectedFont = f.family;
+            rebuildFontOptions();
+            showToast(`已导入字体:${f.family}`, 'ok');
+          } catch (err) {
+            showToast(`导入字体失败: ${String(err)}`, 'err');
+          }
+        })();
+      });
       const zSel = mkSel('整窗缩放');
       for (const z of [80, 90, 100, 110, 125, 150]) {
         const o = document.createElement('option');
@@ -2003,7 +2102,7 @@ function settingsModal(): Promise<void> {
         if ((s.theme ?? 'dark') === v) o.selected = true;
         tSel.sel.appendChild(o);
       }
-      look.append(mkIn('字号', fSize), mkIn('字体', fFont), zSel.row, tSel.row);
+      look.append(mkIn('字号', fSize), fFontRow, zSel.row, tSel.row);
       rLook.appendChild(look);
       body.appendChild(rLook);
 
@@ -2120,6 +2219,7 @@ function settingsModal(): Promise<void> {
           imeAutoSwitch: imeCb.checked,
           devMode: devCb.checked,
           editor: { fontSize: Math.max(10, Math.min(28, Number(fSize.value) || 14)), fontFamily: fFont.value.trim() },
+          importedFonts,
           zoom: Number(zSel.sel.value) || 1,
           theme: (tSel.sel.value === 'light' ? 'light' : 'dark') as 'dark' | 'light',
         });
@@ -2137,6 +2237,7 @@ function settingsModal(): Promise<void> {
           imeAutoSwitch?: boolean;
           devMode?: boolean;
           editor?: { fontSize: number; fontFamily: string };
+          importedFonts?: { family: string; path: string }[];
           zoom?: number;
           theme?: 'dark' | 'light';
         }
@@ -2153,6 +2254,7 @@ function settingsModal(): Promise<void> {
         imeAutoSwitch: r.imeAutoSwitch ?? true,
         devMode: r.devMode ?? false,
         editor: r.editor ?? getSettings().editor,
+        importedFonts: r.importedFonts ?? getSettings().importedFonts ?? [],
         zoom: r.zoom ?? getSettings().zoom,
         theme: r.theme ?? getSettings().theme,
       });
@@ -3573,12 +3675,43 @@ function applyDevMode(): void {
   setAiLogEnabled(on, (v) => void backend.aiLogSetEnabled(v).catch(() => undefined));
 }
 
+const DEFAULT_FONT_CSS = '"Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace';
+const loadedFontFaces = new Set<string>();
+
+/** 设置里存的是单个字体族名;兼容旧版直接存 CSS 字体列表的写法。 */
+function cssFontFamily(raw: string | undefined): string {
+  const v = (raw ?? '').trim();
+  if (!v) return DEFAULT_FONT_CSS;
+  if (v.includes(',') || v.includes('"') || v.includes("'")) return v;
+  return `"${v.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}", ${DEFAULT_FONT_CSS}`;
+}
+
+async function registerImportedFont(family: string, dataUrl: string): Promise<void> {
+  const face = new FontFace(family, `url("${dataUrl}")`);
+  await face.load();
+  document.fonts.add(face);
+  loadedFontFaces.add(family);
+}
+
+/** 启动时登记设置里保存的已导入字体;失败只影响该字体,不阻塞 IDE。 */
+async function loadImportedFonts(): Promise<void> {
+  for (const f of getSettings().importedFonts ?? []) {
+    if (!f.family || !f.path || loadedFontFaces.has(f.family)) continue;
+    try {
+      await registerImportedFont(f.family, await backend.fontDataUrl(f.path));
+    } catch {
+      // 文件被删除/损坏:回退系统字体
+    }
+  }
+}
+
 function applyEditorPrefs(): void {
   const e = getSettings().editor;
   editor.updateOptions({
     fontSize: e.fontSize ?? 14,
-    fontFamily: e.fontFamily || undefined,
+    fontFamily: cssFontFamily(e.fontFamily),
   });
+  monaco.editor.remeasureFonts();
 }
 
 async function applyZoom(): Promise<void> {
@@ -3622,6 +3755,7 @@ async function boot(): Promise<void> {
     }
   }
   if (getSettings().zoom) void applyZoom();
+  await loadImportedFonts();
   applyTheme();
   applyEditorPrefs();
   applyDevMode();
@@ -3711,6 +3845,12 @@ async function boot(): Promise<void> {
   void refreshAiPrimer();
   updateAccountLabel();
   const s = getSettings();
+  void getVersion()
+    .then((ver) => {
+      const el = document.getElementById('wl-ver');
+      if (el) el.textContent = `v${ver}`;
+    })
+    .catch(() => undefined);
   if (!newWindowMode && s.lastWorkspace) {
     L.welcomeRec.textContent = `最近打开:${s.lastWorkspace}`;
     L.welcomeRec.addEventListener('click', () => void openWorkspace(s.lastWorkspace));

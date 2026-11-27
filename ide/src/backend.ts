@@ -185,6 +185,27 @@ export function openIdeWindow(): Promise<void> {
   return invoke('open_ide_window');
 }
 
+export interface ImportedFontDto {
+  family: string;
+  path: string;
+  dataUrl: string;
+}
+
+/** 枚举系统已安装字体族(无窗口、只读字体表目录)。 */
+export function listSystemFonts(): Promise<string[]> {
+  return invoke('list_system_fonts');
+}
+
+/** 把外部 ttf/otf 复制到应用字体目录并返回可直接登记的 data URL。 */
+export function importFont(path: string): Promise<ImportedFontDto> {
+  return invoke('import_font', { path });
+}
+
+/** 启动时从已导入路径重新读取字体数据。 */
+export function fontDataUrl(path: string): Promise<string> {
+  return invoke('font_data_url', { path });
+}
+
 // 在独立的新命令行窗口运行外部程序(不捕获输出)
 export function spawnExternal(program: string, args: string[], cwd: string): Promise<void> {
   return invoke('spawn_external', { program, args, cwd });

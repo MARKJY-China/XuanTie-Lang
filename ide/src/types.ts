@@ -124,6 +124,8 @@ export interface AppSettings {
   account: AccountState;
   // 编辑器外观
   editor: { fontSize: number; fontFamily: string };
+  // 导入的外部字体(已复制到应用数据目录);fontFamily 存选项族名
+  importedFonts?: { family: string; path: string }[];
   // 整窗显示比例(1 = 100%)
   zoom: number;
   theme: 'dark' | 'light';
@@ -151,6 +153,7 @@ export function defaultSettings(): AppSettings {
     ai: { providers: [], active: '官方', thinking: 'off' },
     account: { baseUrl: 'https://bbs.xt.markjy.com', cookie: '', username: '', loginAt: 0 },
     editor: { fontSize: 14, fontFamily: '' },
+    importedFonts: [],
     zoom: 1,
     theme: 'dark',
     ui: { aiDock: false, w: 0, h: 0 },

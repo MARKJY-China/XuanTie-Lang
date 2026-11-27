@@ -132,7 +132,7 @@ const TEMPLATE = `
       <div id="designer-host" class="hidden"></div>
       <div id="welcome">
         <div class="wl-logo">玄铁铸造厂</div>
-        <div class="wl-sub">玄铁语言官方 IDE · v0.2 · 打开或新建一个工程,开始铸造</div>
+        <div class="wl-sub">玄铁语言官方 IDE · <span id="wl-ver">v0.9.0</span> · 打开或新建一个工程,开始铸造</div>
         <div class="wl-btns">
           <button class="wlbtn" id="wl-open">打开文件夹</button>
           <button class="wlbtn" id="wl-new">新建工程</button>
