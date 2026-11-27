@@ -2912,7 +2912,9 @@ function accountModal(): Promise<void> {
         showRegister();
       });
       showLogin();
-      body.append(seg, note, form, msg, rSrv);
+      body.append(seg, note, form, msg);
+      // 社区服务地址是开发者诊断项,非开发者模式下不暴露给普通登录用户
+      if (getSettings().devMode) body.appendChild(rSrv);
     },
     '玄铁账户与官方社区、铁铺一号互通',
   ).then(async (result) => {
@@ -3674,6 +3676,7 @@ function applyTheme(): void {
   const light = getSettings().theme === 'light';
   document.body.classList.toggle('light', light);
   monaco.editor.setTheme(light ? 'xuantie-light' : 'xuantie-dark');
+  term.setTheme(light);
 }
 
 // 开发者模式:控制台按钮显隐 + 日志采集开关(TS 总线与 Rust 中枢同步)

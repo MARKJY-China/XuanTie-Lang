@@ -23,18 +23,44 @@ interface TermSession {
   onExit?: (exitCode: number) => void;
 }
 
+const TERM_DARK_THEME = {
+  background: '#1e1e1e',
+  foreground: '#d4d4d4',
+  cursor: '#e8842c',
+  selectionBackground: '#264f78',
+};
+
+// 亮色主题:背景/正文取 IDE 亮色变量,终端保持可读的深色文字
+const TERM_LIGHT_THEME = {
+  background: '#ffffff',
+  foreground: '#24292f',
+  cursor: '#c2410c',
+  selectionBackground: '#b6d7ff',
+  black: '#24292f',
+  red: '#cf222e',
+  green: '#116329',
+  yellow: '#4d2d00',
+  blue: '#0969da',
+  magenta: '#8250df',
+  cyan: '#1b7c83',
+  white: '#6e7781',
+  brightBlack: '#57606a',
+  brightRed: '#a40e26',
+  brightGreen: '#1a7f37',
+  brightYellow: '#633c01',
+  brightBlue: '#218bff',
+  brightMagenta: '#a475f9',
+  brightCyan: '#3192aa',
+  brightWhite: '#8c959f',
+};
+
 const TERM_OPTIONS = {
   convertEol: false,
   cursorBlink: true,
   fontSize: 13,
   fontFamily: '"Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace',
   scrollback: 5000,
-  theme: {
-    background: '#1e1e1e',
-    foreground: '#d4d4d4',
-    cursor: '#e8842c',
-    selectionBackground: '#264f78',
-  },
+  theme: TERM_DARK_THEME,
 };
 
 export type SpawnOpts = {
@@ -50,6 +76,7 @@ export class TerminalPane {
   private seq = 0;
   private resizeObs: ResizeObserver;
   private fitQueued = false;
+  private light = false;
 
   constructor(
     private host: HTMLElement,
@@ -60,6 +87,13 @@ export class TerminalPane {
     this.resizeObs = new ResizeObserver(() => this.queueFit());
     this.resizeObs.observe(host);
     this.resizeObs.observe(buildHost);
+  }
+
+  /** 跟随 IDE 主题切换所有终端(含构建/输出视图)的 xterm 配色。 */
+  setTheme(light: boolean): void {
+    this.light = light;
+    const theme = light ? TERM_LIGHT_THEME : TERM_DARK_THEME;
+    for (const s of this.sessions.values()) s.term.options.theme = { ...theme };
   }
 
   private queueFit(): void {
@@ -145,7 +179,7 @@ export class TerminalPane {
       this.tabBar.appendChild(tabEl);
     }
 
-    const term = new Terminal(TERM_OPTIONS);
+    const term = new Terminal({ ...TERM_OPTIONS, theme: this.light ? TERM_LIGHT_THEME : TERM_DARK_THEME });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(view);

@@ -5,6 +5,7 @@
 import { listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import * as backend from '../backend';
+import { loadSettings } from '../settings';
 import {
   cmpVer,
   ensureTiepm,
@@ -247,6 +248,13 @@ function adoptInstall(name: string): void {
 }
 
 async function init(): Promise<void> {
+  try {
+    // 独立窗口不自动继承 body class:显式跟随主窗口设置,而不是 OS 主题
+    const st = await loadSettings();
+    document.documentElement.classList.toggle('light', st.theme === 'light');
+  } catch {
+    // 设置读取失败:沿用默认暗色
+  }
   syncBusyUi();
   try {
     tiepmPath = await ensureTiepm();

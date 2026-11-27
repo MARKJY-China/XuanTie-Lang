@@ -22,22 +22,20 @@
       --mono: "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
       color-scheme: dark;
     }
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #ffffff;
-        --bg-panel: #f3f3f3;
-        --bg-deep: #f8f8f8;
-        --bg-hover: #eaeaea;
-        --border: #d4d4d4;
-        --fg: #1f1f1f;
-        --fg-dim: #6b6b6b;
-        --accent: #c2410c;
-        --accent-dim: #e8842c;
-        --ok: #1a7f5a;
-        --warn: #9a6700;
-        --err: #c62828;
-        color-scheme: light;
-      }
+    html.light {
+      --bg: #eef1f4;
+      --bg-panel: #f7f8fa;
+      --bg-deep: #ffffff;
+      --bg-hover: #e3e7eb;
+      --border: #c9d1d9;
+      --fg: #1f2328;
+      --fg-dim: #57606a;
+      --accent: #c2410c;
+      --accent-dim: #b45309;
+      --ok: #1a7f5a;
+      --warn: #9a6700;
+      --err: #c62828;
+      color-scheme: light;
     }
     * { box-sizing: border-box; }
     html, body { height: 100%; margin: 0; }

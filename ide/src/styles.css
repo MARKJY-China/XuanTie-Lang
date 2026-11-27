@@ -1181,23 +1181,54 @@ body.light #statusbar .sb-update { color: #0b63b8; }
 
 /* 亮色主题(设置可切) */
 body.light {
-  --bg: #f8f8f8;
-  --bg-panel: #ffffff;
-  --bg-deep: #eeeeee;
-  --bg-hover: #e6e6e6;
-  --bg-active: #d8d8d8;
-  --border: #cccccc;
-  --fg: #1f1f1f;
-  --fg-dim: #666666;
-  --accent: #c96a10;
-  --accent-dim: #a05a1e;
-  --ok: #1a8a6e;
-  --warn: #a88400;
-  --err: #c0392b;
+  color-scheme: light;
+  /* 亮色也保留分层:工作区灰、面板浅灰、编辑器白,避免整窗纯白刺眼 */
+  --bg: #ebeff3;
+  --bg-panel: #f4f6f8;
+  --bg-deep: #ffffff;
+  --bg-hover: #e2e7ec;
+  --bg-active: #d5dce3;
+  --border: #c9d1d9;
+  --fg: #1f2328;
+  --fg-dim: #57606a;
+  --accent: #c2410c;
+  --accent-dim: #b45309;
+  --ok: #1a7f5a;
+  --warn: #9a6700;
+  --err: #c62828;
 }
-body.light #statusbar { background: #ffffff; }
-body.light #toolbar { background: #ffffff; }
-body.light #sidebar, body.light #tabbar, body.light #bottom-panel { background: #f2f2f2; }
+body.light #statusbar, body.light #toolbar { background: #f4f6f8; }
+body.light #sidebar, body.light #tabbar-row, body.light #tabbar,
+body.light #bottom-panel { background: #eaeef2; }
+body.light #sidebar-head, body.light #bottom-tabs { background: #e3e9ee; }
+body.light #bottom-tabs { border-bottom-color: var(--border); }
+body.light #editor-host, body.light #monaco-host { background: #ffffff; }
+body.light .tab.active { background: #ffffff; color: var(--fg); }
+body.light #ai-dock { background: #f2f5f7; }
+body.light #ai-head { background: #eaeef2; }
+body.light #ai-input-box { background: #ffffff; }
+body.light #markdown-host { background: #ffffff; }
+body.light #problems-host { background: #f7f9fa; }
+body.light #term-host, body.light #build-host, body.light #output-host { background: #ffffff; }
+body.light .xterm .xterm-viewport { background-color: #ffffff !important; }
+body.light ::-webkit-scrollbar-thumb { background: #c2c9d1; }
+body.light ::-webkit-scrollbar-thumb:hover { background: #aab3bd; }
+
+/* 亮色 Markdown 阅读器:链接/强调/代码/表格/引用全部改为浅色语义 */
+body.light .md-reader a[data-md-href] { color: #0969da; border-bottom-color: rgba(9, 105, 218, 0.35); }
+body.light .md-reader a[data-md-href]:hover { border-bottom-color: #0969da; }
+body.light .md-reader strong { color: #111418; }
+body.light .md-reader em { color: #7a5b00; }
+body.light .md-reader blockquote { background: #f6f8fa; color: #57606a; }
+body.light .md-reader code { background: #eff2f5; color: #953800; }
+body.light .md-reader pre { background: #f6f8fa; border-color: #d0d7de; }
+body.light .md-reader pre code { color: #24292f; }
+body.light .md-reader th { background: #f6f8fa; }
+body.light .md-reader tr:nth-child(even) td { background: #f6f8fa; }
+body.light .md-reader img { background: #f6f8fa; }
+body.light .md-reader .md-reader-error {
+  background: #ffebe9; border-color: #ff818266; color: #cf222e;
+}
 
 /* 状态栏云状态 */
 .sb-cloud {
