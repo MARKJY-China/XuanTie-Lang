@@ -306,7 +306,8 @@ const body =
 const content = header + body;
 if (CHECK_ONLY) {
   const current = existsSync(OUT) ? readFileSync(OUT, 'utf8') : '';
-  if (current !== content) {
+  const normalizeEol = (s) => s.replace(/\r\n/g, '\n');
+  if (normalizeEol(current) !== normalizeEol(content)) {
     fail('生成物与源文档不一致；请运行 node tools/gen-ide-api-docs.mjs 后提交');
   }
   console.log(`[ide-api-docs] 校验通过: ${pages.length} 页, ${methods.length} 条方法索引`);
