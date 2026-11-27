@@ -223,7 +223,7 @@ const methods = [];
 for (const src of SOURCES) {
   if (src.file) {
     if (!existsSync(src.file)) fail(`缺少源文件: ${src.file}（拒绝静默跳过）`);
-    const md = readFileSync(src.file, 'utf8');
+    const md = readFileSync(src.file, 'utf8').replace(/\r\n/g, '\n');
     const page = { id: src.id, title: titleOf(md, '标准库与 Runtime API'), group: src.group, markdown: md };
     pages.push(page);
     methods.push(...collectMethods(page));
@@ -235,7 +235,7 @@ for (const src of SOURCES) {
   for (const name of mdNames) {
     const full = join(src.dir, name);
     if (!statSync(full).isFile()) continue;
-    const md = readFileSync(full, 'utf8');
+    const md = readFileSync(full, 'utf8').replace(/\r\n/g, '\n');
     const id = `${src.idPrefix}/${name.replace(/\.md$/, '')}`;
     const page = { id, title: titleOf(md, name.replace(/\.md$/, '')), group: src.group, markdown: md };
     pages.push(page);
