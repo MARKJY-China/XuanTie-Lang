@@ -168,16 +168,12 @@ const TEMPLATE = `
       <button class="ibtn" id="btn-ai-settings" title="管理 AI 提供商"><i class="codicon codicon-settings-gear"></i></button>
       <button class="ibtn" id="btn-ai-close" title="收起"><i class="codicon codicon-close"></i></button>
     </div>
-    <div id="ai-body">
-      <div id="ai-msgs"></div>
-      <div id="ai-outline" style="display:none"></div>
-      <button id="ai-scroll-bottom" title="回到底部" style="display:none"><i class="codicon codicon-arrow-down"></i></button>
-      <div id="ai-mask" style="display:none">
-        <div id="ai-mask-icon" style="display:none"><i class="codicon codicon-hubot"></i></div>
-        <div id="ai-mask-text"></div>
-        <button class="mbtn primary" id="ai-mask-btn" style="display:none">重新连接</button>
+    <div id="ai-flow">
+      <div id="ai-body">
+        <div id="ai-msgs"></div>
+        <div id="ai-outline" style="display:none"></div>
+        <button id="ai-scroll-bottom" title="回到底部" style="display:none"><i class="codicon codicon-arrow-down"></i></button>
       </div>
-    </div>
     <div id="ai-approvals"></div>
     <div id="ai-input-wrap">
       <div id="ai-drag" title="拖拽调整输入栏最大高度"></div>
@@ -198,6 +194,12 @@ const TEMPLATE = `
           <span class="stat-item" id="stat-usage"></span>
           <span class="stat-item stat-right" id="stat-ctx" title="点击查看用量明细"></span>
         </div>
+      </div>
+    </div>
+      <div id="ai-mask" style="display:none">
+        <div id="ai-mask-icon" style="display:none"><i class="codicon codicon-hubot"></i></div>
+        <div id="ai-mask-text"></div>
+        <button class="mbtn primary" id="ai-mask-btn" style="display:none">重新连接</button>
       </div>
     </div>
   </div>

@@ -1188,6 +1188,7 @@ body.light #sidebar, body.light #tabbar, body.light #bottom-panel { background: 
 .sb-cloud:hover { background: rgba(255, 95, 95, 0.12); }
 
 /* AI dock 遮罩(离线/未登录) */
+#ai-flow { position: relative; flex: 1; display: flex; flex-direction: column; min-height: 0; }
 #ai-body { flex: 1; display: flex; flex-direction: column; position: relative; min-height: 0; }
 #ai-mask {
   position: absolute; inset: 0; z-index: 30;

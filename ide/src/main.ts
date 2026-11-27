@@ -1152,6 +1152,10 @@ function setAiMask(
   const mask = byId('ai-mask');
   const text = byId('ai-mask-text');
   const btn = byId('ai-mask-btn');
+  const gated = mode !== null;
+  if (gated) L.aiInput.blur();
+  L.aiInput.disabled = gated;
+  (L.btnAiSend as HTMLButtonElement).disabled = gated;
   if (mode === null) {
     mask.style.display = 'none';
     return;
@@ -2517,6 +2521,8 @@ function updateAccountLabel(): void {
 async function saveAccount(next: Partial<AccountState>): Promise<void> {
   await saveSettings({ ...getSettings(), account: { ...getSettings().account, ...next } });
   updateAccountLabel();
+  // 登录/退出后立即重算 AI dock 遮罩(否则登录成功仍停在未登录遮罩)
+  updateAiGate();
 }
 
 async function aiPlansModal(): Promise<unknown> {
